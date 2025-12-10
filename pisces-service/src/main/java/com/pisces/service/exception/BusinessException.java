@@ -1,5 +1,6 @@
 package com.pisces.service.exception;
 
+import com.pisces.common.enums.ResponseCode;
 import lombok.Getter;
 
 /**
@@ -8,21 +9,37 @@ import lombok.Getter;
 @Getter
 public class BusinessException extends RuntimeException {
     
-    private final Integer code;
+    private final ResponseCode responseCode;
     
-    public BusinessException(String message) {
-        super(message);
-        this.code = 500;
+    /**
+     * 使用响应码枚举构造异常
+     */
+    public BusinessException(ResponseCode responseCode) {
+        super(responseCode.getMessage());
+        this.responseCode = responseCode;
     }
     
-    public BusinessException(Integer code, String message) {
+    /**
+     * 使用响应码枚举和自定义消息构造异常
+     */
+    public BusinessException(ResponseCode responseCode, String message) {
         super(message);
-        this.code = code;
+        this.responseCode = responseCode;
     }
     
-    public BusinessException(String message, Throwable cause) {
+    /**
+     * 使用响应码枚举和异常原因构造异常
+     */
+    public BusinessException(ResponseCode responseCode, String message, Throwable cause) {
         super(message, cause);
-        this.code = 500;
+        this.responseCode = responseCode;
+    }
+    
+    /**
+     * 获取响应码
+     */
+    public Integer getCode() {
+        return responseCode.getCode();
     }
 }
 

@@ -8,6 +8,55 @@ spring:
     name: pisces
   profiles:
     active: dev
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/pisces?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: root
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/schema.sql
+      continue-on-error: true
+      separator: ;
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password:  # Redis密码，如果没有密码则留空
+      database: 0  # 使用的数据库索引
+      timeout: 3000  # 连接超时时间（毫秒）
+      lettuce:
+        pool:
+          max-active: 8  # 连接池最大连接数
+          max-idle: 8  # 连接池最大空闲连接数
+          min-idle: 0  # 连接池最小空闲连接数
+          max-wait: -1  # 连接池最大阻塞等待时间（-1表示没有限制）
+
+# MyBatis配置
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.pisces.service.user.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+# Token配置
+token:
+  expire-hours: 24  # Token过期时间（小时）
+  refresh-threshold-hours: 2  # Token刷新阈值（小时），在过期前多少小时可以刷新
+  redis:
+    key-prefix: "pisces:token:"  # Token存储的key前缀
+    blacklist-prefix: "pisces:token:blacklist:"  # Token黑名单的key前缀
+    blacklist-expire-days: 7  # 黑名单过期时间（天）
+
+# Zookeeper配置
+zookeeper:
+  connectString: localhost:2181
+  sessionTimeoutMs: 30000
+  connectionTimeoutMs: 30000
+  maxRetries: 3
+  basePath: /pisces
 
 logging:
   level:

@@ -4,7 +4,7 @@ import com.pisces.common.request.UserCreateRequest;
 import com.pisces.common.request.UserQueryRequest;
 import com.pisces.common.response.BaseResponse;
 import com.pisces.common.response.UserResponse;
-import com.pisces.service.service.user.UserService;
+import com.pisces.service.service.UserService;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
@@ -13,7 +13,6 @@ import java.util.List;
 
 /**
  * 用户控制器
- * api层只负责接收请求，不处理业务逻辑和异常
  */
 @RestController
 @RequestMapping("/users")
@@ -28,7 +27,7 @@ public class UserController {
     @PostMapping
     public BaseResponse<UserResponse> createUser(@Valid @RequestBody UserCreateRequest request) {
         UserResponse user = userService.createUser(request);
-        return BaseResponse.success("用户创建成功", user);
+        return BaseResponse.of("用户创建成功", user);
     }
     
     /**
@@ -37,7 +36,7 @@ public class UserController {
     @GetMapping("/{id}")
     public BaseResponse<UserResponse> getUserById(@PathVariable Long id) {
         UserResponse user = userService.getUserById(id);
-        return BaseResponse.success(user);
+        return BaseResponse.of(user);
     }
     
     /**
@@ -46,7 +45,17 @@ public class UserController {
     @GetMapping
     public BaseResponse<List<UserResponse>> queryUsers(@Valid UserQueryRequest request) {
         List<UserResponse> users = userService.queryUsers(request);
-        return BaseResponse.success(users);
+        return BaseResponse.of(users);
+    }
+    
+    /**
+     * 更新用户
+     */
+    @PutMapping("/{id}")
+    public BaseResponse<UserResponse> updateUser(@PathVariable Long id, 
+                                                 @Valid @RequestBody UserCreateRequest request) {
+        UserResponse user = userService.updateUser(id, request);
+        return BaseResponse.of("用户更新成功", user);
     }
     
     /**
@@ -55,7 +64,7 @@ public class UserController {
     @DeleteMapping("/{id}")
     public BaseResponse<Void> deleteUser(@PathVariable Long id) {
         userService.deleteUser(id);
-        return BaseResponse.success("用户删除成功", null);
+        return BaseResponse.of("用户删除成功", null);
     }
 }
 

@@ -64,17 +64,23 @@ pisces/
 ## 技术栈
 
 - Spring Boot 3.2.0
-- Java 17
+- Java 21
 - Maven (多模块)
 - Lombok
 - Spring Validation
+- Redis (Token存储)
+- MyBatis (数据持久化)
+- Zookeeper (配置管理)
 
 ## 快速开始
 
 ### 环境要求
 
-- JDK 17+
+- JDK 21+
 - Maven 3.6+
+- Redis 6.0+ (用于Token存储)
+- MySQL 8.0+ (用于数据存储)
+- Zookeeper 3.9+ (用于配置管理，可选)
 
 ### 运行项目
 
@@ -94,9 +100,34 @@ mvn spring-boot:run -pl pisces-service
 
 ## API接口示例
 
-### 创建用户
+### 1. 用户登录（获取Token）
+```bash
+POST /api/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "admin123"
+}
+```
+
+响应：
+```json
+{
+  "code": 200,
+  "message": "登录成功",
+  "data": {
+    "token": "0192023a7bbd73250516f069df18b500",
+    "user": { ... },
+    "expireIn": 86400
+  }
+}
+```
+
+### 2. 创建用户（需要Token）
 ```bash
 POST /api/users
+Authorization: Bearer {token}
 Content-Type: application/json
 
 {
@@ -107,20 +138,31 @@ Content-Type: application/json
 }
 ```
 
-### 查询用户
+### 3. 创建实验（需要Token）
 ```bash
-GET /api/users/{id}
+POST /api/experiments
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "name": "首页按钮颜色测试",
+  ...
+}
 ```
 
-### 查询用户列表
+### 4. 查询用户列表（需要Token）
 ```bash
 GET /api/users?username=test&pageNum=1&pageSize=10
+Authorization: Bearer {token}
 ```
 
-### 删除用户
+### 5. 用户登出（需要Token）
 ```bash
-DELETE /api/users/{id}
+POST /api/auth/logout
+Authorization: Bearer {token}
 ```
+
+**注意**：除登录接口外，所有API都需要在请求头中携带Token。
 
 ## 项目说明
 
