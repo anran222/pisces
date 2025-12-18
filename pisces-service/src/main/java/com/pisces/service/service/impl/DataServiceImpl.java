@@ -6,18 +6,17 @@ import com.pisces.service.service.MultiArmedBanditService;
 import com.pisces.service.service.TrafficService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.TimeUnit;
 
 /**
- * 数据收集服务实现
+ * 数据收集服务实现（基于Redis存储）
  */
 @Slf4j
 @Service
@@ -29,22 +28,16 @@ public class DataServiceImpl implements DataService {
     @Autowired(required = false)
     private MultiArmedBanditService mabService;
     
-    /**
-     * 事件存储（实际应该存储到数据库或消息队列）
-     */
-    private final ConcurrentHashMap<String, List<Event>> eventStore = new ConcurrentHashMap<>();
+    @Autowired
+    private RedisTemplate<String, Object> redisTemplate;
     
-    /**
-     * 事件计数器（实验ID -> 事件类型 -> 数量）
-     */
-    private final ConcurrentHashMap<String, ConcurrentHashMap<String, AtomicLong>> eventCounters = 
-            new ConcurrentHashMap<>();
+    // Redis Key前缀
+    private static final String EVENT_STORE_PREFIX = "pisces:event:store:";  // 事件存储
+    private static final String EVENT_COUNTER_PREFIX = "pisces:event:counter:";  // 事件计数器
+    private static final String VISITOR_SET_PREFIX = "pisces:visitor:set:";  // 访客集合
     
-    /**
-     * 访客集合（实验ID:组ID -> 访客ID集合），用于快速统计访客数
-     */
-    private final ConcurrentHashMap<String, ConcurrentHashMap<String, Boolean>> visitorSets = 
-            new ConcurrentHashMap<>();
+    // 数据过期时间（天）
+    private static final long DATA_EXPIRE_DAYS = 90;
     
     /**
      * 上报事件（使用visitorId，可以是userId、设备ID、会话ID等）
@@ -70,17 +63,18 @@ public class DataServiceImpl implements DataService {
         event.setProperties(properties);
         event.setTimestamp(LocalDateTime.now());
         
-        // 存储事件
-        String key = experimentId + ":" + groupId;
-        eventStore.computeIfAbsent(key, k -> new ArrayList<>()).add(event);
+        // 存储事件到Redis（使用List存储）
+        String eventStoreKey = EVENT_STORE_PREFIX + experimentId + ":" + groupId;
+        redisTemplate.opsForList().rightPush(eventStoreKey, event);
+        redisTemplate.expire(eventStoreKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
         
-        // 更新计数器
+        // 更新计数器（使用Hash存储）
         updateEventCounter(experimentId, groupId, eventType);
         
-        // 更新访客集合（用于统计访客数）
-        String visitorSetKey = experimentId + ":" + groupId;
-        visitorSets.computeIfAbsent(visitorSetKey, k -> new ConcurrentHashMap<>())
-                .put(visitorId, true);
+        // 更新访客集合（使用Set存储，自动去重）
+        String visitorSetKey = VISITOR_SET_PREFIX + experimentId + ":" + groupId;
+        redisTemplate.opsForSet().add(visitorSetKey, visitorId);
+        redisTemplate.expire(visitorSetKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
         
         // 更新MAB算法奖励
         // 对于价格提升实验，使用成交价格作为奖励指标
@@ -108,13 +102,12 @@ public class DataServiceImpl implements DataService {
     }
 
     /**
-     * 更新事件计数器
+     * 更新事件计数器（使用Redis Hash）
      */
     private void updateEventCounter(String experimentId, String groupId, String eventType) {
-        String counterKey = experimentId + ":" + groupId;
-        eventCounters.computeIfAbsent(counterKey, k -> new ConcurrentHashMap<>())
-                .computeIfAbsent(eventType, k -> new AtomicLong(0))
-                .incrementAndGet();
+        String counterKey = EVENT_COUNTER_PREFIX + experimentId + ":" + groupId;
+        redisTemplate.opsForHash().increment(counterKey, eventType, 1);
+        redisTemplate.expire(counterKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
     }
     
     /**
@@ -122,13 +115,12 @@ public class DataServiceImpl implements DataService {
      */
     @Override
     public long getEventCount(String experimentId, String groupId, String eventType) {
-        String counterKey = experimentId + ":" + groupId;
-        ConcurrentHashMap<String, AtomicLong> counters = eventCounters.get(counterKey);
-        if (counters == null) {
+        String counterKey = EVENT_COUNTER_PREFIX + experimentId + ":" + groupId;
+        Object count = redisTemplate.opsForHash().get(counterKey, eventType);
+        if (count == null) {
             return 0;
         }
-        AtomicLong counter = counters.get(eventType);
-        return counter != null ? counter.get() : 0;
+        return count instanceof Number ? ((Number) count).longValue() : Long.parseLong(count.toString());
     }
     
     /**
@@ -136,9 +128,9 @@ public class DataServiceImpl implements DataService {
      */
     @Override
     public long getVisitorCount(String experimentId, String groupId) {
-        String visitorSetKey = experimentId + ":" + groupId;
-        ConcurrentHashMap<String, Boolean> visitorSet = visitorSets.get(visitorSetKey);
-        return visitorSet != null ? visitorSet.size() : 0;
+        String visitorSetKey = VISITOR_SET_PREFIX + experimentId + ":" + groupId;
+        Long size = redisTemplate.opsForSet().size(visitorSetKey);
+        return size != null ? size : 0;
     }
 }
 

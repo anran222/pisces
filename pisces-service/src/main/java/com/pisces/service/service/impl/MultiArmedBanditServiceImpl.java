@@ -5,16 +5,15 @@ import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.MultiArmedBanditService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.TimeUnit;
 
 /**
- * 多臂老虎机算法服务实现
+ * 多臂老虎机算法服务实现（基于Redis存储）
  * 实现Thompson Sampling和UCB算法，用于动态流量分配
  */
 @Slf4j
@@ -24,52 +23,58 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
     @Autowired
     private ConfigService configService;
     
-    /**
-     * Beta分布参数缓存（experimentId -> groupId -> {alpha, beta}）
-     * 用于Thompson Sampling算法
-     */
-    private final ConcurrentHashMap<String, Map<String, BetaParams>> betaParamsCache = new ConcurrentHashMap<>();
+    @Autowired
+    private RedisTemplate<String, Object> redisTemplate;
+    
+    // Redis Key前缀
+    private static final String BETA_PARAMS_PREFIX = "pisces:mab:beta:";  // Beta分布参数
+    private static final String UCB_STATS_PREFIX = "pisces:mab:ucb:";  // UCB统计信息
+    private static final String TOTAL_TRIALS_PREFIX = "pisces:mab:trials:";  // 总实验次数
+    
+    // 数据过期时间（天）
+    private static final long DATA_EXPIRE_DAYS = 90;
     
     /**
-     * UCB统计信息缓存（experimentId -> groupId -> UCBStats）
-     * 用于UCB算法
-     */
-    private final ConcurrentHashMap<String, Map<String, UCBStats>> ucbStatsCache = new ConcurrentHashMap<>();
-    
-    /**
-     * 总实验次数（用于UCB算法）
-     */
-    private final ConcurrentHashMap<String, AtomicLong> totalTrialsCache = new ConcurrentHashMap<>();
-    
-    /**
-     * Beta分布参数
+     * Beta分布参数（用于Redis存储）
      */
     private static class BetaParams {
-        AtomicInteger alpha = new AtomicInteger(1); // 成功次数 + 1
-        AtomicInteger beta = new AtomicInteger(1);  // 失败次数 + 1
+        int alpha = 1; // 成功次数 + 1
+        int beta = 1;  // 失败次数 + 1
         
         BetaParams() {}
+        
+        BetaParams(int alpha, int beta) {
+            this.alpha = alpha;
+            this.beta = beta;
+        }
     }
     
     /**
-     * UCB统计信息
+     * UCB统计信息（用于Redis存储）
      */
     private static class UCBStats {
-        AtomicLong trials = new AtomicLong(0);      // 选择次数（在选择时递增）
-        AtomicLong successes = new AtomicLong(0);  // 成功次数
-        double averageReward = 0.0;                // 平均奖励
+        long trials = 0;      // 选择次数
+        long successes = 0;  // 成功次数
+        double averageReward = 0.0;  // 平均奖励
+        
+        UCBStats() {}
+        
+        UCBStats(long trials, long successes, double averageReward) {
+            this.trials = trials;
+            this.successes = successes;
+            this.averageReward = averageReward;
+        }
         
         /**
-         * 更新奖励信息（不递增trials，因为trials在选择时已经递增）
+         * 更新奖励信息
          */
         void updateReward(boolean success) {
             if (success) {
-                successes.incrementAndGet();
+                successes++;
             }
             // 更新平均奖励
-            long n = trials.get();
-            if (n > 0) {
-                averageReward = (double) successes.get() / n;
+            if (trials > 0) {
+                averageReward = (double) successes / trials;
             }
         }
     }
@@ -81,19 +86,15 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
             return null;
         }
         
-        // 初始化Beta参数（如果不存在）
-        Map<String, BetaParams> betaParams = betaParamsCache.computeIfAbsent(
-            experimentId, k -> new ConcurrentHashMap<>());
-        
         String bestGroup = null;
         double maxSample = -1.0;
         
         // 从每个变体的Beta分布中采样，选择采样值最大的变体
         for (String groupId : metadata.getGroups().keySet()) {
-            BetaParams params = betaParams.computeIfAbsent(groupId, k -> new BetaParams());
+            BetaParams params = getBetaParams(experimentId, groupId);
             
             // 从Beta分布中采样
-            double sample = sampleFromBeta(params.alpha.get(), params.beta.get());
+            double sample = sampleFromBeta(params.alpha, params.beta);
             
             if (sample > maxSample) {
                 maxSample = sample;
@@ -107,6 +108,37 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
         return bestGroup;
     }
     
+    /**
+     * 从Redis获取Beta参数
+     */
+    private BetaParams getBetaParams(String experimentId, String groupId) {
+        String key = BETA_PARAMS_PREFIX + experimentId;
+        Object paramsObj = redisTemplate.opsForHash().get(key, groupId);
+        if (paramsObj != null && paramsObj instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> paramsMap = (Map<String, Object>) paramsObj;
+            int alpha = paramsMap.get("alpha") != null ? 
+                    ((Number) paramsMap.get("alpha")).intValue() : 1;
+            int beta = paramsMap.get("beta") != null ? 
+                    ((Number) paramsMap.get("beta")).intValue() : 1;
+            return new BetaParams(alpha, beta);
+        }
+        // 如果不存在，返回默认值
+        return new BetaParams();
+    }
+    
+    /**
+     * 保存Beta参数到Redis
+     */
+    private void saveBetaParams(String experimentId, String groupId, BetaParams params) {
+        String key = BETA_PARAMS_PREFIX + experimentId;
+        Map<String, Object> paramsMap = new HashMap<>();
+        paramsMap.put("alpha", params.alpha);
+        paramsMap.put("beta", params.beta);
+        redisTemplate.opsForHash().put(key, groupId, paramsMap);
+        redisTemplate.expire(key, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
+    }
+    
     @Override
     public String selectGroupByUCB(String experimentId, String visitorId) {
         ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
@@ -114,14 +146,9 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
             return null;
         }
         
-        // 初始化统计信息
-        Map<String, UCBStats> statsMap = ucbStatsCache.computeIfAbsent(
-            experimentId, k -> new ConcurrentHashMap<>());
-        AtomicLong totalTrials = totalTrialsCache.computeIfAbsent(
-            experimentId, k -> new AtomicLong(0));
-        
         // 获取当前总选择次数（在选择前）
-        long t = totalTrials.get() + 1; // 本次选择后的总次数
+        long totalTrials = getTotalTrials(experimentId);
+        long t = totalTrials + 1; // 本次选择后的总次数
         String bestGroup = null;
         double maxUCB = -1.0;
         
@@ -130,8 +157,8 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
         
         // 首先检查是否有从未选择过的组（优先探索）
         for (String groupId : metadata.getGroups().keySet()) {
-            UCBStats stats = statsMap.computeIfAbsent(groupId, k -> new UCBStats());
-            if (stats.trials.get() == 0) {
+            UCBStats stats = getUCBStats(experimentId, groupId);
+            if (stats.trials == 0) {
                 // 如果从未选择过，优先选择（探索）
                 bestGroup = groupId;
                 maxUCB = Double.MAX_VALUE;
@@ -142,8 +169,8 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
         // 如果所有组都被选择过，计算UCB值选择最优组
         if (bestGroup == null) {
             for (String groupId : metadata.getGroups().keySet()) {
-                UCBStats stats = statsMap.get(groupId);
-                long n = stats.trials.get();
+                UCBStats stats = getUCBStats(experimentId, groupId);
+                long n = stats.trials;
                 
                 // 计算UCB值: UCB_i = r̄_i + c * sqrt(ln(t) / n_i)
                 double ucb = stats.averageReward + c * Math.sqrt(Math.log(t) / n);
@@ -157,14 +184,18 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
         
         // 更新选择次数（选择后）
         if (bestGroup != null) {
-            statsMap.get(bestGroup).trials.incrementAndGet();
-            totalTrials.incrementAndGet(); // 更新总选择次数
+            UCBStats stats = getUCBStats(experimentId, bestGroup);
+            stats.trials++;
+            saveUCBStats(experimentId, bestGroup, stats);
+            incrementTotalTrials(experimentId);
         } else {
             // 如果所有组都未被选择（理论上不应该发生），选择第一个组
             if (!metadata.getGroups().isEmpty()) {
                 bestGroup = metadata.getGroups().keySet().iterator().next();
-                statsMap.get(bestGroup).trials.incrementAndGet();
-                totalTrials.incrementAndGet();
+                UCBStats stats = getUCBStats(experimentId, bestGroup);
+                stats.trials++;
+                saveUCBStats(experimentId, bestGroup, stats);
+                incrementTotalTrials(experimentId);
                 log.warn("UCB算法未找到最优组，使用第一个组: experimentId={}", experimentId);
             }
         }
@@ -175,62 +206,92 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
         return bestGroup;
     }
     
+    /**
+     * 从Redis获取UCB统计信息
+     */
+    private UCBStats getUCBStats(String experimentId, String groupId) {
+        String key = UCB_STATS_PREFIX + experimentId;
+        Object statsObj = redisTemplate.opsForHash().get(key, groupId);
+        if (statsObj != null && statsObj instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> statsMap = (Map<String, Object>) statsObj;
+            long trials = statsMap.get("trials") != null ? 
+                    ((Number) statsMap.get("trials")).longValue() : 0;
+            long successes = statsMap.get("successes") != null ? 
+                    ((Number) statsMap.get("successes")).longValue() : 0;
+            double averageReward = statsMap.get("averageReward") != null ? 
+                    ((Number) statsMap.get("averageReward")).doubleValue() : 0.0;
+            return new UCBStats(trials, successes, averageReward);
+        }
+        // 如果不存在，返回默认值
+        return new UCBStats();
+    }
+    
+    /**
+     * 保存UCB统计信息到Redis
+     */
+    private void saveUCBStats(String experimentId, String groupId, UCBStats stats) {
+        String key = UCB_STATS_PREFIX + experimentId;
+        Map<String, Object> statsMap = new HashMap<>();
+        statsMap.put("trials", stats.trials);
+        statsMap.put("successes", stats.successes);
+        statsMap.put("averageReward", stats.averageReward);
+        redisTemplate.opsForHash().put(key, groupId, statsMap);
+        redisTemplate.expire(key, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
+    }
+    
+    /**
+     * 获取总实验次数
+     */
+    private long getTotalTrials(String experimentId) {
+        String key = TOTAL_TRIALS_PREFIX + experimentId;
+        Object trials = redisTemplate.opsForValue().get(key);
+        return trials != null ? ((Number) trials).longValue() : 0;
+    }
+    
+    /**
+     * 增加总实验次数
+     */
+    private void incrementTotalTrials(String experimentId) {
+        String key = TOTAL_TRIALS_PREFIX + experimentId;
+        redisTemplate.opsForValue().increment(key);
+        redisTemplate.expire(key, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
+    }
+    
     @Override
     public void updateReward(String experimentId, String groupId, boolean success) {
         // 更新Beta分布参数（用于Thompson Sampling）
-        Map<String, BetaParams> betaParams = betaParamsCache.get(experimentId);
-        if (betaParams != null) {
-            BetaParams params = betaParams.computeIfAbsent(groupId, k -> new BetaParams());
-            if (success) {
-                params.alpha.incrementAndGet();
-            } else {
-                params.beta.incrementAndGet();
-            }
+        BetaParams params = getBetaParams(experimentId, groupId);
+        if (success) {
+            params.alpha++;
+        } else {
+            params.beta++;
         }
+        saveBetaParams(experimentId, groupId, params);
         
         // 更新UCB统计信息
-        Map<String, UCBStats> statsMap = ucbStatsCache.get(experimentId);
-        if (statsMap != null) {
-            UCBStats stats = statsMap.computeIfAbsent(groupId, k -> new UCBStats());
-            stats.updateReward(success);
-        }
+        UCBStats stats = getUCBStats(experimentId, groupId);
+        stats.updateReward(success);
+        saveUCBStats(experimentId, groupId, stats);
         
         log.debug("更新奖励: experimentId={}, groupId={}, success={}", experimentId, groupId, success);
     }
     
     @Override
     public Map<String, Integer> getBetaParameters(String experimentId, String groupId) {
-        Map<String, BetaParams> betaParams = betaParamsCache.get(experimentId);
-        if (betaParams == null) {
-            return null;
-        }
-        
-        BetaParams params = betaParams.get(groupId);
-        if (params == null) {
-            return null;
-        }
-        
+        BetaParams params = getBetaParams(experimentId, groupId);
         Map<String, Integer> result = new HashMap<>();
-        result.put("alpha", params.alpha.get());
-        result.put("beta", params.beta.get());
+        result.put("alpha", params.alpha);
+        result.put("beta", params.beta);
         return result;
     }
     
     @Override
     public Map<String, Object> getGroupStatistics(String experimentId, String groupId) {
-        Map<String, UCBStats> statsMap = ucbStatsCache.get(experimentId);
-        if (statsMap == null) {
-            return null;
-        }
-        
-        UCBStats stats = statsMap.get(groupId);
-        if (stats == null) {
-            return null;
-        }
-        
+        UCBStats stats = getUCBStats(experimentId, groupId);
         Map<String, Object> result = new HashMap<>();
-        result.put("trials", stats.trials.get());
-        result.put("successes", stats.successes.get());
+        result.put("trials", stats.trials);
+        result.put("successes", stats.successes);
         result.put("averageReward", stats.averageReward);
         return result;
     }

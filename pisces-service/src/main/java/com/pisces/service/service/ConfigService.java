@@ -2,6 +2,7 @@ package com.pisces.service.service;
 
 import com.pisces.common.model.ExperimentMetadata;
 
+import java.util.List;
 import java.util.function.Consumer;
 
 /**
@@ -23,6 +24,11 @@ public interface ConfigService {
      * 删除实验配置
      */
     void deleteExperimentConfig(String experimentId) throws Exception;
+    
+    /**
+     * 获取所有实验ID列表
+     */
+    List<String> getAllExperimentIds() throws Exception;
     
     /**
      * 注册配置变更监听器

@@ -121,6 +121,21 @@ public class ConfigServiceImpl implements ConfigService {
     }
     
     /**
+     * 获取所有实验ID列表
+     */
+    @Override
+    public List<String> getAllExperimentIds() throws Exception {
+        try {
+            List<String> children = zookeeperClient.getChildren(EXPERIMENTS_PATH);
+            log.debug("从Zookeeper获取实验列表: 数量={}", children != null ? children.size() : 0);
+            return children != null ? children : new ArrayList<>();
+        } catch (Exception e) {
+            log.error("获取实验列表失败", e);
+            return new ArrayList<>();
+        }
+    }
+    
+    /**
      * 注册配置变更监听器
      */
     @Override

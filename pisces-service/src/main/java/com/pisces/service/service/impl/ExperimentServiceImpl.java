@@ -19,7 +19,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -31,11 +30,6 @@ public class ExperimentServiceImpl implements ExperimentService {
     
     @Autowired
     private ConfigService configService;
-    
-    /**
-     * 实验缓存（内存存储实验基本信息）
-     */
-    private final ConcurrentHashMap<String, Experiment> experimentCache = new ConcurrentHashMap<>();
     
     /**
      * 创建实验（无用户系统版本）
@@ -106,9 +100,6 @@ public class ExperimentServiceImpl implements ExperimentService {
             throw new BusinessException(ResponseCode.OPERATION_FAILED, "保存实验配置失败: " + e.getMessage());
         }
         
-        // 缓存实验基本信息
-        experimentCache.put(experimentId, experiment);
-        
         log.info("创建实验成功: {}", experimentId);
         return experiment;
     }
@@ -175,7 +166,6 @@ public class ExperimentServiceImpl implements ExperimentService {
             log.error("保存实验配置失败: {}", experimentId, e);
             throw new BusinessException(ResponseCode.OPERATION_FAILED, "保存实验配置失败: " + e.getMessage());
         }
-        experimentCache.put(experimentId, experiment);
         
         log.info("更新实验成功: {}", experimentId);
         return experiment;
@@ -205,7 +195,6 @@ public class ExperimentServiceImpl implements ExperimentService {
             log.error("保存实验配置失败: {}", experimentId, e);
             throw new BusinessException(ResponseCode.OPERATION_FAILED, "保存实验配置失败: " + e.getMessage());
         }
-        experimentCache.put(experimentId, experiment);
         
         log.info("启动实验: {}", experimentId);
     }
@@ -230,7 +219,6 @@ public class ExperimentServiceImpl implements ExperimentService {
             log.error("保存实验配置失败: {}", experimentId, e);
             throw new BusinessException(ResponseCode.OPERATION_FAILED, "保存实验配置失败: " + e.getMessage());
         }
-        experimentCache.put(experimentId, experiment);
         
         log.info("停止实验: {}", experimentId);
     }
@@ -259,7 +247,6 @@ public class ExperimentServiceImpl implements ExperimentService {
             log.error("保存实验配置失败: {}", experimentId, e);
             throw new BusinessException(ResponseCode.OPERATION_FAILED, "保存实验配置失败: " + e.getMessage());
         }
-        experimentCache.put(experimentId, experiment);
         
         log.info("暂停实验: {}", experimentId);
     }
@@ -335,7 +322,26 @@ public class ExperimentServiceImpl implements ExperimentService {
      */
     @Override
     public List<Experiment> listExperiments() {
-        return new ArrayList<>(experimentCache.values());
+        try {
+            List<String> experimentIds = configService.getAllExperimentIds();
+            List<Experiment> experiments = new ArrayList<>();
+            
+            for (String experimentId : experimentIds) {
+                try {
+                    ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+                    if (metadata != null && metadata.getExperiment() != null) {
+                        experiments.add(metadata.getExperiment());
+                    }
+                } catch (Exception e) {
+                    log.warn("获取实验失败: {}", experimentId, e);
+                }
+            }
+            
+            return experiments;
+        } catch (Exception e) {
+            log.error("获取实验列表失败", e);
+            return new ArrayList<>();
+        }
     }
     
     /**
@@ -354,7 +360,6 @@ public class ExperimentServiceImpl implements ExperimentService {
             log.error("删除实验配置失败: {}", experimentId, e);
             throw new BusinessException(ResponseCode.OPERATION_FAILED, "删除实验配置失败: " + e.getMessage());
         }
-        experimentCache.remove(experimentId);
         
         log.info("删除实验: {}", experimentId);
     }

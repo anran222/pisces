@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * Zookeeper客户端封装
@@ -140,6 +141,18 @@ public class ZookeeperClient {
             return zookeeperConfig.getBasePath() + path;
         }
         return zookeeperConfig.getBasePath() + "/" + path;
+    }
+    
+    /**
+     * 获取子节点列表
+     */
+    public List<String> getChildren(String path) throws Exception {
+        String fullPath = getFullPath(path);
+        Stat stat = client.checkExists().forPath(fullPath);
+        if (stat == null) {
+            return new java.util.ArrayList<>();
+        }
+        return client.getChildren().forPath(fullPath);
     }
     
     /**

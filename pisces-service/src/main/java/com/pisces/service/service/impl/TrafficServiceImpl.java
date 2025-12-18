@@ -9,16 +9,18 @@ import com.pisces.service.service.TrafficService;
 import com.pisces.service.exception.BusinessException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
- * 流量分配服务实现
+ * 流量分配服务实现（基于Redis存储）
  */
 @Slf4j
 @Service
@@ -30,10 +32,14 @@ public class TrafficServiceImpl implements TrafficService {
     @Autowired
     private MultiArmedBanditService mabService;
     
-    /**
-     * 用户分组缓存（用户ID -> 实验ID -> 组ID）
-     */
-    private final ConcurrentHashMap<String, Map<String, String>> userGroupCache = new ConcurrentHashMap<>();
+    @Autowired
+    private RedisTemplate<String, Object> redisTemplate;
+    
+    // Redis Key前缀
+    private static final String USER_GROUP_CACHE_PREFIX = "pisces:traffic:group:";  // 访客分组缓存
+    
+    // 缓存过期时间（天）
+    private static final long CACHE_EXPIRE_DAYS = 30;
     
     /**
      * 分配用户到实验组
@@ -41,10 +47,11 @@ public class TrafficServiceImpl implements TrafficService {
     @Override
     public String assignGroup(String experimentId, String visitorId) {
         // visitorId可以是userId、设备ID、会话ID等
-        // 检查缓存
-        Map<String, String> userExperiments = userGroupCache.get(visitorId);
-        if (userExperiments != null && userExperiments.containsKey(experimentId)) {
-            return userExperiments.get(experimentId);
+        // 检查Redis缓存
+        String cacheKey = USER_GROUP_CACHE_PREFIX + visitorId;
+        Object cachedGroupId = redisTemplate.opsForHash().get(cacheKey, experimentId);
+        if (cachedGroupId != null) {
+            return cachedGroupId.toString();
         }
         
         // 获取实验配置
@@ -105,12 +112,11 @@ public class TrafficServiceImpl implements TrafficService {
      */
     @Override
     public String getUserGroup(String experimentId, String visitorId) {
-        Map<String, String> userExperiments = userGroupCache.get(visitorId);
-        if (userExperiments != null && userExperiments.containsKey(experimentId)) {
-            String groupId = userExperiments.get(experimentId);
-            if (groupId != null) {
-                return groupId;
-            }
+        // 从Redis缓存获取
+        String cacheKey = USER_GROUP_CACHE_PREFIX + visitorId;
+        Object cachedGroupId = redisTemplate.opsForHash().get(cacheKey, experimentId);
+        if (cachedGroupId != null) {
+            return cachedGroupId.toString();
         }
         
         // 如果缓存中没有，重新分配
@@ -222,11 +228,12 @@ public class TrafficServiceImpl implements TrafficService {
     }
     
     /**
-     * 缓存访客分组
+     * 缓存访客分组（使用Redis Hash）
      */
     private void cacheUserGroup(String visitorId, String experimentId, String groupId) {
-        userGroupCache.computeIfAbsent(visitorId, k -> new ConcurrentHashMap<>())
-                .put(experimentId, groupId);
+        String cacheKey = USER_GROUP_CACHE_PREFIX + visitorId;
+        redisTemplate.opsForHash().put(cacheKey, experimentId, groupId);
+        redisTemplate.expire(cacheKey, CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
     }
     
     /**
@@ -234,7 +241,15 @@ public class TrafficServiceImpl implements TrafficService {
      */
     @Override
     public Map<String, String> getUserExperiments(String visitorId) {
-        return userGroupCache.getOrDefault(visitorId, new ConcurrentHashMap<>());
+        String cacheKey = USER_GROUP_CACHE_PREFIX + visitorId;
+        Map<Object, Object> hash = redisTemplate.opsForHash().entries(cacheKey);
+        Map<String, String> result = new HashMap<>();
+        if (hash != null) {
+            for (Map.Entry<Object, Object> entry : hash.entrySet()) {
+                result.put(entry.getKey().toString(), entry.getValue().toString());
+            }
+        }
+        return result;
     }
 }
 
