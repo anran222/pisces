@@ -107,10 +107,19 @@ public class AnalysisServiceImpl implements AnalysisService {
     @Override
     public Map<String, Object> compareGroups(String experimentId) {
         Statistics statistics = getStatistics(experimentId);
-        // getStatistics 已经会抛出异常，这里不需要再判断
+        if (statistics == null) {
+            Map<String, Object> error = new HashMap<>();
+            error.put("error", "实验不存在或没有统计数据");
+            return error;
+        }
         
         Map<String, Object> comparison = new HashMap<>();
         Map<String, Statistics.GroupStatistics> groupStats = statistics.getGroupStatistics();
+        
+        if (groupStats == null || groupStats.isEmpty()) {
+            comparison.put("error", "实验组统计数据为空");
+            return comparison;
+        }
         
         if (groupStats.size() < 2) {
             comparison.put("message", "至少需要2个实验组才能对比");
@@ -121,6 +130,11 @@ public class AnalysisServiceImpl implements AnalysisService {
         String baselineGroup = groupStats.keySet().iterator().next();
         Statistics.GroupStatistics baseline = groupStats.get(baselineGroup);
         
+        if (baseline == null) {
+            comparison.put("error", "基准组统计数据为空");
+            return comparison;
+        }
+        
         comparison.put("baseline", baselineGroup);
         comparison.put("baselineStats", baseline);
         
@@ -128,8 +142,11 @@ public class AnalysisServiceImpl implements AnalysisService {
         Map<String, Map<String, Object>> comparisons = new HashMap<>();
         for (Map.Entry<String, Statistics.GroupStatistics> entry : groupStats.entrySet()) {
             if (!entry.getKey().equals(baselineGroup)) {
-                Map<String, Object> comp = compareWithBaseline(baseline, entry.getValue());
-                comparisons.put(entry.getKey(), comp);
+                Statistics.GroupStatistics target = entry.getValue();
+                if (target != null) {
+                    Map<String, Object> comp = compareWithBaseline(baseline, target);
+                    comparisons.put(entry.getKey(), comp);
+                }
             }
         }
         
@@ -145,8 +162,10 @@ public class AnalysisServiceImpl implements AnalysisService {
         Map<String, Object> comparison = new HashMap<>();
         
         // 转化率对比
-        double baselineRate = baseline.getConversionRate();
-        double targetRate = target.getConversionRate();
+        Double baselineRateObj = baseline.getConversionRate();
+        Double targetRateObj = target.getConversionRate();
+        double baselineRate = baselineRateObj != null ? baselineRateObj : 0.0;
+        double targetRate = targetRateObj != null ? targetRateObj : 0.0;
         double rateDiff = targetRate - baselineRate;
         double rateChangePercent = baselineRate > 0 ? (rateDiff / baselineRate) * 100 : 0;
         
@@ -158,8 +177,15 @@ public class AnalysisServiceImpl implements AnalysisService {
         Map<String, Long> baselineEvents = baseline.getEventCounts();
         Map<String, Long> targetEvents = target.getEventCounts();
         
+        if (baselineEvents == null) {
+            baselineEvents = new HashMap<>();
+        }
+        if (targetEvents == null) {
+            targetEvents = new HashMap<>();
+        }
+        
         Map<String, Map<String, Object>> eventComparison = new HashMap<>();
-        Set<String> eventTypes = baselineEvents.keySet();
+        Set<String> eventTypes = new java.util.HashSet<>(baselineEvents.keySet());
         eventTypes.addAll(targetEvents.keySet());
         
         for (String eventType : eventTypes) {
