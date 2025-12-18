@@ -22,7 +22,7 @@ public class TrafficConfig implements Serializable {
     private List<GroupAllocation> allocation;
     
     /**
-     * 分配策略：RANDOM-随机, HASH-哈希, RULE-规则
+     * 分配策略：RANDOM-随机, HASH-哈希, RULE-规则, THOMPSON_SAMPLING-汤普森采样, UCB-置信区间上界
      */
     private TrafficStrategy strategy;
     
@@ -53,9 +53,11 @@ public class TrafficConfig implements Serializable {
      * 流量分配策略枚举
      */
     public enum TrafficStrategy {
-        RANDOM,  // 随机分配
-        HASH,    // 哈希分配
-        RULE     // 规则分配
+        RANDOM,              // 随机分配
+        HASH,                // 哈希分配
+        RULE,                // 规则分配
+        THOMPSON_SAMPLING,   // 汤普森采样（多臂老虎机算法）
+        UCB                  // 置信区间上界（多臂老虎机算法）
     }
 }
 

@@ -4,6 +4,7 @@ import com.pisces.common.enums.ResponseCode;
 import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.common.model.TrafficConfig;
 import com.pisces.service.service.ConfigService;
+import com.pisces.service.service.MultiArmedBanditService;
 import com.pisces.service.service.TrafficService;
 import com.pisces.service.exception.BusinessException;
 import lombok.extern.slf4j.Slf4j;
@@ -26,6 +27,9 @@ public class TrafficServiceImpl implements TrafficService {
     @Autowired
     private ConfigService configService;
     
+    @Autowired
+    private MultiArmedBanditService mabService;
+    
     /**
      * 用户分组缓存（用户ID -> 实验ID -> 组ID）
      */
@@ -35,9 +39,10 @@ public class TrafficServiceImpl implements TrafficService {
      * 分配用户到实验组
      */
     @Override
-    public String assignGroup(String experimentId, String userId) {
+    public String assignGroup(String experimentId, String visitorId) {
+        // visitorId可以是userId、设备ID、会话ID等
         // 检查缓存
-        Map<String, String> userExperiments = userGroupCache.get(userId);
+        Map<String, String> userExperiments = userGroupCache.get(visitorId);
         if (userExperiments != null && userExperiments.containsKey(experimentId)) {
             return userExperiments.get(experimentId);
         }
@@ -54,17 +59,17 @@ public class TrafficServiceImpl implements TrafficService {
         }
         
         // 检查白名单/黑名单
-        if (metadata.getWhitelist() != null && metadata.getWhitelist().contains(userId)) {
-            // 白名单用户默认分配到第一个组
+        if (metadata.getWhitelist() != null && metadata.getWhitelist().contains(visitorId)) {
+            // 白名单访客默认分配到第一个组
             if (metadata.getGroups() != null && !metadata.getGroups().isEmpty()) {
                 String groupId = metadata.getGroups().keySet().iterator().next();
-                cacheUserGroup(userId, experimentId, groupId);
+                cacheUserGroup(visitorId, experimentId, groupId);
                 return groupId;
             }
         }
         
-        if (metadata.getBlacklist() != null && metadata.getBlacklist().contains(userId)) {
-            return null; // 黑名单用户不参与实验
+        if (metadata.getBlacklist() != null && metadata.getBlacklist().contains(visitorId)) {
+            return null; // 黑名单访客不参与实验
         }
         
         // 检查时间范围
@@ -79,15 +84,15 @@ public class TrafficServiceImpl implements TrafficService {
         }
         
         // 检查是否在流量范围内
-        double randomValue = generateHashValue(userId + experimentId);
+        double randomValue = generateHashValue(visitorId + experimentId);
         if (randomValue >= trafficConfig.getTotalTraffic()) {
             return null; // 不在流量范围内
         }
         
         // 根据策略分配组
-        String groupId = allocateGroup(trafficConfig, userId, experimentId);
+        String groupId = allocateGroup(trafficConfig, visitorId, experimentId);
         if (groupId != null) {
-            cacheUserGroup(userId, experimentId, groupId);
+            cacheUserGroup(visitorId, experimentId, groupId);
             return groupId;
         }
         
@@ -96,11 +101,11 @@ public class TrafficServiceImpl implements TrafficService {
     }
     
     /**
-     * 获取用户所在组
+     * 获取访客所在组
      */
     @Override
-    public String getUserGroup(String experimentId, String userId) {
-        Map<String, String> userExperiments = userGroupCache.get(userId);
+    public String getUserGroup(String experimentId, String visitorId) {
+        Map<String, String> userExperiments = userGroupCache.get(visitorId);
         if (userExperiments != null && userExperiments.containsKey(experimentId)) {
             String groupId = userExperiments.get(experimentId);
             if (groupId != null) {
@@ -109,32 +114,38 @@ public class TrafficServiceImpl implements TrafficService {
         }
         
         // 如果缓存中没有，重新分配
-        return assignGroup(experimentId, userId);
+        return assignGroup(experimentId, visitorId);
     }
     
     /**
      * 根据策略分配组
      */
-    private String allocateGroup(TrafficConfig trafficConfig, String userId, String experimentId) {
+    private String allocateGroup(TrafficConfig trafficConfig, String visitorId, String experimentId) {
         TrafficConfig.TrafficStrategy strategy = trafficConfig.getStrategy();
         
         if (strategy == TrafficConfig.TrafficStrategy.HASH) {
-            return allocateByHash(trafficConfig, userId, experimentId);
+            return allocateByHash(trafficConfig, visitorId, experimentId);
         } else if (strategy == TrafficConfig.TrafficStrategy.RANDOM) {
             return allocateByRandom(trafficConfig);
+        } else if (strategy == TrafficConfig.TrafficStrategy.THOMPSON_SAMPLING) {
+            // 多臂老虎机算法：Thompson Sampling
+            return mabService.selectGroupByThompsonSampling(experimentId, visitorId);
+        } else if (strategy == TrafficConfig.TrafficStrategy.UCB) {
+            // 多臂老虎机算法：UCB
+            return mabService.selectGroupByUCB(experimentId, visitorId);
         } else {
             // RULE策略需要根据业务规则实现
-            return allocateByHash(trafficConfig, userId, experimentId);
+            return allocateByHash(trafficConfig, visitorId, experimentId);
         }
     }
     
     /**
      * 哈希分配（一致性哈希）
      */
-    private String allocateByHash(TrafficConfig trafficConfig, String userId, String experimentId) {
+    private String allocateByHash(TrafficConfig trafficConfig, String visitorId, String experimentId) {
         String hashKey = trafficConfig.getHashKey() != null ? 
-                trafficConfig.getHashKey() : "userId";
-        String hashValue = userId + experimentId;
+                trafficConfig.getHashKey() : "visitorId";
+        String hashValue = visitorId + experimentId;
         
         double hash = generateHashValue(hashValue);
         double cumulativeRatio = 0.0;
@@ -211,19 +222,19 @@ public class TrafficServiceImpl implements TrafficService {
     }
     
     /**
-     * 缓存用户分组
+     * 缓存访客分组
      */
-    private void cacheUserGroup(String userId, String experimentId, String groupId) {
-        userGroupCache.computeIfAbsent(userId, k -> new ConcurrentHashMap<>())
+    private void cacheUserGroup(String visitorId, String experimentId, String groupId) {
+        userGroupCache.computeIfAbsent(visitorId, k -> new ConcurrentHashMap<>())
                 .put(experimentId, groupId);
     }
     
     /**
-     * 获取用户参与的所有实验
+     * 获取访客参与的所有实验
      */
     @Override
-    public Map<String, String> getUserExperiments(String userId) {
-        return userGroupCache.getOrDefault(userId, new ConcurrentHashMap<>());
+    public Map<String, String> getUserExperiments(String visitorId) {
+        return userGroupCache.getOrDefault(visitorId, new ConcurrentHashMap<>());
     }
 }
 

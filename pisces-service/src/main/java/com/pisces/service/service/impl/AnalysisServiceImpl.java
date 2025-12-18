@@ -4,9 +4,11 @@ import com.pisces.common.model.Event;
 import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.common.model.Statistics;
 import com.pisces.service.service.AnalysisService;
+import com.pisces.service.service.BayesianAnalysisService;
+import com.pisces.service.service.CausalInferenceService;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.DataService;
-import com.pisces.service.service.TrafficService;
+import com.pisces.service.service.HTEAnalysisService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -29,7 +31,13 @@ public class AnalysisServiceImpl implements AnalysisService {
     private DataService dataService;
     
     @Autowired
-    private TrafficService trafficService;
+    private BayesianAnalysisService bayesianAnalysisService;
+    
+    @Autowired
+    private CausalInferenceService causalInferenceService;
+    
+    @Autowired
+    private HTEAnalysisService hteAnalysisService;
     
     /**
      * 获取实验统计数据
@@ -66,9 +74,8 @@ public class AnalysisServiceImpl implements AnalysisService {
         Statistics.GroupStatistics groupStats = new Statistics.GroupStatistics();
         groupStats.setGroupId(groupId);
         
-        // 计算用户数（从流量分配服务获取）
-        // 这里简化处理，实际应该统计实际分配的用户数
-        long userCount = 0; // TODO: 从TrafficService获取实际用户数
+        // 计算访客数（从数据服务获取，基于实际事件数据统计）
+        long visitorCount = dataService.getVisitorCount(experimentId, groupId);
         
         // 计算事件统计
         Map<String, Long> eventCounts = new HashMap<>();
@@ -88,7 +95,8 @@ public class AnalysisServiceImpl implements AnalysisService {
         double conversionRate = viewCount > 0 ? (double) convertCount / viewCount : 0.0;
         groupStats.setConversionRate(conversionRate);
         
-        groupStats.setUserCount(userCount);
+        // 注意：Statistics.GroupStatistics中的userCount字段实际存储的是visitorCount
+        groupStats.setUserCount(visitorCount);
         
         return groupStats;
     }
@@ -172,6 +180,56 @@ public class AnalysisServiceImpl implements AnalysisService {
         comparison.put("events", eventComparison);
         
         return comparison;
+    }
+    
+    @Override
+    public Map<String, Object> getBayesianAnalysis(String experimentId) {
+        return bayesianAnalysisService.getBayesianAnalysis(experimentId);
+    }
+    
+    @Override
+    public Map<String, Object> shouldEarlyStop(String experimentId, String variantGroupId, 
+                                              String baselineGroupId, Double winRateThreshold) {
+        double threshold = winRateThreshold != null ? winRateThreshold : 0.95;
+        return bayesianAnalysisService.shouldEarlyStop(experimentId, variantGroupId, 
+                baselineGroupId, threshold);
+    }
+    
+    @Override
+    public Map<String, Object> causalInference(String experimentId, String treatmentGroupId,
+                                              String controlGroupId, String method,
+                                              Map<String, Object> params) {
+        switch (method.toUpperCase()) {
+            case "DID":
+                String beforeStart = (String) params.get("beforePeriodStart");
+                String beforeEnd = (String) params.get("beforePeriodEnd");
+                String afterStart = (String) params.get("afterPeriodStart");
+                String afterEnd = (String) params.get("afterPeriodEnd");
+                return causalInferenceService.analyzeByDID(experimentId, treatmentGroupId, controlGroupId,
+                        beforeStart, beforeEnd, afterStart, afterEnd);
+            case "PSM":
+                @SuppressWarnings("unchecked")
+                java.util.List<String> features = (java.util.List<String>) params.get("userFeatures");
+                return causalInferenceService.analyzeByPSM(experimentId, treatmentGroupId, controlGroupId, features);
+            case "CAUSAL_FOREST":
+                @SuppressWarnings("unchecked")
+                java.util.List<String> features2 = (java.util.List<String>) params.get("userFeatures");
+                return causalInferenceService.analyzeByCausalForest(experimentId, treatmentGroupId, controlGroupId, features2);
+            default:
+                throw new IllegalArgumentException("不支持的因果推断方法: " + method);
+        }
+    }
+    
+    @Override
+    public Map<String, Object> analyzeHTE(String experimentId, String treatmentGroupId,
+                                           String controlGroupId, java.util.List<String> userFeatures) {
+        return hteAnalysisService.analyzeHTE(experimentId, treatmentGroupId, controlGroupId, userFeatures);
+    }
+    
+    @Override
+    public Map<String, Object> identifySensitiveGroups(String experimentId, String treatmentGroupId,
+                                                       String controlGroupId, java.util.List<String> userFeatures) {
+        return hteAnalysisService.identifySensitiveGroups(experimentId, treatmentGroupId, controlGroupId, userFeatures);
     }
 }
 

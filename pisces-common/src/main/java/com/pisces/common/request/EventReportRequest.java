@@ -15,8 +15,8 @@ public class EventReportRequest extends BaseRequest {
     @NotBlank(message = "实验ID不能为空")
     private String experimentId;
     
-    @NotBlank(message = "用户ID不能为空")
-    private String userId;
+    @NotBlank(message = "访客ID不能为空")
+    private String visitorId;  // 访客唯一标识（设备ID、会话ID等）
     
     @NotBlank(message = "事件类型不能为空")
     private String eventType; // VIEW, CLICK, CONVERT

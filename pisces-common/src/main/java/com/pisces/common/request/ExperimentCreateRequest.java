@@ -72,7 +72,7 @@ public class ExperimentCreateRequest extends BaseRequest {
         private List<GroupAllocationRequest> allocation;
         
         @NotNull(message = "分配策略不能为空")
-        private String strategy; // RANDOM, HASH, RULE
+        private String strategy; // RANDOM, HASH, RULE, THOMPSON_SAMPLING, UCB
         
         private String hashKey;
     }

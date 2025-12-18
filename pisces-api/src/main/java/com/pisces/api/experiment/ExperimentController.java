@@ -4,7 +4,7 @@ import com.pisces.common.model.Experiment;
 import com.pisces.common.request.ExperimentCreateRequest;
 import com.pisces.common.response.BaseResponse;
 import com.pisces.common.response.ExperimentResponse;
-import com.pisces.service.context.TokenContext;
+import com.pisces.service.annotation.NoTokenRequired;
 import com.pisces.service.service.ExperimentService;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,10 +13,11 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 /**
- * 实验管理控制器
+ * 实验管理控制器（无用户系统版本）
  */
 @RestController
 @RequestMapping("/experiments")
+@NoTokenRequired  // 所有接口无需Token认证
 public class ExperimentController {
     
     @Autowired
@@ -27,8 +28,7 @@ public class ExperimentController {
      */
     @PostMapping
     public BaseResponse<Experiment> createExperiment(@Valid @RequestBody ExperimentCreateRequest request) {
-        String username = TokenContext.getCurrentUsername();
-        Experiment experiment = experimentService.createExperiment(request, username);
+        Experiment experiment = experimentService.createExperiment(request);
         return BaseResponse.of("实验创建成功", experiment);
     }
     
@@ -38,8 +38,7 @@ public class ExperimentController {
     @PutMapping("/{id}")
     public BaseResponse<Experiment> updateExperiment(@PathVariable String id, 
                                                      @Valid @RequestBody ExperimentCreateRequest request) {
-        String username = TokenContext.getCurrentUsername();
-        Experiment experiment = experimentService.updateExperiment(id, request, username);
+        Experiment experiment = experimentService.updateExperiment(id, request);
         return BaseResponse.of("实验更新成功", experiment);
     }
     
@@ -66,8 +65,7 @@ public class ExperimentController {
      */
     @PostMapping("/{id}/start")
     public BaseResponse<Void> startExperiment(@PathVariable String id) {
-        String username = TokenContext.getCurrentUsername();
-        experimentService.startExperiment(id, username);
+        experimentService.startExperiment(id);
         return BaseResponse.of("实验启动成功", null);
     }
     
@@ -76,8 +74,7 @@ public class ExperimentController {
      */
     @PostMapping("/{id}/stop")
     public BaseResponse<Void> stopExperiment(@PathVariable String id) {
-        String username = TokenContext.getCurrentUsername();
-        experimentService.stopExperiment(id, username);
+        experimentService.stopExperiment(id);
         return BaseResponse.of("实验停止成功", null);
     }
     
@@ -86,8 +83,7 @@ public class ExperimentController {
      */
     @PostMapping("/{id}/pause")
     public BaseResponse<Void> pauseExperiment(@PathVariable String id) {
-        String username = TokenContext.getCurrentUsername();
-        experimentService.pauseExperiment(id, username);
+        experimentService.pauseExperiment(id);
         return BaseResponse.of("实验暂停成功", null);
     }
     
@@ -96,8 +92,7 @@ public class ExperimentController {
      */
     @DeleteMapping("/{id}")
     public BaseResponse<Void> deleteExperiment(@PathVariable String id) {
-        String username = TokenContext.getCurrentUsername();
-        experimentService.deleteExperiment(id, username);
+        experimentService.deleteExperiment(id);
         return BaseResponse.of("实验删除成功", null);
     }
 }

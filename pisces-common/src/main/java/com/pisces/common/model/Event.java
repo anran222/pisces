@@ -23,7 +23,8 @@ public class Event implements Serializable {
     private String experimentId;
     
     /**
-     * 用户ID
+     * 访客唯一标识（可以是userId、设备ID、会话ID等）
+     * 注意：字段名保持为userId以兼容现有数据，但实际存储的是visitorId
      */
     private String userId;
     

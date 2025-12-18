@@ -1,6 +1,5 @@
 package com.pisces.service.service.impl;
 
-import com.pisces.common.enums.Permission;
 import com.pisces.common.enums.ResponseCode;
 import com.pisces.common.model.Experiment;
 import com.pisces.common.model.ExperimentMetadata;
@@ -8,7 +7,6 @@ import com.pisces.common.request.ExperimentCreateRequest;
 import com.pisces.common.response.ExperimentResponse;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.ExperimentService;
-import com.pisces.service.service.UserService;
 import com.pisces.service.exception.BusinessException;
 import org.springframework.beans.BeanUtils;
 import lombok.extern.slf4j.Slf4j;
@@ -34,23 +32,16 @@ public class ExperimentServiceImpl implements ExperimentService {
     @Autowired
     private ConfigService configService;
     
-    @Autowired
-    private UserService userService;
-    
     /**
      * 实验缓存（内存存储实验基本信息）
      */
     private final ConcurrentHashMap<String, Experiment> experimentCache = new ConcurrentHashMap<>();
     
     /**
-     * 创建实验
+     * 创建实验（无用户系统版本）
      */
     @Override
-    public Experiment createExperiment(ExperimentCreateRequest request, String creatorUsername) {
-        // 检查权限
-        if (!userService.hasPermission(creatorUsername, Permission.EXPERIMENT_CREATE)) {
-            throw new BusinessException(ResponseCode.EXPERIMENT_PERMISSION_DENIED, "没有权限创建实验");
-        }
+    public Experiment createExperiment(ExperimentCreateRequest request) {
         // 生成实验ID
         String experimentId = "exp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         
@@ -62,7 +53,7 @@ public class ExperimentServiceImpl implements ExperimentService {
         experiment.setStatus(Experiment.ExperimentStatus.DRAFT);
         experiment.setStartTime(request.getStartTime());
         experiment.setEndTime(request.getEndTime());
-        experiment.setCreator(creatorUsername);
+        experiment.setCreator("system");  // 无用户系统，使用system作为创建者
         experiment.setCreateTime(LocalDateTime.now());
         experiment.setUpdateTime(LocalDateTime.now());
         
@@ -123,25 +114,13 @@ public class ExperimentServiceImpl implements ExperimentService {
     }
     
     /**
-     * 更新实验
+     * 更新实验（无用户系统版本）
      */
     @Override
-    public Experiment updateExperiment(String experimentId, ExperimentCreateRequest request, String username) {
-        // 检查权限
-        if (!userService.hasPermission(username, Permission.EXPERIMENT_UPDATE)) {
-            throw new BusinessException(ResponseCode.EXPERIMENT_PERMISSION_DENIED, "没有权限更新实验");
-        }
-        
-        // 检查是否为实验创建者或管理员
+    public Experiment updateExperiment(String experimentId, ExperimentCreateRequest request) {
         ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
         if (metadata == null) {
             throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
-        }
-        if (metadata.getExperiment() != null) {
-            String creator = metadata.getExperiment().getCreator();
-            if (creator != null && !creator.equals(username) && !userService.isAdmin(username)) {
-                throw new BusinessException(ResponseCode.EXPERIMENT_PERMISSION_DENIED, "只能修改自己创建的实验");
-            }
         }
         
         Experiment experiment = metadata.getExperiment();
@@ -203,14 +182,10 @@ public class ExperimentServiceImpl implements ExperimentService {
     }
     
     /**
-     * 启动实验
+     * 启动实验（无用户系统版本）
      */
     @Override
-    public void startExperiment(String experimentId, String username) {
-        // 检查权限
-        if (!userService.hasPermission(username, Permission.EXPERIMENT_UPDATE)) {
-            throw new BusinessException(ResponseCode.EXPERIMENT_PERMISSION_DENIED, "没有权限启动实验");
-        }
+    public void startExperiment(String experimentId) {
         ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
         if (metadata == null) {
             throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
@@ -236,14 +211,10 @@ public class ExperimentServiceImpl implements ExperimentService {
     }
     
     /**
-     * 停止实验
+     * 停止实验（无用户系统版本）
      */
     @Override
-    public void stopExperiment(String experimentId, String username) {
-        // 检查权限
-        if (!userService.hasPermission(username, Permission.EXPERIMENT_UPDATE)) {
-            throw new BusinessException(ResponseCode.EXPERIMENT_PERMISSION_DENIED, "没有权限停止实验");
-        }
+    public void stopExperiment(String experimentId) {
         ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
         if (metadata == null) {
             throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
@@ -265,14 +236,10 @@ public class ExperimentServiceImpl implements ExperimentService {
     }
     
     /**
-     * 暂停实验
+     * 暂停实验（无用户系统版本）
      */
     @Override
-    public void pauseExperiment(String experimentId, String username) {
-        // 检查权限
-        if (!userService.hasPermission(username, Permission.EXPERIMENT_UPDATE)) {
-            throw new BusinessException(ResponseCode.EXPERIMENT_PERMISSION_DENIED, "没有权限暂停实验");
-        }
+    public void pauseExperiment(String experimentId) {
         ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
         if (metadata == null) {
             throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
@@ -372,25 +339,13 @@ public class ExperimentServiceImpl implements ExperimentService {
     }
     
     /**
-     * 删除实验
+     * 删除实验（无用户系统版本）
      */
     @Override
-    public void deleteExperiment(String experimentId, String username) {
-        // 检查权限
-        if (!userService.hasPermission(username, Permission.EXPERIMENT_DELETE)) {
-            throw new BusinessException(ResponseCode.EXPERIMENT_PERMISSION_DENIED, "没有权限删除实验");
-        }
-        
-        // 检查是否为实验创建者或管理员
+    public void deleteExperiment(String experimentId) {
         ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
         if (metadata == null) {
             throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
-        }
-        if (metadata.getExperiment() != null) {
-            String creator = metadata.getExperiment().getCreator();
-            if (creator != null && !creator.equals(username) && !userService.isAdmin(username)) {
-                throw new BusinessException(ResponseCode.EXPERIMENT_PERMISSION_DENIED, "只能删除自己创建的实验");
-            }
         }
         
         try {

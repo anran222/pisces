@@ -34,7 +34,7 @@ public class Statistics implements Serializable {
         private String groupId;
         
         /**
-         * 用户总数
+         * 访客总数（注意：字段名保持为userCount以兼容现有接口，但实际存储的是visitorCount）
          */
         private Long userCount;
         
