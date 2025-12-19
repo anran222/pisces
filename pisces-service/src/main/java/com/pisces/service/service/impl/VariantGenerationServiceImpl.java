@@ -5,18 +5,27 @@ import com.alibaba.dashscope.aigc.generation.GenerationParam;
 import com.alibaba.dashscope.aigc.generation.GenerationResult;
 import com.alibaba.dashscope.common.Message;
 import com.alibaba.dashscope.common.Role;
+import com.pisces.common.model.Experiment;
+import com.pisces.common.request.ExperimentCreateRequest;
 import com.pisces.service.config.TongYiConfig;
+import com.pisces.service.service.AnalysisService;
+import com.pisces.service.service.DataService;
+import com.pisces.service.service.ExperimentService;
+import com.pisces.service.service.TrafficService;
 import com.pisces.service.service.VariantGenerationService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -29,6 +38,20 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
     
     @Autowired
     private TongYiConfig tongYiConfig;
+    
+    @Autowired
+    private ExperimentService experimentService;
+    
+    @Autowired
+    private TrafficService trafficService;
+    
+    @Autowired
+    private DataService dataService;
+    
+    @Autowired
+    private AnalysisService analysisService;
+    
+    private final Random random = new Random();
     
     @Override
     public List<String> generateTextVariants(String prompt, int count) {
@@ -616,6 +639,338 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
         }
         
         return result;
+    }
+    
+    @Override
+    public Map<String, Object> generateCompleteExperimentFlow(String prompt, int generateCount, int finalCount,
+                                                               int visitorCount, int daysAgo) {
+        log.info("开始完整实验流程演示: prompt={}, generateCount={}, finalCount={}, visitorCount={}, daysAgo={}",
+                prompt, generateCount, finalCount, visitorCount, daysAgo);
+        
+        Map<String, Object> result = new HashMap<>();
+        long startTime = System.currentTimeMillis();
+        
+        try {
+            // 步骤1：生成文本变体
+            log.info("=".repeat(60));
+            log.info("步骤1: 生成文本变体");
+            log.info("=".repeat(60));
+            Map<String, Object> variantResult = generateCompleteTextExperiment(prompt, generateCount, finalCount);
+            
+            if (!Boolean.TRUE.equals(variantResult.get("success"))) {
+                result.put("success", false);
+                result.put("error", "变体生成失败: " + variantResult.get("error"));
+                return result;
+            }
+            
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> finalVariants = (List<Map<String, Object>>) variantResult.get("finalVariants");
+            if (finalVariants == null || finalVariants.isEmpty()) {
+                result.put("success", false);
+                result.put("error", "未生成任何有效变体");
+                return result;
+            }
+            
+            // 不返回变体生成的中间过程数据，只保留最终筛选出的变体数量
+            log.info("步骤1完成: 成功生成 {} 个高质量变体", finalVariants.size());
+            
+            // 步骤2：创建实验
+            log.info("=".repeat(60));
+            log.info("步骤2: 创建实验");
+            log.info("=".repeat(60));
+            String experimentId = createExperimentFromVariants(prompt, finalVariants, daysAgo);
+            result.put("experimentId", experimentId);
+            log.info("步骤2完成: 实验创建成功，实验ID={}", experimentId);
+            
+            // 步骤3：启动实验
+            log.info("=".repeat(60));
+            log.info("步骤3: 启动实验");
+            log.info("=".repeat(60));
+            experimentService.startExperiment(experimentId);
+            result.put("experimentStatus", "RUNNING");
+            log.info("步骤3完成: 实验已启动");
+            
+            // 步骤4：生成实验数据
+            log.info("=".repeat(60));
+            log.info("步骤4: 生成实验数据");
+            log.info("=".repeat(60));
+            generateExperimentData(experimentId, finalVariants, visitorCount);
+            result.put("dataGenerated", true);
+            result.put("visitorCount", visitorCount * finalVariants.size());
+            log.info("步骤4完成: 已生成 {} 个访客的实验数据", visitorCount * finalVariants.size());
+            
+            // 步骤5：分析实验
+            log.info("=".repeat(60));
+            log.info("步骤5: 分析实验");
+            log.info("=".repeat(60));
+            Map<String, Object> analysisResult = performAnalysis(experimentId, finalVariants);
+            
+            // 精简返回结果：只返回最终变体的核心实验信息
+            result.put("experimentId", experimentId);
+            result.put("variants", analysisResult.get("variants")); // 只返回变体结果
+            
+            // 获取最佳变体
+            Object summaryObj = analysisResult.get("summary");
+            if (summaryObj instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> summary = (Map<String, Object>) summaryObj;
+                result.put("bestVariant", summary.get("bestVariant"));
+            }
+            
+            result.put("success", true);
+            
+            long endTime = System.currentTimeMillis();
+            result.put("duration", endTime - startTime);
+            result.put("durationFormatted", String.format("%.2f秒", (endTime - startTime) / 1000.0));
+            
+            log.info("步骤5完成: 实验分析完成");
+            
+            log.info("=".repeat(60));
+            log.info("完整实验流程演示完成，总耗时: {}ms", endTime - startTime);
+            log.info("=".repeat(60));
+            
+        } catch (Exception e) {
+            log.error("完整实验流程演示失败", e);
+            result.put("success", false);
+            result.put("error", e.getMessage());
+        }
+        
+        return result;
+    }
+    
+    /**
+     * 基于变体创建实验
+     */
+    private String createExperimentFromVariants(String prompt, List<Map<String, Object>> variants, int daysAgo) {
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime startTime = now.minusDays(daysAgo);
+        LocalDateTime endTime = now.plusDays(14);
+        
+        ExperimentCreateRequest request = new ExperimentCreateRequest();
+        request.setName("AI生成变体实验 - " + prompt);
+        request.setDescription("基于AI生成的变体创建的实验，包含" + variants.size() + "个实验组");
+        request.setStartTime(startTime);
+        request.setEndTime(endTime);
+        
+        // 创建实验组（第一个作为基准组，其他作为变体组）
+        List<ExperimentCreateRequest.GroupConfig> groups = new ArrayList<>();
+        double trafficPerGroup = 1.0 / variants.size();
+        
+        for (int i = 0; i < variants.size(); i++) {
+            Map<String, Object> variant = variants.get(i);
+            ExperimentCreateRequest.GroupConfig group = new ExperimentCreateRequest.GroupConfig();
+            group.setId("group_" + (i == 0 ? "A" : String.valueOf((char)('A' + i))));
+            group.setName(i == 0 ? "基准组" : "变体组" + i);
+            group.setTrafficRatio(trafficPerGroup);
+            
+            // 将变体文案作为配置
+            Map<String, Object> config = new HashMap<>();
+            config.put("variant", variant.get("variant"));
+            config.put("qualityScore", variant.get("qualityScore"));
+            config.put("predictedLift", variant.get("predictedLift"));
+            group.setConfig(config);
+            
+            groups.add(group);
+        }
+        request.setGroups(groups);
+        
+        // 配置流量分配（使用Thompson Sampling）
+        ExperimentCreateRequest.TrafficConfigRequest trafficConfig = new ExperimentCreateRequest.TrafficConfigRequest();
+        trafficConfig.setTotalTraffic(1.0);
+        trafficConfig.setStrategy("THOMPSON_SAMPLING");
+        
+        List<ExperimentCreateRequest.GroupAllocationRequest> allocations = new ArrayList<>();
+        for (ExperimentCreateRequest.GroupConfig group : groups) {
+            ExperimentCreateRequest.GroupAllocationRequest allocation = 
+                    new ExperimentCreateRequest.GroupAllocationRequest();
+            allocation.setGroup(group.getId());
+            allocation.setRatio(group.getTrafficRatio());
+            allocations.add(allocation);
+        }
+        trafficConfig.setAllocation(allocations);
+        request.setTraffic(trafficConfig);
+        
+        Experiment experiment = experimentService.createExperiment(request);
+        return experiment.getId();
+    }
+    
+    /**
+     * 生成实验数据
+     */
+    private void generateExperimentData(String experimentId, List<Map<String, Object>> variants, int visitorCount) {
+        Map<String, List<String>> groupVisitors = new HashMap<>();
+        
+        // 为每个实验组生成访客并分配
+        for (int i = 0; i < variants.size(); i++) {
+            String groupId = "group_" + (i == 0 ? "A" : String.valueOf((char)('A' + i)));
+            List<String> visitors = new ArrayList<>();
+            
+            for (int j = 0; j < visitorCount; j++) {
+                String visitorId = "visitor_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+                // 分配访客到实验组
+                String assignedGroup = trafficService.assignGroup(experimentId, visitorId);
+                if (groupId.equals(assignedGroup)) {
+                    visitors.add(visitorId);
+                }
+            }
+            
+            // 如果分配的访客不足，补充一些
+            while (visitors.size() < visitorCount) {
+                String visitorId = "visitor_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+                visitors.add(visitorId);
+            }
+            
+            groupVisitors.put(groupId, visitors);
+        }
+        
+        // 生成事件数据
+        for (Map.Entry<String, List<String>> entry : groupVisitors.entrySet()) {
+            String groupId = entry.getKey();
+            List<String> visitors = entry.getValue();
+            
+            // 根据组索引设置不同的转化率（模拟变体效果差异）
+            int groupIndex = groupId.charAt(groupId.length() - 1) - 'A';
+            double baseConversionRate = 0.10; // 基准组10%
+            double conversionRate = baseConversionRate + (groupIndex * 0.02); // 每个变体组提升2%
+            
+            for (String visitorId : visitors) {
+                // 所有访客都有浏览事件
+                dataService.reportEvent(experimentId, visitorId, "VIEW", "商品详情页浏览", null);
+                
+                // 80%的访客有点击事件
+                if (random.nextDouble() < 0.8) {
+                    dataService.reportEvent(experimentId, visitorId, "CLICK", "价格咨询点击", null);
+                }
+                
+                // 根据转化率生成转化事件
+                if (random.nextDouble() < conversionRate) {
+                    dataService.reportEvent(experimentId, visitorId, "CONVERT", "成交", null);
+                }
+            }
+        }
+    }
+    
+    /**
+     * 执行实验分析（按变体组织结果）
+     */
+    private Map<String, Object> performAnalysis(String experimentId, List<Map<String, Object>> variants) {
+        Map<String, Object> analysisResult = new HashMap<>();
+        
+        log.info("开始分析实验，实验ID: {}, 变体数量: {}", experimentId, variants.size());
+        
+        // 获取统计数据
+        com.pisces.common.model.Statistics statistics = analysisService.getStatistics(experimentId);
+        if (statistics == null || statistics.getGroupStatistics() == null) {
+            log.warn("无法获取实验统计数据: {}", experimentId);
+            return analysisResult;
+        }
+        
+        log.debug("获取到统计数据，组数量: {}", statistics.getGroupStatistics().size());
+        
+        // 获取贝叶斯分析
+        Map<String, Object> bayesianAnalysis = analysisService.getBayesianAnalysis(experimentId);
+        Map<String, Double> winRates = new HashMap<>();
+        String baselineGroup = null;
+        if (bayesianAnalysis != null) {
+            @SuppressWarnings("unchecked")
+            Map<String, Double> rates = (Map<String, Double>) bayesianAnalysis.get("winRates");
+            if (rates != null) {
+                winRates.putAll(rates);
+            }
+            baselineGroup = (String) bayesianAnalysis.get("baselineGroup");
+        }
+        
+        // 获取基准组统计数据
+        Map<String, com.pisces.common.model.Statistics.GroupStatistics> groupStats = 
+                statistics.getGroupStatistics();
+        com.pisces.common.model.Statistics.GroupStatistics baselineStats = null;
+        if (baselineGroup != null && groupStats != null) {
+            baselineStats = groupStats.get(baselineGroup);
+        }
+        
+        // 为每个变体构建独立的实验结果
+        List<Map<String, Object>> variantResults = new ArrayList<>();
+        
+        if (groupStats == null) {
+            log.warn("实验组统计数据为空，无法构建变体结果");
+            return analysisResult;
+        }
+        
+        for (int i = 0; i < variants.size(); i++) {
+            Map<String, Object> variant = variants.get(i);
+            String groupId = "group_" + (i == 0 ? "A" : String.valueOf((char)('A' + i)));
+            
+            Map<String, Object> variantResult = new HashMap<>();
+            
+            // 只保留核心信息：变体文案、转化率、相对变化、胜率
+            variantResult.put("variant", variant.get("variant")); // 变体文案
+            variantResult.put("variantIndex", i + 1);
+            variantResult.put("isBaseline", groupId.equals(baselineGroup));
+            
+            // 获取该变体的实验数据
+            com.pisces.common.model.Statistics.GroupStatistics groupStatistics = groupStats.get(groupId);
+            if (groupStatistics != null) {
+                // 核心指标：访客数和转化率
+                variantResult.put("visitorCount", groupStatistics.getUserCount());
+                Double conversionRate = groupStatistics.getConversionRate();
+                variantResult.put("conversionRate", conversionRate);
+                
+                // 如果是变体组，计算相对基准的变化
+                if (!groupId.equals(baselineGroup) && baselineStats != null) {
+                    Double baselineRate = baselineStats.getConversionRate();
+                    if (baselineRate != null && conversionRate != null) {
+                        double rateChangePercent = baselineRate > 0 ? 
+                                ((conversionRate - baselineRate) / baselineRate) * 100 : 0;
+                        variantResult.put("conversionRateChangePercent", rateChangePercent);
+                        variantResult.put("isBetter", conversionRate > baselineRate);
+                    }
+                }
+            }
+            
+            // 贝叶斯胜率（只保留核心信息）
+            Double winRate = winRates.get(groupId);
+            if (winRate != null) {
+                variantResult.put("winRate", winRate * 100); // 直接返回百分比
+                variantResult.put("canEarlyStop", winRate >= 0.95 || winRate <= 0.05);
+            }
+            
+            variantResults.add(variantResult);
+        }
+        
+        // 组织返回结果：只返回精简的变体结果
+        analysisResult.put("variants", variantResults);
+        
+        log.info("已构建 {} 个变体的实验结果", variantResults.size());
+        
+        // 找出最佳变体（只保留核心信息）
+        Map<String, Object> summary = new HashMap<>();
+        Map<String, Object> bestVariant = null;
+        double bestWinRate = 0.0;
+        for (Map<String, Object> vr : variantResults) {
+            if (!Boolean.TRUE.equals(vr.get("isBaseline"))) {
+                Double wr = (Double) vr.get("winRate");
+                if (wr != null && wr > bestWinRate) {
+                    bestWinRate = wr;
+                    bestVariant = vr;
+                }
+            }
+        }
+        if (bestVariant != null) {
+            Map<String, Object> bestVariantInfo = new HashMap<>();
+            bestVariantInfo.put("variantIndex", bestVariant.get("variantIndex"));
+            bestVariantInfo.put("variant", bestVariant.get("variant"));
+            bestVariantInfo.put("winRate", bestWinRate);
+            bestVariantInfo.put("conversionRate", bestVariant.get("conversionRate"));
+            summary.put("bestVariant", bestVariantInfo);
+            
+            log.info("最佳变体: 变体{}, 胜率: {:.2f}%", 
+                    bestVariant.get("variantIndex"), String.format("%.2f", bestWinRate));
+        }
+        
+        analysisResult.put("summary", summary);
+        
+        log.info("实验分析完成，返回 {} 个变体的精简结果", variantResults.size());
+        return analysisResult;
     }
     
     /**

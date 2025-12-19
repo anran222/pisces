@@ -51,6 +51,19 @@ public interface VariantGenerationService {
     Map<String, Object> generateCompleteTextExperiment(String prompt, int generateCount, int finalCount);
     
     /**
+     * 完整实验流程演示（生成变体+创建实验+生成数据+分析）
+     * 以二手手机价格为例，完整演示从变体生成到实验分析的整个流程
+     * @param prompt 生成提示词（如：为二手手机价格优化写文案）
+     * @param generateCount 初始生成变体数量
+     * @param finalCount 最终保留变体数量（作为实验组）
+     * @param visitorCount 每个实验组的访客数量
+     * @param daysAgo 实验开始时间（几天前）
+     * @return 完整的实验流程结果，包含实验ID、变体信息、分析结果等
+     */
+    Map<String, Object> generateCompleteExperimentFlow(String prompt, int generateCount, int finalCount, 
+                                                        int visitorCount, int daysAgo);
+    
+    /**
      * 变体类型枚举
      */
     enum VariantType {

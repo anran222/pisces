@@ -91,4 +91,28 @@ public class VariantController {
                 prompt, generateCount, finalCount);
         return BaseResponse.of("演示生成成功", result);
     }
+    
+    /**
+     * 完整实验流程演示（生成变体+创建实验+生成数据+分析）
+     * AI赋能：一站式完成从变体生成到实验分析的完整流程
+     * 以二手手机价格为例，完整演示整个A/B测试流程
+     * 
+     * @param prompt 生成提示词（如：为二手手机价格优化写文案）
+     * @param generateCount 初始生成变体数量（默认15）
+     * @param finalCount 最终保留变体数量，作为实验组（默认4）
+     * @param visitorCount 每个实验组的访客数量（默认150）
+     * @param daysAgo 实验开始时间，几天前（默认7）
+     * @return 完整的实验流程结果，包含实验ID、变体信息、分析结果等
+     */
+    @PostMapping("/experiment/flow")
+    public BaseResponse<Map<String, Object>> generateCompleteExperimentFlow(
+            @RequestParam String prompt,
+            @RequestParam(defaultValue = "15") int generateCount,
+            @RequestParam(defaultValue = "4") int finalCount,
+            @RequestParam(defaultValue = "150") int visitorCount,
+            @RequestParam(defaultValue = "7") int daysAgo) {
+        Map<String, Object> result = variantGenerationService.generateCompleteExperimentFlow(
+                prompt, generateCount, finalCount, visitorCount, daysAgo);
+        return BaseResponse.of("完整实验流程演示成功", result);
+    }
 }

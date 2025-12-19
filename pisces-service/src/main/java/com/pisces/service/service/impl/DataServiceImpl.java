@@ -10,7 +10,6 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -81,15 +80,21 @@ public class DataServiceImpl implements DataService {
         if (mabService != null && Event.EventType.CONVERT.name().equals(eventType)) {
             try {
                 // 从properties中获取成交价格，用于计算奖励
-                Object transactionPrice = properties.get("transactionPrice");
-                if (transactionPrice != null) {
-                    // 价格越高，奖励越大（简化处理：价格>4500视为成功）
-                    boolean success = ((Number) transactionPrice).doubleValue() > 4500;
-                    mabService.updateReward(experimentId, groupId, success);
-                    log.debug("更新MAB奖励: 实验={}, 组={}, 价格={}, 成功={}", 
-                            experimentId, groupId, transactionPrice, success);
+                // 检查properties是否为null
+                if (properties != null) {
+                    Object transactionPrice = properties.get("transactionPrice");
+                    if (transactionPrice != null) {
+                        // 价格越高，奖励越大（简化处理：价格>4500视为成功）
+                        boolean success = ((Number) transactionPrice).doubleValue() > 4500;
+                        mabService.updateReward(experimentId, groupId, success);
+                        log.debug("更新MAB奖励: 实验={}, 组={}, 价格={}, 成功={}", 
+                                experimentId, groupId, transactionPrice, success);
+                    } else {
+                        // 如果没有价格信息，默认视为成功
+                        mabService.updateReward(experimentId, groupId, true);
+                    }
                 } else {
-                    // 如果没有价格信息，默认视为成功
+                    // 如果properties为null，默认视为成功
                     mabService.updateReward(experimentId, groupId, true);
                 }
             } catch (Exception e) {
