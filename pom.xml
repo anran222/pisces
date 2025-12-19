@@ -49,6 +49,12 @@
                 <artifactId>pisces-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <!-- 添加Logback依赖以解决slf4j冲突 -->
+            <dependency>
+                <groupId>ch.qos.logback</groupId>
+                <artifactId>logback-classic</artifactId>
+                <version>1.4.11</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 </project>

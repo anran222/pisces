@@ -72,4 +72,23 @@ public class VariantController {
         Map<String, Object> evaluation = variantGenerationService.evaluateVariant(variant, type);
         return BaseResponse.of(evaluation);
     }
+    
+    /**
+     * 完整文本实验体生成演示（生成+筛选+评估）
+     * AI赋能：一站式生成高质量文本变体，自动完成生成、筛选、评估全流程
+     * 
+     * @param prompt 生成提示词
+     * @param generateCount 初始生成数量（默认20）
+     * @param finalCount 最终保留数量（默认5）
+     * @return 完整的实验体结果，包含变体列表、评估结果、统计信息等
+     */
+    @PostMapping("/text/demo")
+    public BaseResponse<Map<String, Object>> generateCompleteTextExperiment(
+            @RequestParam String prompt,
+            @RequestParam(defaultValue = "20") int generateCount,
+            @RequestParam(defaultValue = "5") int finalCount) {
+        Map<String, Object> result = variantGenerationService.generateCompleteTextExperiment(
+                prompt, generateCount, finalCount);
+        return BaseResponse.of("演示生成成功", result);
+    }
 }

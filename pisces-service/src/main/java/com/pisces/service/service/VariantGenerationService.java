@@ -42,6 +42,15 @@ public interface VariantGenerationService {
     Map<String, Object> evaluateVariant(String variant, VariantType variantType);
     
     /**
+     * 完整文本实验体生成演示（生成+筛选+评估）
+     * @param prompt 生成提示词
+     * @param generateCount 初始生成数量
+     * @param finalCount 最终保留数量
+     * @return 完整的实验体结果，包含变体列表、评估结果等
+     */
+    Map<String, Object> generateCompleteTextExperiment(String prompt, int generateCount, int finalCount);
+    
+    /**
      * 变体类型枚举
      */
     enum VariantType {

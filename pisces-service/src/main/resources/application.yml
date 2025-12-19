@@ -30,6 +30,13 @@ zookeeper:
   maxRetries: 3
   basePath: /pisces
 
+# 阿里通义千问API配置
+tongyi:
+  apiKey: ${apiKey} # 从环境变量TONGYI_API_KEY读取，如果没有则留空
+  model: qwen-plus  # 模型名称：qwen-turbo, qwen-plus, qwen-max等
+  timeout: 30000  # 请求超时时间（毫秒）
+  enabled: true  # 是否启用通义API，如果为false则使用模拟数据
+
 logging:
   level:
     root: INFO
