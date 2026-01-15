@@ -66,5 +66,37 @@ public class TrafficController {
         Map<String, Object> stats = mabService.getGroupStatistics(experimentId, groupId);
         return BaseResponse.of(stats);
     }
+    
+    /**
+     * 获取多臂老虎机算法的流量分配概率
+     * AI赋能：实时计算各变体被选中的概率，用于监控流量分配情况
+     */
+    @GetMapping("/experiment/{experimentId}/mab/probabilities")
+    public BaseResponse<Map<String, Double>> getAllocationProbabilities(
+            @PathVariable String experimentId) {
+        Map<String, Double> probabilities = mabService.getAllocationProbabilities(experimentId);
+        return BaseResponse.of(probabilities);
+    }
+    
+    /**
+     * 获取多臂老虎机算法的综合统计摘要
+     * AI赋能：获取实验的MAB算法综合信息，包括收敛状态、领先组、推荐操作等
+     */
+    @GetMapping("/experiment/{experimentId}/mab/summary")
+    public BaseResponse<Map<String, Object>> getMABSummary(
+            @PathVariable String experimentId) {
+        Map<String, Object> summary = mabService.getMABSummary(experimentId);
+        return BaseResponse.of(summary);
+    }
+    
+    /**
+     * 重置实验的MAB统计数据
+     * 注意：此操作会清除实验的所有MAB学习数据，请谨慎使用
+     */
+    @PostMapping("/experiment/{experimentId}/mab/reset")
+    public BaseResponse<Void> resetMABData(@PathVariable String experimentId) {
+        mabService.resetMABData(experimentId);
+        return BaseResponse.of("MAB数据重置成功", null);
+    }
 }
 

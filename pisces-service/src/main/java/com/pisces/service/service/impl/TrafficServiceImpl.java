@@ -149,8 +149,7 @@ public class TrafficServiceImpl implements TrafficService {
      * 哈希分配（一致性哈希）
      */
     private String allocateByHash(TrafficConfig trafficConfig, String visitorId, String experimentId) {
-        String hashKey = trafficConfig.getHashKey() != null ? 
-                trafficConfig.getHashKey() : "visitorId";
+        // hashKey用于确定哈希的字段（如visitorId, deviceId等），目前实现中使用visitorId + experimentId组合
         String hashValue = visitorId + experimentId;
         
         double hash = generateHashValue(hashValue);

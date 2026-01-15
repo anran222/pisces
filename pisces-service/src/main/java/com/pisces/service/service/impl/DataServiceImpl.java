@@ -10,6 +10,8 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -136,6 +138,144 @@ public class DataServiceImpl implements DataService {
         String visitorSetKey = VISITOR_SET_PREFIX + experimentId + ":" + groupId;
         Long size = redisTemplate.opsForSet().size(visitorSetKey);
         return size != null ? size : 0;
+    }
+    
+    /**
+     * 获取指定时间范围内的事件计数
+     */
+    @Override
+    public long getEventCountInTimeRange(String experimentId, String groupId, String eventType,
+                                          LocalDateTime startTime, LocalDateTime endTime) {
+        List<Event> events = getEventsInTimeRange(experimentId, groupId, startTime, endTime);
+        return events.stream()
+                .filter(e -> e.getEventType() != null && e.getEventType().name().equals(eventType))
+                .count();
+    }
+    
+    /**
+     * 获取实验组的所有事件
+     */
+    @Override
+    public List<Event> getEvents(String experimentId, String groupId) {
+        String eventStoreKey = EVENT_STORE_PREFIX + experimentId + ":" + groupId;
+        List<Object> eventObjects = redisTemplate.opsForList().range(eventStoreKey, 0, -1);
+        
+        List<Event> events = new ArrayList<>();
+        if (eventObjects != null) {
+            for (Object obj : eventObjects) {
+                if (obj instanceof Event) {
+                    events.add((Event) obj);
+                } else if (obj instanceof Map) {
+                    // 如果Redis序列化为Map，需要手动转换
+                    Event event = convertMapToEvent((Map<String, Object>) obj);
+                    if (event != null) {
+                        events.add(event);
+                    }
+                }
+            }
+        }
+        return events;
+    }
+    
+    /**
+     * 获取实验组在指定时间范围内的事件
+     */
+    @Override
+    public List<Event> getEventsInTimeRange(String experimentId, String groupId,
+                                            LocalDateTime startTime, LocalDateTime endTime) {
+        List<Event> allEvents = getEvents(experimentId, groupId);
+        
+        return allEvents.stream()
+                .filter(event -> {
+                    LocalDateTime timestamp = event.getTimestamp();
+                    if (timestamp == null) return false;
+                    
+                    boolean afterStart = startTime == null || !timestamp.isBefore(startTime);
+                    boolean beforeEnd = endTime == null || !timestamp.isAfter(endTime);
+                    return afterStart && beforeEnd;
+                })
+                .collect(java.util.stream.Collectors.toList());
+    }
+    
+    /**
+     * 获取实验的总体统计摘要
+     */
+    @Override
+    public Map<String, Object> getExperimentSummary(String experimentId) {
+        Map<String, Object> summary = new java.util.HashMap<>();
+        
+        // 获取实验配置以获取所有组
+        try {
+            // 统计所有组的数据
+            long totalVisitors = 0;
+            long totalViews = 0;
+            long totalClicks = 0;
+            long totalConversions = 0;
+            
+            // 扫描所有以该实验ID开头的key
+            String pattern = VISITOR_SET_PREFIX + experimentId + ":*";
+            java.util.Set<String> visitorKeys = redisTemplate.keys(pattern);
+            
+            if (visitorKeys != null) {
+                for (String key : visitorKeys) {
+                    String groupId = key.substring(key.lastIndexOf(":") + 1);
+                    totalVisitors += getVisitorCount(experimentId, groupId);
+                    totalViews += getEventCount(experimentId, groupId, "VIEW");
+                    totalClicks += getEventCount(experimentId, groupId, "CLICK");
+                    totalConversions += getEventCount(experimentId, groupId, "CONVERT");
+                }
+            }
+            
+            summary.put("experimentId", experimentId);
+            summary.put("totalVisitors", totalVisitors);
+            summary.put("totalViews", totalViews);
+            summary.put("totalClicks", totalClicks);
+            summary.put("totalConversions", totalConversions);
+            summary.put("overallClickRate", totalViews > 0 ? (double) totalClicks / totalViews : 0.0);
+            summary.put("overallConversionRate", totalViews > 0 ? (double) totalConversions / totalViews : 0.0);
+            
+        } catch (Exception e) {
+            log.error("获取实验摘要失败: {}", experimentId, e);
+        }
+        
+        return summary;
+    }
+    
+    /**
+     * 将Map转换为Event对象
+     */
+    @SuppressWarnings("unchecked")
+    private Event convertMapToEvent(Map<String, Object> map) {
+        try {
+            Event event = new Event();
+            event.setEventId((String) map.get("eventId"));
+            event.setExperimentId((String) map.get("experimentId"));
+            event.setUserId((String) map.get("userId"));
+            event.setGroupId((String) map.get("groupId"));
+            
+            Object eventTypeObj = map.get("eventType");
+            if (eventTypeObj instanceof String) {
+                event.setEventType(Event.EventType.valueOf((String) eventTypeObj));
+            } else if (eventTypeObj instanceof Event.EventType) {
+                event.setEventType((Event.EventType) eventTypeObj);
+            }
+            
+            event.setEventName((String) map.get("eventName"));
+            event.setProperties((Map<String, Object>) map.get("properties"));
+            
+            // 处理时间戳
+            Object timestampObj = map.get("timestamp");
+            if (timestampObj instanceof LocalDateTime) {
+                event.setTimestamp((LocalDateTime) timestampObj);
+            } else if (timestampObj instanceof String) {
+                event.setTimestamp(LocalDateTime.parse((String) timestampObj));
+            }
+            
+            return event;
+        } catch (Exception e) {
+            log.warn("转换事件对象失败: {}", e.getMessage());
+            return null;
+        }
     }
 }
 

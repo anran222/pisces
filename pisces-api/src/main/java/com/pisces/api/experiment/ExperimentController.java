@@ -88,6 +88,15 @@ public class ExperimentController {
     }
     
     /**
+     * 恢复实验（从暂停状态恢复到运行状态）
+     */
+    @PostMapping("/{id}/resume")
+    public BaseResponse<Void> resumeExperiment(@PathVariable String id) {
+        experimentService.resumeExperiment(id);
+        return BaseResponse.of("实验恢复成功", null);
+    }
+    
+    /**
      * 删除实验
      */
     @DeleteMapping("/{id}")

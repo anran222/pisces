@@ -41,6 +41,46 @@ public class AnalysisController {
     }
     
     /**
+     * 传统统计显著性检验
+     * 包含Z检验、p值、置信区间、提升率等指标
+     * @param id 实验ID
+     * @param variantGroupId 变体组ID
+     * @param baselineGroupId 基准组ID
+     * @param confidenceLevel 置信水平（默认0.95，即95%置信度）
+     */
+    @GetMapping("/experiment/{id}/significance")
+    @NoTokenRequired
+    public BaseResponse<Map<String, Object>> statisticalSignificanceTest(
+            @PathVariable String id,
+            @RequestParam String variantGroupId,
+            @RequestParam String baselineGroupId,
+            @RequestParam(required = false, defaultValue = "0.95") Double confidenceLevel) {
+        Map<String, Object> result = analysisService.statisticalSignificanceTest(
+                id, variantGroupId, baselineGroupId, confidenceLevel);
+        return BaseResponse.of(result);
+    }
+    
+    /**
+     * 计算所需样本量（功效分析）
+     * 用于实验设计阶段，计算达到统计显著性所需的样本量
+     * @param baselineRate 基准转化率（如0.10表示10%）
+     * @param minimumDetectableEffect 最小可检测效应（如0.10表示10%的相对提升）
+     * @param power 统计功效（默认0.8，即80%）
+     * @param significance 显著性水平（默认0.05，即5%）
+     */
+    @GetMapping("/sample-size")
+    @NoTokenRequired
+    public BaseResponse<Map<String, Object>> calculateSampleSize(
+            @RequestParam Double baselineRate,
+            @RequestParam(required = false, defaultValue = "0.10") Double minimumDetectableEffect,
+            @RequestParam(required = false, defaultValue = "0.80") Double power,
+            @RequestParam(required = false, defaultValue = "0.05") Double significance) {
+        Map<String, Object> result = analysisService.calculateSampleSize(
+                baselineRate, minimumDetectableEffect, power, significance);
+        return BaseResponse.of(result);
+    }
+    
+    /**
      * 获取贝叶斯分析结果（实时胜率计算）
      * AI赋能：基于贝叶斯统计方法，实时计算变体击败基准的概率，支持实验提前终止
      */
@@ -121,6 +161,34 @@ public class AnalysisController {
         Map<String, Object> result = analysisService.identifySensitiveGroups(
                 id, treatmentGroupId, controlGroupId, userFeatures);
         return BaseResponse.of(result);
+    }
+    
+    /**
+     * 导出实验报告
+     * 生成完整的实验分析报告，包含统计数据、分析结果、结论建议等
+     */
+    @GetMapping("/experiment/{id}/report")
+    @NoTokenRequired
+    public BaseResponse<Map<String, Object>> exportExperimentReport(@PathVariable String id) {
+        Map<String, Object> report = analysisService.exportExperimentReport(id);
+        return BaseResponse.of(report);
+    }
+    
+    /**
+     * 获取实验时间线数据
+     * 用于展示实验指标随时间变化的趋势
+     * @param id 实验ID
+     * @param metricType 指标类型：CONVERSION_RATE（转化率）、CLICK_RATE（点击率）、VISITOR_COUNT（访客数）
+     * @param granularity 时间粒度：HOUR（小时）、DAY（天）、WEEK（周）
+     */
+    @GetMapping("/experiment/{id}/timeline")
+    @NoTokenRequired
+    public BaseResponse<Map<String, Object>> getExperimentTimeline(
+            @PathVariable String id,
+            @RequestParam(required = false, defaultValue = "CONVERSION_RATE") String metricType,
+            @RequestParam(required = false, defaultValue = "DAY") String granularity) {
+        Map<String, Object> timeline = analysisService.getExperimentTimeline(id, metricType, granularity);
+        return BaseResponse.of(timeline);
     }
 }
 

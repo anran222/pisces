@@ -37,6 +37,11 @@ public interface ExperimentService {
     void pauseExperiment(String experimentId);
     
     /**
+     * 恢复实验（从暂停状态恢复到运行状态）
+     */
+    void resumeExperiment(String experimentId);
+    
+    /**
      * 获取实验
      */
     ExperimentResponse getExperiment(String experimentId);

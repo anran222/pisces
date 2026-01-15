@@ -327,4 +327,139 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
         }
         return sum;
     }
+    
+    @Override
+    public Map<String, Double> getAllocationProbabilities(String experimentId) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata == null || metadata.getGroups() == null || metadata.getGroups().isEmpty()) {
+            return new HashMap<>();
+        }
+        
+        // 使用蒙特卡洛模拟计算各组被选中的概率
+        int numSimulations = 10000;
+        Map<String, Integer> selectionCounts = new HashMap<>();
+        
+        for (String groupId : metadata.getGroups().keySet()) {
+            selectionCounts.put(groupId, 0);
+        }
+        
+        for (int i = 0; i < numSimulations; i++) {
+            String bestGroup = null;
+            double maxSample = -1.0;
+            
+            for (String groupId : metadata.getGroups().keySet()) {
+                BetaParams params = getBetaParams(experimentId, groupId);
+                double sample = sampleFromBeta(params.alpha, params.beta);
+                
+                if (sample > maxSample) {
+                    maxSample = sample;
+                    bestGroup = groupId;
+                }
+            }
+            
+            if (bestGroup != null) {
+                selectionCounts.put(bestGroup, selectionCounts.get(bestGroup) + 1);
+            }
+        }
+        
+        // 转换为概率
+        Map<String, Double> probabilities = new HashMap<>();
+        for (Map.Entry<String, Integer> entry : selectionCounts.entrySet()) {
+            probabilities.put(entry.getKey(), (double) entry.getValue() / numSimulations);
+        }
+        
+        return probabilities;
+    }
+    
+    @Override
+    public Map<String, Object> getMABSummary(String experimentId) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata == null || metadata.getGroups() == null || metadata.getGroups().isEmpty()) {
+            return new HashMap<>();
+        }
+        
+        Map<String, Object> summary = new HashMap<>();
+        summary.put("experimentId", experimentId);
+        
+        // 获取分配概率
+        Map<String, Double> probabilities = getAllocationProbabilities(experimentId);
+        summary.put("allocationProbabilities", probabilities);
+        
+        // 获取每个组的详细统计
+        Map<String, Object> groupDetails = new HashMap<>();
+        long totalTrials = getTotalTrials(experimentId);
+        
+        double maxProbability = 0.0;
+        String leadingGroup = null;
+        
+        for (String groupId : metadata.getGroups().keySet()) {
+            Map<String, Object> groupDetail = new HashMap<>();
+            
+            // Beta参数
+            BetaParams params = getBetaParams(experimentId, groupId);
+            groupDetail.put("alpha", params.alpha);
+            groupDetail.put("beta", params.beta);
+            groupDetail.put("successRate", (double) (params.alpha - 1) / (params.alpha + params.beta - 2));
+            
+            // UCB统计
+            UCBStats stats = getUCBStats(experimentId, groupId);
+            groupDetail.put("trials", stats.trials);
+            groupDetail.put("successes", stats.successes);
+            groupDetail.put("averageReward", stats.averageReward);
+            
+            // 分配概率
+            Double probability = probabilities.get(groupId);
+            groupDetail.put("allocationProbability", probability);
+            
+            if (probability != null && probability > maxProbability) {
+                maxProbability = probability;
+                leadingGroup = groupId;
+            }
+            
+            groupDetails.put(groupId, groupDetail);
+        }
+        
+        summary.put("groupDetails", groupDetails);
+        summary.put("totalTrials", totalTrials);
+        summary.put("leadingGroup", leadingGroup);
+        summary.put("leadingGroupProbability", maxProbability);
+        
+        // 判断是否已收敛（当领先组概率>95%时认为已收敛）
+        boolean converged = maxProbability >= 0.95;
+        summary.put("converged", converged);
+        summary.put("convergenceThreshold", 0.95);
+        
+        if (converged) {
+            summary.put("recommendation", 
+                    "实验已收敛，建议停止实验并将流量全量切换到 " + leadingGroup);
+        } else {
+            summary.put("recommendation", 
+                    "实验尚未收敛，当前领先组为 " + leadingGroup + "（概率" + 
+                    String.format("%.1f%%", maxProbability * 100) + "），建议继续收集数据");
+        }
+        
+        return summary;
+    }
+    
+    @Override
+    public void resetMABData(String experimentId) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata == null || metadata.getGroups() == null) {
+            return;
+        }
+        
+        // 重置Beta参数
+        String betaKey = BETA_PARAMS_PREFIX + experimentId;
+        redisTemplate.delete(betaKey);
+        
+        // 重置UCB统计
+        String ucbKey = UCB_STATS_PREFIX + experimentId;
+        redisTemplate.delete(ucbKey);
+        
+        // 重置总实验次数
+        String trialsKey = TOTAL_TRIALS_PREFIX + experimentId;
+        redisTemplate.delete(trialsKey);
+        
+        log.info("重置MAB数据: experimentId={}", experimentId);
+    }
 }

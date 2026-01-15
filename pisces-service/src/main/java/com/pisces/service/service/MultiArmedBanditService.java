@@ -47,4 +47,25 @@ public interface MultiArmedBanditService {
      * @return Map包含平均奖励、选择次数等信息
      */
     Map<String, Object> getGroupStatistics(String experimentId, String groupId);
+    
+    /**
+     * 获取实验的所有组的MAB分配概率
+     * 根据当前的Beta参数计算每个组被选中的概率
+     * @param experimentId 实验ID
+     * @return 各组的分配概率（组ID -> 概率）
+     */
+    Map<String, Double> getAllocationProbabilities(String experimentId);
+    
+    /**
+     * 获取实验的MAB算法综合统计信息
+     * @param experimentId 实验ID
+     * @return 包含所有组的统计信息、分配概率、收敛状态等
+     */
+    Map<String, Object> getMABSummary(String experimentId);
+    
+    /**
+     * 重置实验的MAB统计数据
+     * @param experimentId 实验ID
+     */
+    void resetMABData(String experimentId);
 }
