@@ -52,8 +52,50 @@ public interface ExperimentService {
     List<Experiment> listExperiments();
     
     /**
+     * 根据状态查询实验列表
+     * @param status 实验状态：DRAFT（草稿）、RUNNING（运行中）、PAUSED（已暂停）、STOPPED（已停止）
+     * @return 符合状态条件的实验列表
+     */
+    List<Experiment> listExperimentsByStatus(String status);
+    
+    /**
+     * 根据多个状态查询实验列表
+     * @param statuses 实验状态列表
+     * @return 符合状态条件的实验列表
+     */
+    List<Experiment> listExperimentsByStatuses(List<String> statuses);
+    
+    /**
      * 删除实验
      */
     void deleteExperiment(String experimentId);
+    
+    /**
+     * 批量暂停实验
+     * @param experimentIds 实验ID列表
+     * @return 操作结果，包含成功和失败的实验ID
+     */
+    java.util.Map<String, Object> batchPauseExperiments(List<String> experimentIds);
+    
+    /**
+     * 批量停止实验
+     * @param experimentIds 实验ID列表
+     * @return 操作结果，包含成功和失败的实验ID
+     */
+    java.util.Map<String, Object> batchStopExperiments(List<String> experimentIds);
+    
+    /**
+     * 批量恢复实验
+     * @param experimentIds 实验ID列表
+     * @return 操作结果，包含成功和失败的实验ID
+     */
+    java.util.Map<String, Object> batchResumeExperiments(List<String> experimentIds);
+    
+    /**
+     * 批量删除实验
+     * @param experimentIds 实验ID列表
+     * @return 操作结果，包含成功和失败的实验ID
+     */
+    java.util.Map<String, Object> batchDeleteExperiments(List<String> experimentIds);
 }
 

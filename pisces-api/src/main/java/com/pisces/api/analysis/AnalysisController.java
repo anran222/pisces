@@ -190,5 +190,64 @@ public class AnalysisController {
         Map<String, Object> timeline = analysisService.getExperimentTimeline(id, metricType, granularity);
         return BaseResponse.of(timeline);
     }
+    
+    /**
+     * AI智能实验解读
+     * AI赋能：调用大模型分析实验数据，生成专业的分析报告和建议
+     * @param id 实验ID
+     * @return AI生成的分析结论、关键洞察和建议
+     */
+    @GetMapping("/experiment/{id}/ai-insights")
+    @NoTokenRequired
+    public BaseResponse<Map<String, Object>> getAIInsights(@PathVariable String id) {
+        Map<String, Object> insights = analysisService.getAIInsights(id);
+        return BaseResponse.of(insights);
+    }
+    
+    /**
+     * AI实验设计建议
+     * AI赋能：根据业务场景和目标，生成最佳实验设计方案
+     * @param request 包含业务场景、目标指标、约束条件的请求体
+     * @return AI推荐的实验设计方案
+     */
+    @PostMapping("/experiment/ai-design")
+    @NoTokenRequired
+    public BaseResponse<Map<String, Object>> getAIExperimentDesign(
+            @RequestBody Map<String, Object> request) {
+        String businessScenario = (String) request.get("businessScenario");
+        String targetMetric = (String) request.get("targetMetric");
+        @SuppressWarnings("unchecked")
+        java.util.List<String> constraints = (java.util.List<String>) request.get("constraints");
+        
+        Map<String, Object> design = analysisService.getAIExperimentDesign(
+                businessScenario, targetMetric, constraints);
+        return BaseResponse.of(design);
+    }
+    
+    /**
+     * AI自动毕业决策
+     * AI赋能：根据实验数据判断是否可以全量发布最佳变体
+     * @param id 实验ID
+     * @return 毕业决策结果，包含推荐变体、置信度、风险评估、毕业计划等
+     */
+    @GetMapping("/experiment/{id}/auto-graduate")
+    @NoTokenRequired
+    public BaseResponse<Map<String, Object>> autoGraduateDecision(@PathVariable String id) {
+        Map<String, Object> decision = analysisService.autoGraduateDecision(id);
+        return BaseResponse.of(decision);
+    }
+    
+    /**
+     * AI预测实验完成时间
+     * AI赋能：根据当前数据趋势预测实验何时能达到统计显著性
+     * @param id 实验ID
+     * @return 预测结果，包含当前进度、预计完成时间、加速建议等
+     */
+    @GetMapping("/experiment/{id}/predict-completion")
+    @NoTokenRequired
+    public BaseResponse<Map<String, Object>> predictExperimentCompletion(@PathVariable String id) {
+        Map<String, Object> prediction = analysisService.predictExperimentCompletion(id);
+        return BaseResponse.of(prediction);
+    }
 }
 

@@ -32,6 +32,7 @@ public class ZookeeperClient {
     
     private CuratorFramework client;
     private final ObjectMapper objectMapper;
+    private boolean initFailed = false;
     
     /**
      * 初始化ObjectMapper，配置LocalDateTime序列化支持
@@ -47,15 +48,41 @@ public class ZookeeperClient {
     
     @PostConstruct
     public void init() {
-        client = CuratorFrameworkFactory.builder()
-                .connectString(zookeeperConfig.getConnectString())
-                .sessionTimeoutMs(zookeeperConfig.getSessionTimeoutMs())
-                .connectionTimeoutMs(zookeeperConfig.getConnectionTimeoutMs())
-                .retryPolicy(new RetryNTimes(zookeeperConfig.getMaxRetries(), 1000))
-                .build();
-        
-        client.start();
-        log.info("Zookeeper客户端启动成功，连接地址: {}", zookeeperConfig.getConnectString());
+        try {
+            client = CuratorFrameworkFactory.builder()
+                    .connectString(zookeeperConfig.getConnectString())
+                    .sessionTimeoutMs(zookeeperConfig.getSessionTimeoutMs())
+                    .connectionTimeoutMs(zookeeperConfig.getConnectionTimeoutMs())
+                    .retryPolicy(new RetryNTimes(zookeeperConfig.getMaxRetries(), 1000))
+                    .build();
+            
+            client.start();
+            
+            // 尝试等待连接，最多5秒
+            boolean isConnected = client.blockUntilConnected(5, java.util.concurrent.TimeUnit.SECONDS);
+            if (isConnected) {
+                log.info("Zookeeper客户端连接成功，地址: {}", zookeeperConfig.getConnectString());
+            } else {
+                log.warn("Zookeeper连接超时，将使用本地内存存储模式");
+                initFailed = true;
+            }
+        } catch (Exception e) {
+            log.warn("Zookeeper客户端初始化失败，将使用本地内存存储模式: {}", e.getMessage());
+            initFailed = true;
+        }
+    }
+    
+    /**
+     * 检查是否连接到Zookeeper
+     */
+    public boolean isConnected() {
+        if (initFailed) return false;
+        if (client == null) return false;
+        try {
+            return client.getZookeeperClient().isConnected();
+        } catch (Exception e) {
+            return false;
+        }
     }
     
     @PreDestroy

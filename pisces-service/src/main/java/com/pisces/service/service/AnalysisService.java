@@ -87,5 +87,40 @@ public interface AnalysisService {
      * @return 时间线数据
      */
     Map<String, Object> getExperimentTimeline(String experimentId, String metricType, String granularity);
+    
+    /**
+     * AI智能实验解读
+     * 调用AI分析实验数据，生成专业的分析报告和建议
+     * @param experimentId 实验ID
+     * @return AI生成的分析结论和建议
+     */
+    Map<String, Object> getAIInsights(String experimentId);
+    
+    /**
+     * AI实验设计建议
+     * 根据业务场景和目标，生成最佳实验设计方案
+     * @param businessScenario 业务场景描述
+     * @param targetMetric 目标指标
+     * @param constraints 约束条件
+     * @return AI推荐的实验设计方案
+     */
+    Map<String, Object> getAIExperimentDesign(String businessScenario, String targetMetric, 
+                                               java.util.List<String> constraints);
+    
+    /**
+     * AI自动毕业决策
+     * 根据实验数据判断是否可以全量发布最佳变体
+     * @param experimentId 实验ID
+     * @return 毕业决策结果，包含推荐变体、置信度、风险评估等
+     */
+    Map<String, Object> autoGraduateDecision(String experimentId);
+    
+    /**
+     * AI预测实验完成时间
+     * 根据当前数据趋势预测实验何时能达到统计显著性
+     * @param experimentId 实验ID
+     * @return 预测结果，包含预计完成时间、当前进度等
+     */
+    Map<String, Object> predictExperimentCompletion(String experimentId);
 }
 

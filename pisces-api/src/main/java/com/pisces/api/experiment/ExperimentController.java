@@ -53,10 +53,37 @@ public class ExperimentController {
     
     /**
      * 获取实验列表
+     * @param status 可选，按状态筛选：DRAFT（草稿）、RUNNING（运行中）、PAUSED（已暂停）、STOPPED（已停止）
+     * @param statuses 可选，按多个状态筛选（逗号分隔，如：PAUSED,STOPPED）
      */
     @GetMapping
-    public BaseResponse<List<Experiment>> listExperiments() {
-        List<Experiment> experiments = experimentService.listExperiments();
+    public BaseResponse<List<Experiment>> listExperiments(
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String statuses) {
+        List<Experiment> experiments;
+        
+        if (statuses != null && !statuses.trim().isEmpty()) {
+            // 多状态查询
+            List<String> statusList = java.util.Arrays.asList(statuses.split(","));
+            experiments = experimentService.listExperimentsByStatuses(statusList);
+        } else if (status != null && !status.trim().isEmpty()) {
+            // 单状态查询
+            experiments = experimentService.listExperimentsByStatus(status);
+        } else {
+            // 查询全部
+            experiments = experimentService.listExperiments();
+        }
+        
+        return BaseResponse.of(experiments);
+    }
+    
+    /**
+     * 根据状态查询实验列表
+     * @param status 实验状态：DRAFT（草稿）、RUNNING（运行中）、PAUSED（已暂停）、STOPPED（已停止）
+     */
+    @GetMapping("/status/{status}")
+    public BaseResponse<List<Experiment>> listExperimentsByStatus(@PathVariable String status) {
+        List<Experiment> experiments = experimentService.listExperimentsByStatus(status);
         return BaseResponse.of(experiments);
     }
     
@@ -103,6 +130,50 @@ public class ExperimentController {
     public BaseResponse<Void> deleteExperiment(@PathVariable String id) {
         experimentService.deleteExperiment(id);
         return BaseResponse.of("实验删除成功", null);
+    }
+    
+    /**
+     * 批量暂停实验
+     * @param experimentIds 实验ID列表
+     */
+    @PostMapping("/batch/pause")
+    public BaseResponse<java.util.Map<String, Object>> batchPauseExperiments(
+            @RequestBody java.util.List<String> experimentIds) {
+        java.util.Map<String, Object> result = experimentService.batchPauseExperiments(experimentIds);
+        return BaseResponse.of((String) result.get("message"), result);
+    }
+    
+    /**
+     * 批量停止实验
+     * @param experimentIds 实验ID列表
+     */
+    @PostMapping("/batch/stop")
+    public BaseResponse<java.util.Map<String, Object>> batchStopExperiments(
+            @RequestBody java.util.List<String> experimentIds) {
+        java.util.Map<String, Object> result = experimentService.batchStopExperiments(experimentIds);
+        return BaseResponse.of((String) result.get("message"), result);
+    }
+    
+    /**
+     * 批量恢复实验
+     * @param experimentIds 实验ID列表
+     */
+    @PostMapping("/batch/resume")
+    public BaseResponse<java.util.Map<String, Object>> batchResumeExperiments(
+            @RequestBody java.util.List<String> experimentIds) {
+        java.util.Map<String, Object> result = experimentService.batchResumeExperiments(experimentIds);
+        return BaseResponse.of((String) result.get("message"), result);
+    }
+    
+    /**
+     * 批量删除实验
+     * @param experimentIds 实验ID列表
+     */
+    @PostMapping("/batch/delete")
+    public BaseResponse<java.util.Map<String, Object>> batchDeleteExperiments(
+            @RequestBody java.util.List<String> experimentIds) {
+        java.util.Map<String, Object> result = experimentService.batchDeleteExperiments(experimentIds);
+        return BaseResponse.of((String) result.get("message"), result);
     }
 }
 

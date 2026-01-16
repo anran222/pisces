@@ -376,6 +376,100 @@ public class ExperimentServiceImpl implements ExperimentService {
     }
     
     /**
+     * 根据状态查询实验列表
+     */
+    @Override
+    public List<Experiment> listExperimentsByStatus(String status) {
+        if (status == null || status.trim().isEmpty()) {
+            return listExperiments();
+        }
+        
+        // 验证状态值
+        Experiment.ExperimentStatus targetStatus;
+        try {
+            targetStatus = Experiment.ExperimentStatus.valueOf(status.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(ResponseCode.VALIDATION_ERROR, 
+                    "不支持的实验状态: " + status + "，支持的状态: DRAFT, RUNNING, PAUSED, STOPPED");
+        }
+        
+        try {
+            List<String> experimentIds = configService.getAllExperimentIds();
+            List<Experiment> experiments = new ArrayList<>();
+            
+            for (String experimentId : experimentIds) {
+                try {
+                    ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+                    if (metadata != null && metadata.getExperiment() != null) {
+                        Experiment experiment = metadata.getExperiment();
+                        if (experiment.getStatus() == targetStatus) {
+                            experiments.add(experiment);
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("获取实验失败: {}", experimentId, e);
+                }
+            }
+            
+            log.info("根据状态[{}]查询实验，共{}个", status, experiments.size());
+            return experiments;
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("根据状态查询实验列表失败", e);
+            return new ArrayList<>();
+        }
+    }
+    
+    /**
+     * 根据多个状态查询实验列表
+     */
+    @Override
+    public List<Experiment> listExperimentsByStatuses(List<String> statuses) {
+        if (statuses == null || statuses.isEmpty()) {
+            return listExperiments();
+        }
+        
+        // 验证并转换状态值
+        List<Experiment.ExperimentStatus> targetStatuses = new ArrayList<>();
+        for (String status : statuses) {
+            try {
+                targetStatuses.add(Experiment.ExperimentStatus.valueOf(status.toUpperCase()));
+            } catch (IllegalArgumentException e) {
+                throw new BusinessException(ResponseCode.VALIDATION_ERROR, 
+                        "不支持的实验状态: " + status + "，支持的状态: DRAFT, RUNNING, PAUSED, STOPPED");
+            }
+        }
+        
+        try {
+            List<String> experimentIds = configService.getAllExperimentIds();
+            List<Experiment> experiments = new ArrayList<>();
+            
+            for (String experimentId : experimentIds) {
+                try {
+                    ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+                    if (metadata != null && metadata.getExperiment() != null) {
+                        Experiment experiment = metadata.getExperiment();
+                        if (targetStatuses.contains(experiment.getStatus())) {
+                            experiments.add(experiment);
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("获取实验失败: {}", experimentId, e);
+                }
+            }
+            
+            log.info("根据状态{}查询实验，共{}个", statuses, experiments.size());
+            return experiments;
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("根据状态查询实验列表失败", e);
+            return new ArrayList<>();
+        }
+    }
+    
+    /**
      * 删除实验（无用户系统版本）
      */
     @Override
@@ -393,6 +487,156 @@ public class ExperimentServiceImpl implements ExperimentService {
         }
         
         log.info("删除实验: {}", experimentId);
+    }
+    
+    /**
+     * 批量暂停实验
+     */
+    @Override
+    public Map<String, Object> batchPauseExperiments(List<String> experimentIds) {
+        return batchOperation(experimentIds, "pause", this::pauseExperimentSafe);
+    }
+    
+    /**
+     * 批量停止实验
+     */
+    @Override
+    public Map<String, Object> batchStopExperiments(List<String> experimentIds) {
+        return batchOperation(experimentIds, "stop", this::stopExperimentSafe);
+    }
+    
+    /**
+     * 批量恢复实验
+     */
+    @Override
+    public Map<String, Object> batchResumeExperiments(List<String> experimentIds) {
+        return batchOperation(experimentIds, "resume", this::resumeExperimentSafe);
+    }
+    
+    /**
+     * 批量删除实验
+     */
+    @Override
+    public Map<String, Object> batchDeleteExperiments(List<String> experimentIds) {
+        return batchOperation(experimentIds, "delete", this::deleteExperimentSafe);
+    }
+    
+    /**
+     * 批量操作通用方法
+     */
+    private Map<String, Object> batchOperation(List<String> experimentIds, String operationName,
+                                                java.util.function.Function<String, String> operation) {
+        Map<String, Object> result = new HashMap<>();
+        List<String> successIds = new ArrayList<>();
+        List<Map<String, String>> failedItems = new ArrayList<>();
+        
+        if (experimentIds == null || experimentIds.isEmpty()) {
+            result.put("success", false);
+            result.put("message", "实验ID列表不能为空");
+            return result;
+        }
+        
+        for (String experimentId : experimentIds) {
+            String error = operation.apply(experimentId);
+            if (error == null) {
+                successIds.add(experimentId);
+            } else {
+                Map<String, String> failedItem = new HashMap<>();
+                failedItem.put("id", experimentId);
+                failedItem.put("error", error);
+                failedItems.add(failedItem);
+            }
+        }
+        
+        result.put("success", failedItems.isEmpty());
+        result.put("operation", operationName);
+        result.put("total", experimentIds.size());
+        result.put("successCount", successIds.size());
+        result.put("failedCount", failedItems.size());
+        result.put("successIds", successIds);
+        result.put("failedItems", failedItems);
+        
+        if (failedItems.isEmpty()) {
+            result.put("message", String.format("批量%s成功，共%d个实验", 
+                    getOperationLabel(operationName), successIds.size()));
+        } else if (successIds.isEmpty()) {
+            result.put("message", String.format("批量%s失败，全部%d个实验操作失败", 
+                    getOperationLabel(operationName), failedItems.size()));
+        } else {
+            result.put("message", String.format("批量%s部分成功：%d个成功，%d个失败", 
+                    getOperationLabel(operationName), successIds.size(), failedItems.size()));
+        }
+        
+        log.info("批量{}实验: 总数={}, 成功={}, 失败={}", 
+                operationName, experimentIds.size(), successIds.size(), failedItems.size());
+        
+        return result;
+    }
+    
+    private String getOperationLabel(String operation) {
+        switch (operation) {
+            case "pause": return "暂停";
+            case "stop": return "停止";
+            case "resume": return "恢复";
+            case "delete": return "删除";
+            default: return operation;
+        }
+    }
+    
+    /**
+     * 安全暂停实验（不抛异常，返回错误信息）
+     */
+    private String pauseExperimentSafe(String experimentId) {
+        try {
+            pauseExperiment(experimentId);
+            return null;
+        } catch (BusinessException e) {
+            return e.getMessage();
+        } catch (Exception e) {
+            return "暂停失败: " + e.getMessage();
+        }
+    }
+    
+    /**
+     * 安全停止实验
+     */
+    private String stopExperimentSafe(String experimentId) {
+        try {
+            stopExperiment(experimentId);
+            return null;
+        } catch (BusinessException e) {
+            return e.getMessage();
+        } catch (Exception e) {
+            return "停止失败: " + e.getMessage();
+        }
+    }
+    
+    /**
+     * 安全恢复实验
+     */
+    private String resumeExperimentSafe(String experimentId) {
+        try {
+            resumeExperiment(experimentId);
+            return null;
+        } catch (BusinessException e) {
+            return e.getMessage();
+        } catch (Exception e) {
+            return "恢复失败: " + e.getMessage();
+        }
+    }
+    
+    /**
+     * 安全删除实验
+     */
+    private String deleteExperimentSafe(String experimentId) {
+        try {
+            deleteExperiment(experimentId);
+            return null;
+        } catch (BusinessException e) {
+            return e.getMessage();
+        } catch (Exception e) {
+            return "删除失败: " + e.getMessage();
+        }
     }
     
     /**

@@ -78,10 +78,21 @@ public class ConfigServiceImpl implements ConfigService {
      */
     @Override
     public void saveExperimentConfig(String experimentId, ExperimentMetadata metadata) throws Exception {
-        String path = EXPERIMENTS_PATH + "/" + experimentId;
-        zookeeperClient.saveObject(path, metadata);
+        // 无论Zookeeper是否可用，都保存到本地缓存
         configCache.put(experimentId, metadata);
-        log.info("保存实验配置: {}", experimentId);
+        
+        // 如果Zookeeper可用，同步到Zookeeper
+        if (zookeeperClient.isConnected()) {
+            try {
+                String path = EXPERIMENTS_PATH + "/" + experimentId;
+                zookeeperClient.saveObject(path, metadata);
+                log.info("保存实验配置到Zookeeper: {}", experimentId);
+            } catch (Exception e) {
+                log.warn("保存实验配置到Zookeeper失败（已保存到本地缓存）: {}", experimentId, e);
+            }
+        } else {
+            log.info("保存实验配置到本地缓存（Zookeeper不可用）: {}", experimentId);
+        }
     }
     
     /**
@@ -95,7 +106,13 @@ public class ConfigServiceImpl implements ConfigService {
             return cached;
         }
         
-        // 从Zookeeper获取
+        // 如果Zookeeper不可用，直接返回null
+        if (!zookeeperClient.isConnected()) {
+            log.debug("Zookeeper不可用，从本地缓存获取实验配置: {}", experimentId);
+            return null;
+        }
+        
+        // 从Zookeeper获取（带超时保护）
         try {
             String path = EXPERIMENTS_PATH + "/" + experimentId;
             ExperimentMetadata metadata = zookeeperClient.getObject(path, ExperimentMetadata.class);
@@ -114,10 +131,21 @@ public class ConfigServiceImpl implements ConfigService {
      */
     @Override
     public void deleteExperimentConfig(String experimentId) throws Exception {
-        String path = EXPERIMENTS_PATH + "/" + experimentId;
-        zookeeperClient.deleteNode(path);
+        // 从本地缓存删除
         configCache.remove(experimentId);
-        log.info("删除实验配置: {}", experimentId);
+        
+        // 如果Zookeeper可用，也从Zookeeper删除
+        if (zookeeperClient.isConnected()) {
+            try {
+                String path = EXPERIMENTS_PATH + "/" + experimentId;
+                zookeeperClient.deleteNode(path);
+                log.info("从Zookeeper删除实验配置: {}", experimentId);
+            } catch (Exception e) {
+                log.warn("从Zookeeper删除实验配置失败: {}", experimentId, e);
+            }
+        } else {
+            log.info("从本地缓存删除实验配置（Zookeeper不可用）: {}", experimentId);
+        }
     }
     
     /**
@@ -125,13 +153,19 @@ public class ConfigServiceImpl implements ConfigService {
      */
     @Override
     public List<String> getAllExperimentIds() throws Exception {
+        // 如果Zookeeper不可用，返回本地缓存的实验ID
+        if (!zookeeperClient.isConnected()) {
+            log.debug("Zookeeper不可用，从本地缓存获取实验列表");
+            return new ArrayList<>(configCache.keySet());
+        }
+        
         try {
             List<String> children = zookeeperClient.getChildren(EXPERIMENTS_PATH);
             log.debug("从Zookeeper获取实验列表: 数量={}", children != null ? children.size() : 0);
             return children != null ? children : new ArrayList<>();
         } catch (Exception e) {
-            log.error("获取实验列表失败", e);
-            return new ArrayList<>();
+            log.error("获取实验列表失败，返回本地缓存", e);
+            return new ArrayList<>(configCache.keySet());
         }
     }
     

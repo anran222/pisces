@@ -64,6 +64,32 @@ public interface VariantGenerationService {
                                                         int visitorCount, int daysAgo);
     
     /**
+     * 基于上传图片生成变体（图生图）
+     * @param imageBase64 原始图片的Base64编码
+     * @param prompt 修改提示词（描述想要的变化）
+     * @param count 生成数量
+     * @return 生成的图像URL列表
+     */
+    List<String> generateImageVariantsFromImage(String imageBase64, String prompt, int count);
+    
+    /**
+     * 基于上传图片进行局部编辑
+     * @param imageBase64 原始图片的Base64编码
+     * @param maskBase64 遮罩图片的Base64编码（白色区域为要编辑的部分，可选）
+     * @param prompt 编辑提示词
+     * @return 编辑后的图像URL
+     */
+    String editImage(String imageBase64, String maskBase64, String prompt);
+    
+    /**
+     * 图片风格转换
+     * @param imageBase64 原始图片的Base64编码
+     * @param style 目标风格（如：cartoon, oil-painting, sketch, anime等）
+     * @return 转换后的图像URL
+     */
+    String transferImageStyle(String imageBase64, String style);
+    
+    /**
      * 变体类型枚举
      */
     enum VariantType {

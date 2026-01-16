@@ -46,6 +46,101 @@ public class VariantController {
     }
     
     /**
+     * 基于上传图片生成变体（图生图）
+     * AI赋能：上传原始图片，根据提示词生成多个变体图片
+     * @param request 包含 imageBase64（图片Base64编码）、prompt（修改提示词）、count（生成数量）
+     */
+    @PostMapping("/image/generate-from-image")
+    public BaseResponse<List<String>> generateImageVariantsFromImage(
+            @RequestBody Map<String, Object> request) {
+        String imageBase64 = (String) request.get("imageBase64");
+        String prompt = (String) request.getOrDefault("prompt", "优化图片效果");
+        int count = request.containsKey("count") ? ((Number) request.get("count")).intValue() : 4;
+        
+        if (imageBase64 == null || imageBase64.isEmpty()) {
+            return BaseResponse.error(com.pisces.common.enums.ResponseCode.BAD_REQUEST, "请上传图片");
+        }
+        
+        // 移除可能的data:image前缀
+        if (imageBase64.contains(",")) {
+            imageBase64 = imageBase64.split(",")[1];
+        }
+        
+        List<String> imageUrls = variantGenerationService.generateImageVariantsFromImage(
+                imageBase64, prompt, count);
+        return BaseResponse.of("图生图成功", imageUrls);
+    }
+    
+    /**
+     * 图片局部编辑
+     * AI赋能：上传原图和遮罩，对遮罩区域进行编辑
+     * @param request 包含 imageBase64、maskBase64（可选）、prompt
+     */
+    @PostMapping("/image/edit")
+    public BaseResponse<String> editImage(@RequestBody Map<String, Object> request) {
+        String imageBase64 = (String) request.get("imageBase64");
+        String maskBase64 = (String) request.get("maskBase64");
+        String prompt = (String) request.getOrDefault("prompt", "优化图片");
+        
+        if (imageBase64 == null || imageBase64.isEmpty()) {
+            return BaseResponse.error(com.pisces.common.enums.ResponseCode.BAD_REQUEST, "请上传图片");
+        }
+        
+        // 移除可能的data:image前缀
+        if (imageBase64.contains(",")) {
+            imageBase64 = imageBase64.split(",")[1];
+        }
+        if (maskBase64 != null && maskBase64.contains(",")) {
+            maskBase64 = maskBase64.split(",")[1];
+        }
+        
+        String resultUrl = variantGenerationService.editImage(imageBase64, maskBase64, prompt);
+        return BaseResponse.of("编辑成功", resultUrl);
+    }
+    
+    /**
+     * 图片风格转换
+     * AI赋能：将上传的图片转换为指定风格
+     * @param request 包含 imageBase64、style（风格：cartoon, oil-painting, sketch, anime, watercolor, pixel, 3d, minimalist）
+     */
+    @PostMapping("/image/style-transfer")
+    public BaseResponse<String> transferImageStyle(@RequestBody Map<String, Object> request) {
+        String imageBase64 = (String) request.get("imageBase64");
+        String style = (String) request.getOrDefault("style", "cartoon");
+        
+        if (imageBase64 == null || imageBase64.isEmpty()) {
+            return BaseResponse.error(com.pisces.common.enums.ResponseCode.BAD_REQUEST, "请上传图片");
+        }
+        
+        // 移除可能的data:image前缀
+        if (imageBase64.contains(",")) {
+            imageBase64 = imageBase64.split(",")[1];
+        }
+        
+        String resultUrl = variantGenerationService.transferImageStyle(imageBase64, style);
+        return BaseResponse.of("风格转换成功", resultUrl);
+    }
+    
+    /**
+     * 获取支持的图片风格列表
+     */
+    @GetMapping("/image/styles")
+    public BaseResponse<List<Map<String, String>>> getImageStyles() {
+        List<Map<String, String>> styles = new java.util.ArrayList<>();
+        
+        styles.add(Map.of("id", "cartoon", "name", "卡通风格", "description", "色彩鲜艳的卡通漫画效果"));
+        styles.add(Map.of("id", "oil-painting", "name", "油画风格", "description", "厚重笔触的印象派油画"));
+        styles.add(Map.of("id", "sketch", "name", "素描风格", "description", "黑白铅笔素描效果"));
+        styles.add(Map.of("id", "anime", "name", "动漫风格", "description", "日本动漫风格"));
+        styles.add(Map.of("id", "watercolor", "name", "水彩风格", "description", "柔和的水彩画效果"));
+        styles.add(Map.of("id", "pixel", "name", "像素风格", "description", "8bit复古像素艺术"));
+        styles.add(Map.of("id", "3d", "name", "3D风格", "description", "立体3D渲染效果"));
+        styles.add(Map.of("id", "minimalist", "name", "极简风格", "description", "简洁线条的极简设计"));
+        
+        return BaseResponse.of(styles);
+    }
+    
+    /**
      * 智能筛选变体（二级筛选机制）
      * AI赋能：通过规则过滤+算法预评估，筛选出高潜力变体
      */

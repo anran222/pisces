@@ -241,6 +241,10 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
             }
             
             log.info("成功生成 {} 个图像变体", imageUrls.size());
+            // 打印每个URL帮助调试
+            for (int i = 0; i < imageUrls.size(); i++) {
+                log.info("图像变体 {}: {}", i + 1, imageUrls.get(i));
+            }
             return imageUrls;
             
         } catch (Exception e) {
@@ -260,9 +264,8 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
     }
     
     /**
-     * 调用通义图像生成API
-     * 注意：当前DashScope SDK 2.11.0可能不包含图像生成API，这里先实现框架
-     * 实际使用时需要根据SDK版本调整或使用HTTP直接调用
+     * 调用通义万相图像生成API
+     * 使用HTTP直接调用DashScope API
      */
     private List<String> callTongYiImageAPI(String prompt, int count) throws Exception {
         String apiKey = tongYiConfig.getApiKey();
@@ -270,36 +273,168 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
             throw new IllegalArgumentException("API Key未配置");
         }
         
-        System.setProperty("DASHSCOPE_API_KEY", apiKey);
-        log.debug("已设置DASHSCOPE_API_KEY，准备生成图像");
-        
-        // TODO: 集成通义万相图像生成API
-        // 方式1：如果SDK支持，使用SDK调用
-        // 方式2：使用HTTP直接调用通义万相API
-        // 当前版本先返回模拟数据，实际使用时需要根据API文档实现
-        
-        log.warn("图像生成API暂未实现，返回模拟数据。请根据DashScope API文档实现图像生成功能");
-        return generateMockImageVariants(prompt, count);
-        
-        // 以下是使用HTTP直接调用的示例代码框架（需要根据实际API文档调整）：
-        /*
         List<String> imageUrls = new ArrayList<>();
-        String apiUrl = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/generation";
         
-        // 构建请求体
-        Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("model", "wanx-v1");
-        requestBody.put("input", Map.of("prompt", prompt));
-        requestBody.put("parameters", Map.of(
-            "n", Math.min(4, count),
-            "size", "1024*1024"
-        ));
+        try {
+            // 使用通义万相的文生图模型
+            String apiUrl = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis";
+            
+            // 构建请求体
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("model", "wanx-v1");
+            
+            Map<String, Object> input = new HashMap<>();
+            input.put("prompt", prompt);
+            requestBody.put("input", input);
+            
+            Map<String, Object> parameters = new HashMap<>();
+            parameters.put("n", Math.min(4, count)); // 单次最多生成4张
+            parameters.put("size", "1024*1024");
+            parameters.put("style", "<auto>");
+            requestBody.put("parameters", parameters);
+            
+            // 创建HTTP请求
+            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+                    .connectTimeout(java.time.Duration.ofSeconds(30))
+                    .build();
+            
+            String jsonBody = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(requestBody);
+            
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(apiUrl))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + apiKey)
+                    .header("X-DashScope-Async", "enable")
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .timeout(java.time.Duration.ofSeconds(60))
+                    .build();
+            
+            log.info("发送图像生成请求到通义万相API");
+            
+            java.net.http.HttpResponse<String> response = client.send(request, 
+                    java.net.http.HttpResponse.BodyHandlers.ofString());
+            
+            if (response.statusCode() == 200) {
+                // 解析异步任务响应
+                @SuppressWarnings("unchecked")
+                Map<String, Object> responseMap = new com.fasterxml.jackson.databind.ObjectMapper()
+                        .readValue(response.body(), Map.class);
+                
+                @SuppressWarnings("unchecked")
+                Map<String, Object> output = (Map<String, Object>) responseMap.get("output");
+                if (output != null) {
+                    String taskId = (String) output.get("task_id");
+                    String taskStatus = (String) output.get("task_status");
+                    
+                    log.info("图像生成任务已提交，任务ID: {}, 状态: {}", taskId, taskStatus);
+                    
+                    // 如果是异步任务，等待完成
+                    if ("PENDING".equals(taskStatus) || "RUNNING".equals(taskStatus)) {
+                        imageUrls = waitForImageGenerationResult(apiKey, taskId, 120);
+                    } else if ("SUCCEEDED".equals(taskStatus)) {
+                        imageUrls = extractImageUrls(output);
+                    }
+                }
+            } else {
+                log.error("图像生成API返回错误: status={}, body={}", response.statusCode(), response.body());
+            }
+            
+        } catch (Exception e) {
+            log.error("调用通义万相API失败", e);
+            throw e;
+        }
         
-        // 使用RestTemplate或HttpClient调用API
-        // ... 实现HTTP调用逻辑 ...
+        // 如果API调用未能获取到图像，返回模拟数据
+        if (imageUrls.isEmpty()) {
+            log.warn("未能从API获取图像，返回模拟数据");
+            return generateMockImageVariants(prompt, count);
+        }
         
         return imageUrls;
-        */
+    }
+    
+    /**
+     * 等待图像生成任务完成
+     */
+    private List<String> waitForImageGenerationResult(String apiKey, String taskId, int maxWaitSeconds) {
+        String statusUrl = "https://dashscope.aliyuncs.com/api/v1/tasks/" + taskId;
+        
+        java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(10))
+                .build();
+        
+        int waitedSeconds = 0;
+        int pollInterval = 3;
+        
+        while (waitedSeconds < maxWaitSeconds) {
+            try {
+                Thread.sleep(pollInterval * 1000L);
+                waitedSeconds += pollInterval;
+                
+                java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                        .uri(java.net.URI.create(statusUrl))
+                        .header("Authorization", "Bearer " + apiKey)
+                        .GET()
+                        .build();
+                
+                java.net.http.HttpResponse<String> response = client.send(request,
+                        java.net.http.HttpResponse.BodyHandlers.ofString());
+                
+                if (response.statusCode() == 200) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> responseMap = new com.fasterxml.jackson.databind.ObjectMapper()
+                            .readValue(response.body(), Map.class);
+                    
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> output = (Map<String, Object>) responseMap.get("output");
+                    if (output != null) {
+                        String taskStatus = (String) output.get("task_status");
+                        log.debug("任务状态: {}, 已等待: {}秒", taskStatus, waitedSeconds);
+                        
+                        if ("SUCCEEDED".equals(taskStatus)) {
+                            return extractImageUrls(output);
+                        } else if ("FAILED".equals(taskStatus)) {
+                            log.error("图像生成任务失败: {}", output.get("message"));
+                            break;
+                        }
+                    }
+                }
+                
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                log.error("查询任务状态失败", e);
+                break;
+            }
+        }
+        
+        return new ArrayList<>();
+    }
+    
+    /**
+     * 从API响应中提取图像URL
+     */
+    private List<String> extractImageUrls(Map<String, Object> output) {
+        List<String> urls = new ArrayList<>();
+        
+        try {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> results = (List<Map<String, Object>>) output.get("results");
+            if (results != null) {
+                for (Map<String, Object> result : results) {
+                    String url = (String) result.get("url");
+                    if (url != null && !url.isEmpty()) {
+                        urls.add(url);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.error("解析图像URL失败", e);
+        }
+        
+        return urls;
     }
     
     /**
@@ -311,6 +446,219 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
             imageUrls.add("https://example.com/generated-image-" + (i + 1) + ".jpg");
         }
         return imageUrls;
+    }
+    
+    @Override
+    public List<String> generateImageVariantsFromImage(String imageBase64, String prompt, int count) {
+        log.info("基于上传图片生成变体: prompt={}, count={}", prompt, count);
+        
+        if (!tongYiConfig.isEnabled() || !StringUtils.hasText(tongYiConfig.getApiKey())) {
+            log.warn("通义API未启用或API Key未配置，使用模拟数据");
+            return generateMockImageVariants(prompt, count);
+        }
+        
+        try {
+            String apiKey = tongYiConfig.getApiKey();
+            List<String> imageUrls = new ArrayList<>();
+            
+            // 调用通义万相的图生图API
+            String apiUrl = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2image/image-synthesis";
+            
+            // 构建请求体
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("model", "wanx-v1");
+            
+            Map<String, Object> input = new HashMap<>();
+            input.put("prompt", prompt);
+            input.put("base_image_url", "data:image/png;base64," + imageBase64);
+            requestBody.put("input", input);
+            
+            Map<String, Object> parameters = new HashMap<>();
+            parameters.put("n", Math.min(4, count));
+            parameters.put("size", "1024*1024");
+            parameters.put("strength", 0.7); // 变化强度，0-1之间，值越大变化越大
+            requestBody.put("parameters", parameters);
+            
+            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+                    .connectTimeout(java.time.Duration.ofSeconds(30))
+                    .build();
+            
+            String jsonBody = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(requestBody);
+            
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(apiUrl))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + apiKey)
+                    .header("X-DashScope-Async", "enable")
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .timeout(java.time.Duration.ofSeconds(60))
+                    .build();
+            
+            log.info("发送图生图请求到通义万相API");
+            
+            java.net.http.HttpResponse<String> response = client.send(request, 
+                    java.net.http.HttpResponse.BodyHandlers.ofString());
+            
+            if (response.statusCode() == 200) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> responseMap = new com.fasterxml.jackson.databind.ObjectMapper()
+                        .readValue(response.body(), Map.class);
+                
+                @SuppressWarnings("unchecked")
+                Map<String, Object> output = (Map<String, Object>) responseMap.get("output");
+                if (output != null) {
+                    String taskId = (String) output.get("task_id");
+                    String taskStatus = (String) output.get("task_status");
+                    
+                    log.info("图生图任务已提交，任务ID: {}, 状态: {}", taskId, taskStatus);
+                    
+                    if ("PENDING".equals(taskStatus) || "RUNNING".equals(taskStatus)) {
+                        imageUrls = waitForImageGenerationResult(apiKey, taskId, 120);
+                    } else if ("SUCCEEDED".equals(taskStatus)) {
+                        imageUrls = extractImageUrls(output);
+                    }
+                }
+            } else {
+                log.error("图生图API返回错误: status={}, body={}", response.statusCode(), response.body());
+            }
+            
+            if (imageUrls.isEmpty()) {
+                log.warn("未能从API获取图像，返回模拟数据");
+                return generateMockImageVariants(prompt, count);
+            }
+            
+            return imageUrls;
+            
+        } catch (Exception e) {
+            log.error("图生图API调用失败", e);
+            return generateMockImageVariants(prompt, count);
+        }
+    }
+    
+    @Override
+    public String editImage(String imageBase64, String maskBase64, String prompt) {
+        log.info("图片局部编辑: prompt={}", prompt);
+        
+        if (!tongYiConfig.isEnabled() || !StringUtils.hasText(tongYiConfig.getApiKey())) {
+            log.warn("通义API未启用，返回模拟结果");
+            return "https://example.com/edited-image.jpg";
+        }
+        
+        try {
+            String apiKey = tongYiConfig.getApiKey();
+            
+            // 调用通义万相的图片编辑API（inpainting）
+            String apiUrl = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2image/image-synthesis";
+            
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("model", "wanx-v1");
+            
+            Map<String, Object> input = new HashMap<>();
+            input.put("prompt", prompt);
+            input.put("base_image_url", "data:image/png;base64," + imageBase64);
+            if (StringUtils.hasText(maskBase64)) {
+                input.put("mask_image_url", "data:image/png;base64," + maskBase64);
+            }
+            requestBody.put("input", input);
+            
+            Map<String, Object> parameters = new HashMap<>();
+            parameters.put("n", 1);
+            parameters.put("size", "1024*1024");
+            requestBody.put("parameters", parameters);
+            
+            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+                    .connectTimeout(java.time.Duration.ofSeconds(30))
+                    .build();
+            
+            String jsonBody = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(requestBody);
+            
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(apiUrl))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + apiKey)
+                    .header("X-DashScope-Async", "enable")
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .timeout(java.time.Duration.ofSeconds(60))
+                    .build();
+            
+            java.net.http.HttpResponse<String> response = client.send(request, 
+                    java.net.http.HttpResponse.BodyHandlers.ofString());
+            
+            if (response.statusCode() == 200) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> responseMap = new com.fasterxml.jackson.databind.ObjectMapper()
+                        .readValue(response.body(), Map.class);
+                
+                @SuppressWarnings("unchecked")
+                Map<String, Object> output = (Map<String, Object>) responseMap.get("output");
+                if (output != null) {
+                    String taskId = (String) output.get("task_id");
+                    String taskStatus = (String) output.get("task_status");
+                    
+                    if ("PENDING".equals(taskStatus) || "RUNNING".equals(taskStatus)) {
+                        List<String> urls = waitForImageGenerationResult(apiKey, taskId, 120);
+                        if (!urls.isEmpty()) {
+                            return urls.get(0);
+                        }
+                    } else if ("SUCCEEDED".equals(taskStatus)) {
+                        List<String> urls = extractImageUrls(output);
+                        if (!urls.isEmpty()) {
+                            return urls.get(0);
+                        }
+                    }
+                }
+            }
+            
+        } catch (Exception e) {
+            log.error("图片编辑API调用失败", e);
+        }
+        
+        return "https://example.com/edited-image.jpg";
+    }
+    
+    @Override
+    public String transferImageStyle(String imageBase64, String style) {
+        log.info("图片风格转换: style={}", style);
+        
+        // 根据风格生成提示词
+        String stylePrompt = getStylePrompt(style);
+        
+        // 使用图生图功能进行风格转换
+        List<String> results = generateImageVariantsFromImage(imageBase64, stylePrompt, 1);
+        
+        if (!results.isEmpty()) {
+            return results.get(0);
+        }
+        
+        return "https://example.com/styled-image-" + style + ".jpg";
+    }
+    
+    /**
+     * 根据风格名称获取对应的提示词
+     */
+    private String getStylePrompt(String style) {
+        switch (style.toLowerCase()) {
+            case "cartoon":
+                return "将图片转换为卡通风格，色彩鲜艳，线条简洁，卡通漫画效果";
+            case "oil-painting":
+                return "将图片转换为油画风格，厚重的笔触，丰富的色彩层次，印象派风格";
+            case "sketch":
+                return "将图片转换为素描风格，黑白铅笔画效果，精细的线条";
+            case "anime":
+                return "将图片转换为日本动漫风格，大眼睛，精致的线条，动漫效果";
+            case "watercolor":
+                return "将图片转换为水彩画风格，柔和的色彩过渡，水彩渲染效果";
+            case "pixel":
+                return "将图片转换为像素艺术风格，8bit复古游戏风格";
+            case "3d":
+                return "将图片转换为3D渲染风格，立体感强，光影效果明显";
+            case "minimalist":
+                return "将图片转换为极简风格，简洁的线条，单一色调";
+            default:
+                return "优化图片，提升画质，" + style + "风格";
+        }
     }
     
     @Override
