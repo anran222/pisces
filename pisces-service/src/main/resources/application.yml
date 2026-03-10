@@ -32,10 +32,22 @@ zookeeper:
 
 # 阿里通义千问API配置
 tongyi:
-  apiKey: ${apiKey} # 从环境变量TONGYI_API_KEY读取，如果没有则留空
+  apiKey: sk-51d72fee74474b9f89b1b234978b762d # 必须配置真实通义 API Key，否则 AI 流程直接失败
   model: qwen-plus  # 模型名称：qwen-turbo, qwen-plus, qwen-max等
   timeout: 30000  # 请求超时时间（毫秒）
-  enabled: true  # 是否启用通义API，如果为false则使用模拟数据
+  enabled: true  # 是否启用通义API；关闭后 AI 流程将直接失败
+
+# Pisces 安全配置
+pisces:
+  security:
+    # 有效的 API Key 列表（生产环境应通过环境变量注入，如 PISCES_API_KEY_1）
+    # 请求时在 Header 中携带：X-Pisces-Api-Key: <key>
+    api-keys:
+      - ${PISCES_API_KEY_1:pisces-dev-key-001}
+      - ${PISCES_API_KEY_2:pisces-dev-key-002}
+    # 完全跳过鉴权的路径前缀（健康检查等）
+    skip-paths:
+      - /actuator/
 
 logging:
   level:
@@ -43,4 +55,3 @@ logging:
     com.pisces: DEBUG
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
-

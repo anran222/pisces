@@ -35,3 +35,10 @@ build/
 ### macOS ###
 .DS_Store
 
+### docs ###
+docs/
+
+### claude code ###
+.claude/
+
+

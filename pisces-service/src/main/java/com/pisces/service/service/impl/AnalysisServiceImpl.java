@@ -8,8 +8,11 @@ import com.alibaba.dashscope.common.Role;
 import com.pisces.common.model.Event;
 import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.common.model.Statistics;
+import com.pisces.common.enums.ResponseCode;
 import com.pisces.service.config.TongYiConfig;
+import com.pisces.service.exception.BusinessException;
 import com.pisces.service.service.AnalysisService;
+import com.pisces.service.util.StatisticalUtils;
 import com.pisces.service.service.BayesianAnalysisService;
 import com.pisces.service.service.CausalInferenceService;
 import com.pisces.service.service.ConfigService;
@@ -25,6 +28,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -343,13 +347,18 @@ public class AnalysisServiceImpl implements AnalysisService {
         double zStat = se > 0 ? absoluteDiff / se : 0.0;
         
         // 计算p值（双尾检验）
-        double pValue = 2 * (1 - normalCDF(Math.abs(zStat)));
-        
-        // 获取Z临界值
-        double zCritical = getZCritical(confidence);
-        
-        // 计算置信区间
-        double marginOfError = zCritical * se;
+        double pValue = StatisticalUtils.zToPValue(zStat);
+
+        // 获取Z临界值（精确计算，替代查表近似）
+        double alpha = 1.0 - confidence;
+        double zCritical = StatisticalUtils.normalQuantile(1.0 - alpha / 2.0);
+
+        // 计算置信区间（使用非混合 SE，与学术标准一致）
+        double ciSE = variantViews > 0 && baselineViews > 0
+                ? Math.sqrt(variantRate * (1 - variantRate) / variantViews
+                        + baselineRate * (1 - baselineRate) / baselineViews)
+                : se;
+        double marginOfError = zCritical * ciSE;
         double ciLower = absoluteDiff - marginOfError;
         double ciUpper = absoluteDiff + marginOfError;
         
@@ -414,19 +423,10 @@ public class AnalysisServiceImpl implements AnalysisService {
         double powerLevel = power != null ? power : 0.80; // 默认功效80%
         double alpha = significance != null ? significance : 0.05; // 默认显著性水平5%
         
-        double p2 = p1 * (1 + mde); // 期望转化率
-        
-        // 获取Z临界值
-        double zAlpha = getZCritical(1 - alpha / 2); // 双尾检验
-        double zBeta = getZCritical(powerLevel);
-        
-        // 样本量计算公式（基于两比例检验）
-        double pooledP = (p1 + p2) / 2;
-        double numerator = Math.pow(zAlpha * Math.sqrt(2 * pooledP * (1 - pooledP)) + 
-                                    zBeta * Math.sqrt(p1 * (1 - p1) + p2 * (1 - p2)), 2);
-        double denominator = Math.pow(p2 - p1, 2);
-        
-        long sampleSizePerGroup = denominator > 0 ? (long) Math.ceil(numerator / denominator) : 0;
+        double p2 = p1 * (1 + mde); // 期望转化率 = 基准转化率 × (1 + MDE)
+
+        // 使用 StatisticalUtils 精确计算样本量
+        long sampleSizePerGroup = StatisticalUtils.calculateSampleSize(p1, mde, alpha, powerLevel);
         long totalSampleSize = sampleSizePerGroup * 2;
         
         Map<String, Object> result = new HashMap<>();
@@ -447,41 +447,6 @@ public class AnalysisServiceImpl implements AnalysisService {
         result.put("recommendation", recommendation);
         
         return result;
-    }
-    
-    /**
-     * 标准正态分布累积分布函数（CDF）近似
-     */
-    private double normalCDF(double z) {
-        // 使用Abramowitz and Stegun近似
-        double a1 = 0.254829592;
-        double a2 = -0.284496736;
-        double a3 = 1.421413741;
-        double a4 = -1.453152027;
-        double a5 = 1.061405429;
-        double p = 0.3275911;
-        
-        int sign = z < 0 ? -1 : 1;
-        z = Math.abs(z) / Math.sqrt(2);
-        
-        double t = 1.0 / (1.0 + p * z);
-        double y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-z * z);
-        
-        return 0.5 * (1.0 + sign * y);
-    }
-    
-    /**
-     * 获取Z临界值（标准正态分布）
-     */
-    private double getZCritical(double confidence) {
-        // 常用置信水平对应的Z值
-        if (confidence >= 0.995) return 2.576;
-        if (confidence >= 0.99) return 2.326;
-        if (confidence >= 0.975) return 1.96;
-        if (confidence >= 0.95) return 1.645;
-        if (confidence >= 0.90) return 1.282;
-        if (confidence >= 0.80) return 0.842;
-        return 1.96; // 默认95%
     }
     
     @Override
@@ -674,58 +639,111 @@ public class AnalysisServiceImpl implements AnalysisService {
             timeline.put("error", "实验不存在");
             return timeline;
         }
-        
-        // 目前使用模拟数据，实际实现需要按时间分组查询事件数据
-        // TODO: 实现真实的时间线数据查询
-        java.util.List<Map<String, Object>> dataPoints = new java.util.ArrayList<>();
-        
-        java.time.LocalDateTime now = java.time.LocalDateTime.now();
-        java.time.LocalDateTime start = metadata.getExperiment().getStartTime();
+
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime start = metadata.getExperiment().getStartTime();
         if (start == null) {
-            start = now.minusDays(7);
+            start = defaultTimelineStart(now, granularity);
         }
-        
-        // 生成模拟的时间线数据点
-        int points = 7; // 默认7天
-        if ("HOUR".equals(granularity)) {
-            points = 24;
-        } else if ("WEEK".equals(granularity)) {
-            points = 4;
+        LocalDateTime end = metadata.getExperiment().getEndTime();
+        if (end == null || end.isAfter(now)) {
+            end = now;
         }
-        
-        for (int i = 0; i < points; i++) {
-            Map<String, Object> point = new HashMap<>();
-            java.time.LocalDateTime pointTime;
-            
-            if ("HOUR".equals(granularity)) {
-                pointTime = now.minusHours(points - 1 - i);
-            } else if ("WEEK".equals(granularity)) {
-                pointTime = start.plusWeeks(i);
-            } else {
-                pointTime = start.plusDays(i);
-            }
-            
-            point.put("timestamp", pointTime);
-            point.put("label", pointTime.toString());
-            
-            // 为每个组生成数据
-            Map<String, Double> groupValues = new HashMap<>();
+        if (end.isBefore(start)) {
+            end = start;
+        }
+
+        ChronoUnit bucketUnit = resolveBucketUnit(granularity);
+        LocalDateTime bucketStart = truncateToUnit(start, bucketUnit);
+        LocalDateTime bucketEnd = truncateToUnit(end, bucketUnit);
+
+        List<Map<String, Object>> dataPoints = new ArrayList<>();
+        LocalDateTime cursor = bucketStart;
+        while (!cursor.isAfter(bucketEnd)) {
+            Map<String, Object> point = new LinkedHashMap<>();
+            point.put("timestamp", cursor);
+            point.put("label", cursor.toString());
+
+            Map<String, Double> groupValues = new LinkedHashMap<>();
             if (metadata.getGroups() != null) {
-                for (String groupId : metadata.getGroups().keySet()) {
-                    // 模拟数据：实际应该从事件数据中计算
-                    double baseValue = 0.10 + Math.random() * 0.05;
-                    groupValues.put(groupId, baseValue);
+                for (String groupId : metadata.getGroups().keySet().stream().sorted().toList()) {
+                    List<Event> events = dataService.getEvents(experimentId, groupId);
+                    groupValues.put(groupId, calculateTimelineMetric(events, cursor, bucketUnit, metricType));
                 }
             }
             point.put("values", groupValues);
-            
             dataPoints.add(point);
+            cursor = cursor.plus(1, bucketUnit);
         }
-        
+
         timeline.put("dataPoints", dataPoints);
-        timeline.put("note", "时间线数据为模拟数据，实际实现需要按时间分组查询事件数据");
-        
+        timeline.put("note", "时间线数据基于真实事件聚合");
         return timeline;
+    }
+
+    private LocalDateTime defaultTimelineStart(LocalDateTime now, String granularity) {
+        if ("HOUR".equalsIgnoreCase(granularity)) {
+            return now.minusHours(23);
+        }
+        if ("WEEK".equalsIgnoreCase(granularity)) {
+            return now.minusWeeks(7);
+        }
+        return now.minusDays(6);
+    }
+
+    private ChronoUnit resolveBucketUnit(String granularity) {
+        if ("HOUR".equalsIgnoreCase(granularity)) {
+            return ChronoUnit.HOURS;
+        }
+        if ("WEEK".equalsIgnoreCase(granularity)) {
+            return ChronoUnit.WEEKS;
+        }
+        return ChronoUnit.DAYS;
+    }
+
+    private LocalDateTime truncateToUnit(LocalDateTime value, ChronoUnit unit) {
+        if (unit == ChronoUnit.HOURS) {
+            return value.truncatedTo(ChronoUnit.HOURS);
+        }
+        if (unit == ChronoUnit.WEEKS) {
+            return value.toLocalDate().atStartOfDay().minusDays(value.getDayOfWeek().getValue() - 1L);
+        }
+        return value.toLocalDate().atStartOfDay();
+    }
+
+    private double calculateTimelineMetric(List<Event> events,
+                                           LocalDateTime bucketStart,
+                                           ChronoUnit bucketUnit,
+                                           String metricType) {
+        if (events == null || events.isEmpty()) {
+            return 0.0;
+        }
+
+        LocalDateTime bucketEnd = bucketStart.plus(1, bucketUnit);
+        List<Event> bucketEvents = events.stream()
+                .filter(event -> event.getTimestamp() != null)
+                .filter(event -> !event.getTimestamp().isBefore(bucketStart) && event.getTimestamp().isBefore(bucketEnd))
+                .toList();
+
+        if (bucketEvents.isEmpty()) {
+            return 0.0;
+        }
+
+        long views = bucketEvents.stream().filter(event -> event.getEventType() == Event.EventType.VIEW).count();
+        long clicks = bucketEvents.stream().filter(event -> event.getEventType() == Event.EventType.CLICK).count();
+        long conversions = bucketEvents.stream().filter(event -> event.getEventType() == Event.EventType.CONVERT).count();
+
+        if ("CLICK_RATE".equalsIgnoreCase(metricType)) {
+            return views > 0 ? (double) clicks / views : 0.0;
+        }
+        if ("VISITOR_COUNT".equalsIgnoreCase(metricType)) {
+            return bucketEvents.stream()
+                    .map(Event::getUserId)
+                    .filter(java.util.Objects::nonNull)
+                    .distinct()
+                    .count();
+        }
+        return views > 0 ? (double) conversions / views : 0.0;
     }
     
     @Override
@@ -745,26 +763,8 @@ public class AnalysisServiceImpl implements AnalysisService {
             Statistics statistics = getStatistics(experimentId);
             Map<String, Object> bayesianAnalysis = getBayesianAnalysis(experimentId);
             
-            String aiAnalysis;
-            
-            // 先检查通义API是否可用，避免不必要的调用和等待
-            if (tongYiConfig.isEnabled() && StringUtils.hasText(tongYiConfig.getApiKey())) {
-                // 构建AI分析prompt
-                String analysisPrompt = buildAIAnalysisPrompt(metadata, statistics, bayesianAnalysis);
-                // 调用AI生成分析结论
-                aiAnalysis = callTongYiForAnalysis(analysisPrompt);
-                
-                // 如果AI返回的是模拟分析（即API调用失败），使用数据驱动分析
-                if (aiAnalysis != null && aiAnalysis.startsWith("## AI智能分析报告") && 
-                        aiAnalysis.contains("当前实验数据样本量适中")) {
-                    log.info("通义API返回通用模拟结果，使用基于数据的分析");
-                    aiAnalysis = generateDataDrivenAnalysis(metadata, statistics, bayesianAnalysis);
-                }
-            } else {
-                // 通义API未启用，直接使用基于数据的分析
-                log.info("通义API未启用，使用基于数据的AI分析");
-                aiAnalysis = generateDataDrivenAnalysis(metadata, statistics, bayesianAnalysis);
-            }
+            String analysisPrompt = buildAIAnalysisPrompt(metadata, statistics, bayesianAnalysis);
+            String aiAnalysis = callTongYiForAnalysis(analysisPrompt);
             
             result.put("experimentName", metadata.getExperiment().getName());
             result.put("status", metadata.getExperiment().getStatus().name());
@@ -789,8 +789,6 @@ public class AnalysisServiceImpl implements AnalysisService {
             log.error("AI分析失败", e);
             result.put("error", "AI分析失败: " + e.getMessage());
             result.put("success", false);
-            // 返回基于规则的分析作为后备
-            result.put("fallbackAnalysis", generateRuleBasedAnalysis(experimentId));
         }
         
         return result;
@@ -1196,15 +1194,7 @@ public class AnalysisServiceImpl implements AnalysisService {
         log.info("Prompt长度: {} 字符", prompt != null ? prompt.length() : 0);
         log.info("=====================================");
         
-        if (!tongYiConfig.isEnabled()) {
-            log.warn("通义API未启用（enabled=false），使用模拟分析");
-            return generateMockAIAnalysis();
-        }
-        
-        if (!StringUtils.hasText(tongYiConfig.getApiKey())) {
-            log.warn("通义API Key未配置或为空，使用模拟分析");
-            return generateMockAIAnalysis();
-        }
+        ensureTongYiAvailableForAnalysis();
         
         long startTime = System.currentTimeMillis();
         
@@ -1296,8 +1286,7 @@ public class AnalysisServiceImpl implements AnalysisService {
                 return result;
             }
             
-            log.warn("通义API返回空结果（总耗时 {} 毫秒），使用模拟分析", elapsed);
-            return generateMockAIAnalysis();
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义AI分析返回空结果");
             
         } catch (java.util.concurrent.TimeoutException e) {
             long elapsed = System.currentTimeMillis() - startTime;
@@ -1310,7 +1299,7 @@ public class AnalysisServiceImpl implements AnalysisService {
             log.error("  3. 模型繁忙或服务不可用");
             log.error("  4. Prompt过长导致处理时间过长");
             log.error("=====================================");
-            return generateMockAIAnalysis();
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义AI分析超时");
         } catch (java.util.concurrent.ExecutionException e) {
             Throwable cause = e.getCause();
             log.error("========== 通义API执行异常 ==========");
@@ -1320,14 +1309,15 @@ public class AnalysisServiceImpl implements AnalysisService {
                 cause.printStackTrace();
             }
             log.error("=====================================");
-            return generateMockAIAnalysis();
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE,
+                    "通义AI分析执行失败: " + (cause != null ? cause.getMessage() : e.getMessage()));
         } catch (Exception e) {
             log.error("========== 通义API调用失败 ==========");
             log.error("异常类型: {}", e.getClass().getName());
             log.error("异常信息: {}", e.getMessage());
             e.printStackTrace();
             log.error("=====================================");
-            return generateMockAIAnalysis();
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义AI分析失败: " + e.getMessage());
         }
     }
     
@@ -1342,58 +1332,6 @@ public class AnalysisServiceImpl implements AnalysisService {
             return "****";
         }
         return apiKey.substring(0, 4) + "****" + apiKey.substring(apiKey.length() - 4);
-    }
-    
-    /**
-     * 生成模拟的AI分析（当API不可用时）
-     */
-    private String generateMockAIAnalysis() {
-        return "## AI智能分析报告\n\n" +
-               "### 1. 数据质量评估\n" +
-               "当前实验数据样本量适中，数据质量整体良好。建议继续观察1-2周以获得更稳定的结论。\n\n" +
-               "### 2. 效果分析\n" +
-               "从数据来看，实验组表现优于对照组。转化率提升明显，但需要更多数据验证稳定性。\n\n" +
-               "### 3. 统计可信度\n" +
-               "当前置信度约为85%，尚未达到95%的显著性阈值。建议继续收集数据。\n\n" +
-               "### 4. 风险评估\n" +
-               "全量上线风险中等。建议先进行50%灰度发布，观察一周后再决定是否全量。\n\n" +
-               "### 5. 具体建议\n" +
-               "1. 继续收集数据至少1周\n" +
-               "2. 考虑增加最佳变体的流量比例至50%\n" +
-               "3. 关注转化漏斗的每个环节\n" +
-               "4. 分析用户细分群体的差异表现\n" +
-               "5. 准备全量发布的回滚方案\n\n" +
-               "### 6. 预计影响\n" +
-               "如果最佳方案全量上线，预计可带来10-15%的转化率提升。";
-    }
-    
-    /**
-     * 基于规则的分析（当AI不可用时的后备方案）
-     */
-    private Map<String, Object> generateRuleBasedAnalysis(String experimentId) {
-        Map<String, Object> analysis = new HashMap<>();
-        
-        Statistics statistics = getStatistics(experimentId);
-        if (statistics == null) {
-            analysis.put("message", "暂无数据");
-            return analysis;
-        }
-        
-        Statistics.ExperimentSummary summary = statistics.getSummary();
-        if (summary != null) {
-            analysis.put("totalVisitors", summary.getTotalVisitors());
-            analysis.put("bestPerformingGroup", summary.getBestPerformingGroup());
-            analysis.put("bestConversionRate", summary.getBestConversionRate());
-            
-            Long totalVisitors = summary.getTotalVisitors();
-            if (totalVisitors != null && totalVisitors > 1000) {
-                analysis.put("recommendation", "样本量充足，可以考虑做出决策");
-            } else {
-                analysis.put("recommendation", "样本量不足，建议继续收集数据");
-            }
-        }
-        
-        return analysis;
     }
     
     /**
@@ -1465,7 +1403,6 @@ public class AnalysisServiceImpl implements AnalysisService {
             log.error("AI实验设计失败", e);
             result.put("error", "AI实验设计失败: " + e.getMessage());
             result.put("success", false);
-            result.put("fallbackDesign", generateDefaultExperimentDesign(businessScenario, targetMetric));
         }
         
         return result;
@@ -1511,9 +1448,7 @@ public class AnalysisServiceImpl implements AnalysisService {
      * 调用通义千问进行实验设计
      */
     private String callTongYiForDesign(String prompt) {
-        if (!tongYiConfig.isEnabled() || !StringUtils.hasText(tongYiConfig.getApiKey())) {
-            return generateMockExperimentDesign();
-        }
+        ensureTongYiAvailableForAnalysis();
         
         try {
             Generation gen = new Generation();
@@ -1542,44 +1477,21 @@ public class AnalysisServiceImpl implements AnalysisService {
                 return result.getOutput().getText();
             }
             
-            return generateMockExperimentDesign();
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义AI实验设计返回空结果");
             
         } catch (Exception e) {
             log.error("调用通义API进行实验设计失败", e);
-            return generateMockExperimentDesign();
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义AI实验设计失败: " + e.getMessage());
         }
     }
-    
-    /**
-     * 生成模拟的实验设计
-     */
-    private String generateMockExperimentDesign() {
-        return "## A/B测试实验设计方案\n\n" +
-               "### 1. 实验假设\n" +
-               "通过优化目标页面/功能，可以提升用户转化率至少10%。\n\n" +
-               "### 2. 实验组设计\n" +
-               "- **对照组A**：当前版本（基准）\n" +
-               "- **实验组B**：优化方案1 - 突出核心价值\n" +
-               "- **实验组C**：优化方案2 - 简化流程\n\n" +
-               "### 3. 流量分配\n" +
-               "- 对照组A：34%\n" +
-               "- 实验组B：33%\n" +
-               "- 实验组C：33%\n\n" +
-               "### 4. 样本量估算\n" +
-               "基于10%的最小可检测效应，95%置信度，80%功效，每组需要约3,000样本，共需9,000样本。\n\n" +
-               "### 5. 实验周期\n" +
-               "建议运行2周，覆盖完整的业务周期。\n\n" +
-               "### 6. 成功标准\n" +
-               "- 主指标：转化率提升≥10%，统计显著（p<0.05）\n" +
-               "- 护栏指标：用户留存率不下降超过5%\n\n" +
-               "### 7. 风险提示\n" +
-               "- 注意季节性因素影响\n" +
-               "- 避免与其他活动重叠\n" +
-               "- 准备回滚方案\n\n" +
-               "### 8. 数据采集点\n" +
-               "- 页面浏览（VIEW）\n" +
-               "- 按钮点击（CLICK）\n" +
-               "- 转化完成（CONVERT）";
+
+    private void ensureTongYiAvailableForAnalysis() {
+        if (!tongYiConfig.isEnabled()) {
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义AI未启用，无法执行真实AI流程");
+        }
+        if (!StringUtils.hasText(tongYiConfig.getApiKey())) {
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "未配置 TONGYI_API_KEY，无法执行真实AI流程");
+        }
     }
     
     /**
@@ -1925,16 +1837,78 @@ public class AnalysisServiceImpl implements AnalysisService {
                 accelerationTips.add("实验组较多，考虑减少变体数量以加快收敛");
             }
             result.put("accelerationTips", accelerationTips);
-            
+
             result.put("success", true);
-            
+
         } catch (Exception e) {
             log.error("预测实验完成时间失败", e);
             result.put("error", "预测失败: " + e.getMessage());
             result.put("success", false);
         }
-        
+
+        return result;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // SRM 检测
+    // ─────────────────────────────────────────────────────────────
+
+    @Override
+    public Map<String, Object> detectSRM(String experimentId) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata == null || metadata.getGroups() == null || metadata.getGroups().size() < 2) {
+            Map<String, Object> err = new HashMap<>();
+            err.put("error", "实验不存在或实验组数量不足");
+            return err;
+        }
+
+        List<String> groupIds = new ArrayList<>(metadata.getGroups().keySet());
+        long[] observed = new long[groupIds.size()];
+        double[] expectedRatios = new double[groupIds.size()];
+
+        for (int i = 0; i < groupIds.size(); i++) {
+            String gid = groupIds.get(i);
+            observed[i] = dataService.getVisitorCount(experimentId, gid);
+            com.pisces.common.model.ExperimentGroup g = metadata.getGroups().get(gid);
+            expectedRatios[i] = g != null && g.getTrafficRatio() != null
+                    ? g.getTrafficRatio() : 1.0 / groupIds.size();
+        }
+
+        Map<String, Object> result = StatisticalUtils.detectSRM(observed, expectedRatios);
+        result.put("experimentId", experimentId);
+        result.put("groupIds", groupIds);
+
+        if (Boolean.TRUE.equals(result.get("hasSRM"))) {
+            log.warn("SRM 检测：实验 {} 存在样本比例不匹配，结论不可信！", experimentId);
+        }
+        return result;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 序贯检验（SPRT）
+    // ─────────────────────────────────────────────────────────────
+
+    @Override
+    public Map<String, Object> sequentialTest(String experimentId, String variantGroupId,
+                                               String baselineGroupId, Double mde,
+                                               Double alpha, Double beta) {
+        double effectSize = mde   != null ? mde   : 0.05;
+        double alphaVal   = alpha != null ? alpha : 0.05;
+        double betaVal    = beta  != null ? beta  : 0.20;
+
+        long n1 = dataService.getVisitorCount(experimentId, variantGroupId);
+        long x1 = dataService.getEventCount(experimentId, variantGroupId, "CONVERT");
+        long n2 = dataService.getVisitorCount(experimentId, baselineGroupId);
+        long x2 = dataService.getEventCount(experimentId, baselineGroupId, "CONVERT");
+
+        double p0 = n2 > 0 ? (double) x2 / n2 : 0.05;
+
+        Map<String, Object> result = StatisticalUtils.sprtTest(n1, x1, n2, x2, p0, effectSize, alphaVal, betaVal);
+        result.put("experimentId", experimentId);
+        result.put("variantGroupId", variantGroupId);
+        result.put("baselineGroupId", baselineGroupId);
+        result.put("variantSampleSize", n1);
+        result.put("baselineSampleSize", n2);
         return result;
     }
 }
-

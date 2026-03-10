@@ -59,12 +59,12 @@ public class BayesianAnalysisServiceImpl implements BayesianAnalysisService {
         long baselineViews = dataService.getEventCount(experimentId, baselineGroupId, "VIEW");
         long baselineConverts = dataService.getEventCount(experimentId, baselineGroupId, "CONVERT");
         
-        // 使用Beta-Binomial共轭先验
-        // 先验分布：Beta(1, 1) - 均匀先验
-        int variantAlpha = (int) Math.min(variantConverts + 1, 1000); // 限制最大值避免计算过慢
-        int variantBeta = (int) Math.min(variantViews - variantConverts + 1, 1000);
-        int baselineAlpha = (int) Math.min(baselineConverts + 1, 1000);
-        int baselineBeta = (int) Math.min(baselineViews - baselineConverts + 1, 1000);
+        // 使用Beta-Binomial共轭先验，先验分布：Beta(1, 1) - 均匀先验
+        // 不再限制最大值：sampleFromGamma 内部对大 shape 值使用正态近似，性能可控
+        int variantAlpha = (int) Math.max(variantConverts + 1, 1);
+        int variantBeta = (int) Math.max(variantViews - variantConverts + 1, 1);
+        int baselineAlpha = (int) Math.max(baselineConverts + 1, 1);
+        int baselineBeta = (int) Math.max(baselineViews - baselineConverts + 1, 1);
         
         // 计算胜率：P(variant > baseline)
         // 使用蒙特卡洛方法近似计算
@@ -158,7 +158,7 @@ public class BayesianAnalysisServiceImpl implements BayesianAnalysisService {
      */
     private double calculateWinRateMonteCarlo(int variantAlpha, int variantBeta, 
                                               int baselineAlpha, int baselineBeta) {
-        int numSamples = 2000; // 减少采样次数，2000次已足够精确
+        int numSamples = 10000; // 10000次采样兼顾精度与性能
         int wins = 0;
         
         java.util.Random random = new java.util.Random();

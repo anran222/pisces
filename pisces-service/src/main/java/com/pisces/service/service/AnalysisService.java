@@ -122,5 +122,31 @@ public interface AnalysisService {
      * @return 预测结果，包含预计完成时间、当前进度等
      */
     Map<String, Object> predictExperimentCompletion(String experimentId);
+
+    /**
+     * SRM 检测（Sample Ratio Mismatch）
+     * 检测实验各组的实际流量比例是否与预设比例一致
+     * 若存在 SRM，实验结论不可信
+     *
+     * @param experimentId 实验ID
+     * @return 卡方统计量、p 值、是否存在 SRM 等
+     */
+    Map<String, Object> detectSRM(String experimentId);
+
+    /**
+     * 序贯检验（SPRT — Sequential Probability Ratio Test）
+     * 适合实验期间持续监控，解决传统频繁查看导致的 Peeking Problem
+     *
+     * @param experimentId   实验ID
+     * @param variantGroupId 变体组ID
+     * @param baselineGroupId 基准组ID
+     * @param mde            最小可检测效应（相对，如 0.05 表示 5%）
+     * @param alpha          I 类错误率（如 0.05）
+     * @param beta           II 类错误率（如 0.20，即 power=0.80）
+     * @return 当前检验决策（ACCEPT_H1/ACCEPT_H0/CONTINUE）及说明
+     */
+    Map<String, Object> sequentialTest(String experimentId, String variantGroupId,
+                                       String baselineGroupId, Double mde,
+                                       Double alpha, Double beta);
 }
 

@@ -1,5 +1,6 @@
 package com.pisces.service.service.impl;
 
+import com.pisces.common.model.ExperimentLayer;
 import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.zookeeper.ZookeeperClient;
@@ -37,9 +38,16 @@ public class ConfigServiceImpl implements ConfigService {
     private final ConcurrentHashMap<String, List<Consumer<ExperimentMetadata>>> listeners = new ConcurrentHashMap<>();
     
     /**
-     * 配置缓存
+     * 实验配置缓存
      */
     private final ConcurrentHashMap<String, ExperimentMetadata> configCache = new ConcurrentHashMap<>();
+
+    /**
+     * 分层配置缓存
+     */
+    private final ConcurrentHashMap<String, ExperimentLayer> layerCache = new ConcurrentHashMap<>();
+
+    private static final String LAYERS_PATH = "/layers";
     
     @PostConstruct
     public void init() {
@@ -205,6 +213,58 @@ public class ConfigServiceImpl implements ConfigService {
             return parts[parts.length - 1];
         }
         return null;
+    }
+
+    // ── 分层配置 CRUD ─────────────────────────────────────────────────────────
+
+    @Override
+    public void saveLayerConfig(String layerId, ExperimentLayer layer) throws Exception {
+        layerCache.put(layerId, layer);
+        if (zookeeperClient.isConnected()) {
+            try {
+                String path = LAYERS_PATH + "/" + layerId;
+                zookeeperClient.saveObject(path, layer);
+                log.info("保存分层配置到Zookeeper: {}", layerId);
+            } catch (Exception e) {
+                log.warn("保存分层配置到Zookeeper失败（已保存到本地缓存）: {}", layerId, e);
+            }
+        }
+    }
+
+    @Override
+    public ExperimentLayer getLayerConfig(String layerId) {
+        ExperimentLayer cached = layerCache.get(layerId);
+        if (cached != null) {
+            return cached;
+        }
+        if (!zookeeperClient.isConnected()) {
+            return null;
+        }
+        try {
+            String path = LAYERS_PATH + "/" + layerId;
+            ExperimentLayer layer = zookeeperClient.getObject(path, ExperimentLayer.class);
+            if (layer != null) {
+                layerCache.put(layerId, layer);
+            }
+            return layer;
+        } catch (Exception e) {
+            log.error("获取分层配置失败: {}", layerId, e);
+            return null;
+        }
+    }
+
+    @Override
+    public void deleteLayerConfig(String layerId) throws Exception {
+        layerCache.remove(layerId);
+        if (zookeeperClient.isConnected()) {
+            try {
+                String path = LAYERS_PATH + "/" + layerId;
+                zookeeperClient.deleteNode(path);
+                log.info("从Zookeeper删除分层配置: {}", layerId);
+            } catch (Exception e) {
+                log.warn("从Zookeeper删除分层配置失败: {}", layerId, e);
+            }
+        }
     }
 }
 

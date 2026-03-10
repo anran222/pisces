@@ -1,13 +1,26 @@
 package com.pisces.service.service.impl;
 
+import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesis;
+import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesisOutput;
+import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesisParam;
+import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesisResult;
+import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversation;
+import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationParam;
+import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationResult;
 import com.alibaba.dashscope.aigc.generation.Generation;
 import com.alibaba.dashscope.aigc.generation.GenerationParam;
 import com.alibaba.dashscope.aigc.generation.GenerationResult;
 import com.alibaba.dashscope.common.Message;
+import com.alibaba.dashscope.common.MultiModalMessage;
 import com.alibaba.dashscope.common.Role;
+import com.alibaba.dashscope.exception.ApiException;
+import com.alibaba.dashscope.exception.NoApiKeyException;
+import com.alibaba.dashscope.utils.OSSUtils;
 import com.pisces.common.model.Experiment;
 import com.pisces.common.request.ExperimentCreateRequest;
+import com.pisces.common.enums.ResponseCode;
 import com.pisces.service.config.TongYiConfig;
+import com.pisces.service.exception.BusinessException;
 import com.pisces.service.service.AnalysisService;
 import com.pisces.service.service.DataService;
 import com.pisces.service.service.ExperimentService;
@@ -18,9 +31,17 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,37 +77,23 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
     @Override
     public List<String> generateTextVariants(String prompt, int count) {
         log.info("生成文本变体: prompt={}, count={}", prompt, count);
-        
-        // 检查是否启用通义API
-        log.debug("通义API配置检查: enabled={}, apiKey配置={}", 
-                tongYiConfig.isEnabled(), 
-                StringUtils.hasText(tongYiConfig.getApiKey()) ? "已配置" : "未配置");
-        
-        if (!tongYiConfig.isEnabled() || !StringUtils.hasText(tongYiConfig.getApiKey())) {
-            log.warn("通义API未启用或API Key未配置，使用模拟数据");
-            return generateMockVariants(prompt, count);
-        }
+        ensureTongYiAvailable();
         
         try {
-            // 构建结构化Prompt
             String structuredPrompt = buildStructuredPrompt(prompt, count);
-            log.debug("构建的结构化Prompt: {}", structuredPrompt);
-            
-            // 调用通义API生成变体
             log.info("开始调用通义API，模型: {}", tongYiConfig.getModel());
             List<String> variants = callTongYiAPI(structuredPrompt, count);
             
             if (variants.isEmpty()) {
-                log.warn("通义API返回空结果，回退到模拟数据");
-                return generateMockVariants(prompt, count);
+                throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义文本生成未返回有效变体");
             }
             
             log.info("成功生成 {} 个文本变体", variants.size());
             return variants;
             
         } catch (Exception e) {
-            log.error("调用通义API失败，回退到模拟数据。错误信息: {}", e.getMessage(), e);
-            return generateMockVariants(prompt, count);
+            log.error("调用通义API失败。错误信息: {}", e.getMessage(), e);
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义文本生成失败: " + e.getMessage());
         }
     }
     
@@ -207,37 +214,17 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
         return variants;
     }
     
-    /**
-     * 生成模拟变体（当API不可用时使用）
-     */
-    private List<String> generateMockVariants(String prompt, int count) {
-        List<String> variants = new ArrayList<>();
-        for (int i = 0; i < count; i++) {
-            variants.add("生成的变体 " + (i + 1) + " (基于Prompt: " + prompt + ")");
-        }
-        return variants;
-    }
-    
     @Override
     public List<String> generateImageVariants(String prompt, int count) {
         log.info("生成图像变体: prompt={}, count={}", prompt, count);
-        
-        // 检查是否启用通义API
-        if (!tongYiConfig.isEnabled() || !StringUtils.hasText(tongYiConfig.getApiKey())) {
-            log.warn("通义API未启用或API Key未配置，使用模拟数据");
-            return generateMockImageVariants(prompt, count);
-        }
+        ensureTongYiAvailable();
         
         try {
-            // 构建结构化图像生成Prompt
             String structuredPrompt = buildImagePrompt(prompt);
-            
-            // 调用通义图像生成API
             List<String> imageUrls = callTongYiImageAPI(structuredPrompt, count);
             
             if (imageUrls.isEmpty()) {
-                log.warn("通义图像API返回空结果，回退到模拟数据");
-                return generateMockImageVariants(prompt, count);
+                throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义图像生成未返回有效图片");
             }
             
             log.info("成功生成 {} 个图像变体", imageUrls.size());
@@ -248,8 +235,8 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
             return imageUrls;
             
         } catch (Exception e) {
-            log.error("调用通义图像API失败，回退到模拟数据。错误信息: {}", e.getMessage(), e);
-            return generateMockImageVariants(prompt, count);
+            log.error("调用通义图像API失败。错误信息: {}", e.getMessage(), e);
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义图像生成失败: " + e.getMessage());
         }
     }
     
@@ -345,10 +332,8 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
             throw e;
         }
         
-        // 如果API调用未能获取到图像，返回模拟数据
         if (imageUrls.isEmpty()) {
-            log.warn("未能从API获取图像，返回模拟数据");
-            return generateMockImageVariants(prompt, count);
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义图像生成未返回图片结果");
         }
         
         return imageUrls;
@@ -437,202 +422,136 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
         return urls;
     }
     
-    /**
-     * 生成模拟图像变体
-     */
-    private List<String> generateMockImageVariants(String prompt, int count) {
-        List<String> imageUrls = new ArrayList<>();
-        for (int i = 0; i < count; i++) {
-            imageUrls.add("https://example.com/generated-image-" + (i + 1) + ".jpg");
-        }
-        return imageUrls;
-    }
-    
     @Override
     public List<String> generateImageVariantsFromImage(String imageBase64, String prompt, int count) {
         log.info("基于上传图片生成变体: prompt={}, count={}", prompt, count);
-        
-        if (!tongYiConfig.isEnabled() || !StringUtils.hasText(tongYiConfig.getApiKey())) {
-            log.warn("通义API未启用或API Key未配置，使用模拟数据");
-            return generateMockImageVariants(prompt, count);
-        }
+        ensureTongYiAvailable();
         
         try {
-            String apiKey = tongYiConfig.getApiKey();
-            List<String> imageUrls = new ArrayList<>();
-            
-            // 调用通义万相的图生图API
-            String apiUrl = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2image/image-synthesis";
-            
-            // 构建请求体
-            Map<String, Object> requestBody = new HashMap<>();
-            requestBody.put("model", "wanx-v1");
-            
-            Map<String, Object> input = new HashMap<>();
-            input.put("prompt", prompt);
-            input.put("base_image_url", "data:image/png;base64," + imageBase64);
-            requestBody.put("input", input);
-            
+            MultiModalMessage userMessage = MultiModalMessage.builder()
+                    .role(Role.USER.getValue())
+                    .content(Arrays.asList(
+                            Collections.singletonMap("image", resolveQwenImageEditInput(imageBase64)),
+                            Collections.singletonMap("text", normalizeImageVariantPrompt(prompt))
+                    ))
+                    .build();
+
             Map<String, Object> parameters = new HashMap<>();
+            parameters.put("watermark", false);
+            parameters.put("negative_prompt", buildImageVariantNegativePrompt(prompt));
             parameters.put("n", Math.min(4, count));
-            parameters.put("size", "1024*1024");
-            parameters.put("strength", 0.7); // 变化强度，0-1之间，值越大变化越大
-            requestBody.put("parameters", parameters);
-            
-            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
-                    .connectTimeout(java.time.Duration.ofSeconds(30))
+            parameters.put("prompt_extend", true);
+
+            MultiModalConversationParam param = MultiModalConversationParam.builder()
+                    .apiKey(tongYiConfig.getApiKey())
+                    .model("qwen-image-2.0-pro")
+                    .messages(Collections.singletonList(userMessage))
+                    .parameters(parameters)
                     .build();
-            
-            String jsonBody = new com.fasterxml.jackson.databind.ObjectMapper()
-                    .writeValueAsString(requestBody);
-            
-            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
-                    .uri(java.net.URI.create(apiUrl))
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + apiKey)
-                    .header("X-DashScope-Async", "enable")
-                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(jsonBody))
-                    .timeout(java.time.Duration.ofSeconds(60))
-                    .build();
-            
-            log.info("发送图生图请求到通义万相API");
-            
-            java.net.http.HttpResponse<String> response = client.send(request, 
-                    java.net.http.HttpResponse.BodyHandlers.ofString());
-            
-            if (response.statusCode() == 200) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> responseMap = new com.fasterxml.jackson.databind.ObjectMapper()
-                        .readValue(response.body(), Map.class);
-                
-                @SuppressWarnings("unchecked")
-                Map<String, Object> output = (Map<String, Object>) responseMap.get("output");
-                if (output != null) {
-                    String taskId = (String) output.get("task_id");
-                    String taskStatus = (String) output.get("task_status");
-                    
-                    log.info("图生图任务已提交，任务ID: {}, 状态: {}", taskId, taskStatus);
-                    
-                    if ("PENDING".equals(taskStatus) || "RUNNING".equals(taskStatus)) {
-                        imageUrls = waitForImageGenerationResult(apiKey, taskId, 120);
-                    } else if ("SUCCEEDED".equals(taskStatus)) {
-                        imageUrls = extractImageUrls(output);
-                    }
-                }
-            } else {
-                log.error("图生图API返回错误: status={}, body={}", response.statusCode(), response.body());
-            }
-            
+
+            MultiModalConversation conversation = new MultiModalConversation();
+            MultiModalConversationResult result = conversation.call(param);
+            List<String> imageUrls = extractMultiModalImageUrls(result);
             if (imageUrls.isEmpty()) {
-                log.warn("未能从API获取图像，返回模拟数据");
-                return generateMockImageVariants(prompt, count);
+                throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义图生图未返回图片结果");
             }
-            
             return imageUrls;
-            
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception e) {
             log.error("图生图API调用失败", e);
-            return generateMockImageVariants(prompt, count);
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义图生图失败: " + e.getMessage());
         }
     }
     
     @Override
     public String editImage(String imageBase64, String maskBase64, String prompt) {
         log.info("图片局部编辑: prompt={}", prompt);
-        
-        if (!tongYiConfig.isEnabled() || !StringUtils.hasText(tongYiConfig.getApiKey())) {
-            log.warn("通义API未启用，返回模拟结果");
-            return "https://example.com/edited-image.jpg";
-        }
+        ensureTongYiAvailable();
         
         try {
             String apiKey = tongYiConfig.getApiKey();
-            
-            // 调用通义万相的图片编辑API（inpainting）
-            String apiUrl = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image2image/image-synthesis";
-            
-            Map<String, Object> requestBody = new HashMap<>();
-            requestBody.put("model", "wanx-v1");
-            
-            Map<String, Object> input = new HashMap<>();
-            input.put("prompt", prompt);
-            input.put("base_image_url", "data:image/png;base64," + imageBase64);
-            if (StringUtils.hasText(maskBase64)) {
-                input.put("mask_image_url", "data:image/png;base64," + maskBase64);
-            }
-            requestBody.put("input", input);
-            
             Map<String, Object> parameters = new HashMap<>();
-            parameters.put("n", 1);
-            parameters.put("size", "1024*1024");
-            requestBody.put("parameters", parameters);
-            
-            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
-                    .connectTimeout(java.time.Duration.ofSeconds(30))
-                    .build();
-            
-            String jsonBody = new com.fasterxml.jackson.databind.ObjectMapper()
-                    .writeValueAsString(requestBody);
-            
-            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
-                    .uri(java.net.URI.create(apiUrl))
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + apiKey)
-                    .header("X-DashScope-Async", "enable")
-                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(jsonBody))
-                    .timeout(java.time.Duration.ofSeconds(60))
-                    .build();
-            
-            java.net.http.HttpResponse<String> response = client.send(request, 
-                    java.net.http.HttpResponse.BodyHandlers.ofString());
-            
-            if (response.statusCode() == 200) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> responseMap = new com.fasterxml.jackson.databind.ObjectMapper()
-                        .readValue(response.body(), Map.class);
-                
-                @SuppressWarnings("unchecked")
-                Map<String, Object> output = (Map<String, Object>) responseMap.get("output");
-                if (output != null) {
-                    String taskId = (String) output.get("task_id");
-                    String taskStatus = (String) output.get("task_status");
-                    
-                    if ("PENDING".equals(taskStatus) || "RUNNING".equals(taskStatus)) {
-                        List<String> urls = waitForImageGenerationResult(apiKey, taskId, 120);
-                        if (!urls.isEmpty()) {
-                            return urls.get(0);
-                        }
-                    } else if ("SUCCEEDED".equals(taskStatus)) {
-                        List<String> urls = extractImageUrls(output);
-                        if (!urls.isEmpty()) {
-                            return urls.get(0);
-                        }
-                    }
-                }
+            if (!StringUtils.hasText(maskBase64)) {
+                parameters.put("strength", 0.5);
             }
-            
+
+            ImageSynthesisParam.ImageSynthesisParamBuilder<?, ?> builder = ImageSynthesisParam.builder()
+                    .apiKey(apiKey)
+                    .model("wanx2.1-imageedit")
+                    .prompt(prompt)
+                    .baseImageUrl(resolveImageEditInput(imageBase64))
+                    .n(1)
+                    .size("1024*1024")
+                    .promptExtend(true)
+                    .parameters(parameters);
+
+            if (StringUtils.hasText(maskBase64)) {
+                builder.function(ImageSynthesis.ImageEditFunction.DESCRIPTION_EDIT_WITH_MASK);
+                builder.maskImageUrl(resolveImageEditInput(maskBase64));
+            } else {
+                builder.function(ImageSynthesis.ImageEditFunction.DESCRIPTION_EDIT);
+            }
+
+            ImageSynthesis imageSynthesis = new ImageSynthesis();
+            ImageSynthesisResult result = imageSynthesis.call(builder.build());
+            assertImageSynthesisSucceeded(result, "通义图片编辑");
+            List<String> urls = extractImageUrls(result);
+            if (!urls.isEmpty()) {
+                return urls.get(0);
+            }
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception e) {
             log.error("图片编辑API调用失败", e);
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义图片编辑失败: " + e.getMessage());
         }
         
-        return "https://example.com/edited-image.jpg";
+        throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义图片编辑未返回结果");
     }
     
     @Override
     public String transferImageStyle(String imageBase64, String style) {
         log.info("图片风格转换: style={}", style);
-        
-        // 根据风格生成提示词
-        String stylePrompt = getStylePrompt(style);
-        
-        // 使用图生图功能进行风格转换
-        List<String> results = generateImageVariantsFromImage(imageBase64, stylePrompt, 1);
-        
-        if (!results.isEmpty()) {
-            return results.get(0);
+        ensureTongYiAvailable();
+
+        try {
+            String prompt = resolveSupportedStylePrompt(style);
+            ImageSynthesisParam param = ImageSynthesisParam.builder()
+                    .apiKey(tongYiConfig.getApiKey())
+                    .model("wanx2.1-imageedit")
+                    .function(ImageSynthesis.ImageEditFunction.STYLIZATION_ALL)
+                    .baseImageUrl(resolveImageEditInput(imageBase64))
+                    .prompt(prompt)
+                    .n(1)
+                    .size("1024*1024")
+                    .build();
+
+            ImageSynthesis imageSynthesis = new ImageSynthesis();
+            ImageSynthesisResult result = imageSynthesis.call(param);
+            assertImageSynthesisSucceeded(result, "通义风格转换");
+
+            List<String> urls = extractImageUrls(result);
+            if (!urls.isEmpty()) {
+                return urls.get(0);
+            }
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("风格转换API调用失败", e);
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义风格转换失败: " + e.getMessage());
         }
-        
-        return "https://example.com/styled-image-" + style + ".jpg";
+
+        throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义风格转换未返回结果");
+    }
+
+    private void ensureTongYiAvailable() {
+        if (!tongYiConfig.isEnabled()) {
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义AI未启用，无法执行真实AI流程");
+        }
+        if (!StringUtils.hasText(tongYiConfig.getApiKey())) {
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "未配置 TONGYI_API_KEY，无法执行真实AI流程");
+        }
     }
     
     /**
@@ -659,6 +578,321 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
             default:
                 return "优化图片，提升画质，" + style + "风格";
         }
+    }
+
+    private String resolveSupportedStylePrompt(String style) {
+        switch (style.toLowerCase()) {
+            case "french-book":
+                return "转换成法国绘本风格";
+            case "gold-foil":
+                return "转换成金箔艺术风格";
+            default:
+                throw new IllegalArgumentException("当前仅支持 french-book、gold-foil 两种官方风格");
+        }
+    }
+
+    private ImageSynthesisResult waitForImageSynthesisResult(ImageSynthesis imageSynthesis,
+                                                             ImageSynthesisResult task,
+                                                             String apiKey)
+            throws ApiException, NoApiKeyException {
+        return imageSynthesis.wait(task, apiKey);
+    }
+
+    private void assertImageSynthesisSucceeded(ImageSynthesisResult result, String operationName) {
+        if (result == null) {
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, operationName + "失败: 通义返回结果为空");
+        }
+        ImageSynthesisOutput output = result.getOutput();
+        if (output == null) {
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, operationName + "失败: 通义返回缺少 output");
+        }
+
+        String taskStatus = normalizeStatus(output.getTaskStatus());
+        String code = firstNonBlank(output.getCode(), result.getCode());
+        String message = firstNonBlank(output.getMessage(), result.getMessage());
+        boolean hasResults = output.getResults() != null && !output.getResults().isEmpty();
+
+        log.info("{}结果: taskId={}, taskStatus={}, code={}, message={}, resultCount={}",
+                operationName,
+                output.getTaskId(),
+                taskStatus,
+                code,
+                message,
+                output.getResults() == null ? 0 : output.getResults().size());
+
+        if (StringUtils.hasText(taskStatus) && !"SUCCEEDED".equals(taskStatus)) {
+            throw new BusinessException(
+                    ResponseCode.SERVICE_UNAVAILABLE,
+                    operationName + "失败: " + buildImageSynthesisFailureMessage(taskStatus, code, message)
+            );
+        }
+
+        if (!hasResults && (StringUtils.hasText(code) || StringUtils.hasText(message))) {
+            throw new BusinessException(
+                    ResponseCode.SERVICE_UNAVAILABLE,
+                    operationName + "失败: " + buildImageSynthesisFailureMessage(taskStatus, code, message)
+            );
+        }
+    }
+
+    private List<String> extractImageUrls(ImageSynthesisResult result) {
+        if (result == null || result.getOutput() == null || result.getOutput().getResults() == null) {
+            return new ArrayList<>();
+        }
+        List<String> urls = new ArrayList<>();
+        for (Map<String, String> item : result.getOutput().getResults()) {
+            String url = firstNonBlank(item.get("url"), item.get("image_url"), item.get("result_url"));
+            if (StringUtils.hasText(url)) {
+                urls.add(url);
+            }
+        }
+        return urls;
+    }
+
+    private String buildImageSynthesisFailureMessage(String taskStatus, String code, String message) {
+        List<String> parts = new ArrayList<>();
+        if (StringUtils.hasText(taskStatus)) {
+            parts.add("taskStatus=" + taskStatus);
+        }
+        if (StringUtils.hasText(code)) {
+            parts.add("code=" + code);
+        }
+        if (StringUtils.hasText(message)) {
+            parts.add("message=" + message);
+        }
+        if (parts.isEmpty()) {
+            return "未返回明确错误信息";
+        }
+        return String.join(", ", parts);
+    }
+
+    private String normalizeStatus(String taskStatus) {
+        return StringUtils.hasText(taskStatus) ? taskStatus.trim().toUpperCase() : "";
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
+    private String resolveDashScopeImageUrl(String imageSource, String model, String tempFilePrefix)
+            throws IOException, NoApiKeyException {
+        String normalizedSource = imageSource == null ? null : imageSource.trim();
+        if (!StringUtils.hasText(normalizedSource)) {
+            throw new IllegalArgumentException("图片内容不能为空");
+        }
+        if (isDashScopeDirectImageUrl(normalizedSource)) {
+            return normalizedSource;
+        }
+
+        ImagePayload imagePayload = parseImagePayload(normalizedSource);
+        if (ImageSynthesis.Models.WANX_V1.equals(model)) {
+            imagePayload = normalizeReferenceImagePayload(imagePayload);
+        }
+        Path tempFile = Files.createTempFile(tempFilePrefix, imagePayload.extension());
+        try {
+            Files.write(tempFile, imagePayload.bytes());
+            return OSSUtils.upload(model, tempFile.toAbsolutePath().toString(), tongYiConfig.getApiKey());
+        } finally {
+            Files.deleteIfExists(tempFile);
+        }
+    }
+
+    private String resolveImageEditInput(String imageSource) {
+        String normalizedSource = imageSource == null ? null : imageSource.trim();
+        if (!StringUtils.hasText(normalizedSource)) {
+            throw new IllegalArgumentException("图片内容不能为空");
+        }
+        if (normalizedSource.startsWith("data:image/")) {
+            int commaIndex = normalizedSource.indexOf(',');
+            if (commaIndex < 0) {
+                throw new IllegalArgumentException("不合法的 Data URL 图片内容");
+            }
+            resolveExtensionFromMimeType(extractMimeType(normalizedSource.substring(5, commaIndex)));
+            return normalizedSource;
+        }
+        if (isDashScopeDirectImageUrl(normalizedSource)) {
+            return normalizedSource;
+        }
+        return "data:image/png;base64," + normalizedSource;
+    }
+
+    private String resolveQwenImageEditInput(String imageSource) {
+        String normalizedSource = resolveImageEditInput(imageSource);
+        if (!normalizedSource.startsWith("data:image/")) {
+            return normalizedSource;
+        }
+        if (!normalizedSource.contains(",")) {
+            throw new IllegalArgumentException("不合法的 Data URL 图片内容");
+        }
+        return normalizedSource;
+    }
+
+    private String normalizeImageVariantPrompt(String prompt) {
+        if (!StringUtils.hasText(prompt)) {
+            throw new IllegalArgumentException("图生图提示词不能为空");
+        }
+        return "请对输入图片执行严格编辑，而不是只做轻微润色。必须明显体现以下要求，并确保最终结果与要求一致：" + prompt.trim();
+    }
+
+    private String buildImageVariantNegativePrompt(String prompt) {
+        String normalizedPrompt = prompt == null ? "" : prompt.trim();
+        List<String> items = new ArrayList<>(Arrays.asList(
+                "仅做轻微修改",
+                "颜色保持不变",
+                "仍然是原始风格",
+                "低质量",
+                "模糊",
+                "失真",
+                "细节错误"
+        ));
+        if (normalizedPrompt.contains("黑白") || normalizedPrompt.contains("灰度") || normalizedPrompt.contains("单色")) {
+            items.add("彩色");
+            items.add("蓝色");
+            items.add("红色");
+            items.add("高饱和色彩");
+        }
+        return String.join("，", items);
+    }
+
+    private List<String> extractMultiModalImageUrls(MultiModalConversationResult result) {
+        if (result == null) {
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义图生图失败: 返回结果为空");
+        }
+        if (StringUtils.hasText(result.getCode()) || StringUtils.hasText(result.getMessage())) {
+            throw new BusinessException(
+                    ResponseCode.SERVICE_UNAVAILABLE,
+                    "通义图生图失败: code=" + firstNonBlank(result.getCode(), "UNKNOWN")
+                            + ", message=" + firstNonBlank(result.getMessage(), "未返回错误信息")
+            );
+        }
+        if (result.getOutput() == null || result.getOutput().getChoices() == null || result.getOutput().getChoices().isEmpty()) {
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义图生图失败: 未返回有效 choices");
+        }
+        if (result.getOutput().getChoices().get(0).getMessage() == null
+                || result.getOutput().getChoices().get(0).getMessage().getContent() == null) {
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义图生图失败: 未返回有效图片内容");
+        }
+
+        List<String> urls = new ArrayList<>();
+        for (Map<String, Object> content : result.getOutput().getChoices().get(0).getMessage().getContent()) {
+            Object image = content.get("image");
+            if (image instanceof String imageUrl && StringUtils.hasText(imageUrl)) {
+                urls.add(imageUrl);
+            }
+        }
+        return urls;
+    }
+
+    private PreparedImageInput createReferenceImageFile(String imageSource) throws IOException {
+        String normalizedSource = imageSource == null ? null : imageSource.trim();
+        if (!StringUtils.hasText(normalizedSource)) {
+            throw new IllegalArgumentException("图片内容不能为空");
+        }
+        if (normalizedSource.startsWith("file://")) {
+            return new PreparedImageInput(normalizedSource, null);
+        }
+        if (normalizedSource.startsWith("http://") || normalizedSource.startsWith("https://")) {
+            return new PreparedImageInput(normalizedSource, null);
+        }
+
+        ImagePayload payload = normalizeReferenceImagePayload(parseImagePayload(normalizedSource));
+        Path tempFile = Files.createTempFile("pisces-ref-", payload.extension());
+        Files.write(tempFile, payload.bytes());
+        return new PreparedImageInput(tempFile.toUri().toString(), tempFile);
+    }
+
+    private ImagePayload normalizeReferenceImagePayload(ImagePayload imagePayload) throws IOException {
+        if (!isSupportedReferenceImageExtension(imagePayload.extension())) {
+            throw new IllegalArgumentException("图生图参考图仅支持 JPEG、PNG");
+        }
+
+        BufferedImage image = ImageIO.read(new ByteArrayInputStream(imagePayload.bytes()));
+        if (image == null) {
+            throw new IllegalArgumentException("图生图参考图无法解析，请上传有效的 JPEG、PNG 图片");
+        }
+
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        boolean writeSuccess = ImageIO.write(image, "png", outputStream);
+        if (!writeSuccess) {
+            throw new IllegalArgumentException("图生图参考图转换失败，请重新上传 JPEG、PNG 图片");
+        }
+        return new ImagePayload(outputStream.toByteArray(), ".png");
+    }
+
+    private boolean isDashScopeDirectImageUrl(String imageSource) {
+        return imageSource.startsWith("http://")
+                || imageSource.startsWith("https://")
+                || imageSource.startsWith("oss://")
+                || imageSource.startsWith("file://");
+    }
+
+    private void deleteTempFileQuietly(PreparedImageInput preparedImageInput) {
+        if (preparedImageInput == null || preparedImageInput.tempFile() == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(preparedImageInput.tempFile());
+        } catch (IOException e) {
+            log.warn("删除临时参考图失败: {}", preparedImageInput.tempFile(), e);
+        }
+    }
+
+    private boolean isSupportedReferenceImageExtension(String extension) {
+        return ".jpg".equalsIgnoreCase(extension) || ".png".equalsIgnoreCase(extension);
+    }
+
+    private ImagePayload parseImagePayload(String imageSource) {
+        String normalized = imageSource.trim();
+        String extension = ".png";
+        int commaIndex = normalized.indexOf(',');
+        if (normalized.startsWith("data:image/")) {
+            if (commaIndex < 0) {
+                throw new IllegalArgumentException("不合法的 Data URL 图片内容");
+            }
+            extension = resolveExtensionFromMimeType(extractMimeType(normalized.substring(5, commaIndex)));
+            normalized = normalized.substring(commaIndex + 1);
+        } else if (commaIndex >= 0) {
+            normalized = normalized.substring(commaIndex + 1);
+        }
+        return new ImagePayload(java.util.Base64.getDecoder().decode(normalized), extension);
+    }
+
+    private String extractMimeType(String mimeSegment) {
+        int semicolonIndex = mimeSegment.indexOf(';');
+        if (semicolonIndex >= 0) {
+            return mimeSegment.substring(0, semicolonIndex);
+        }
+        return mimeSegment;
+    }
+
+    private String resolveExtensionFromMimeType(String mimeType) {
+        switch (mimeType.toLowerCase()) {
+            case "image/jpeg":
+            case "image/jpg":
+                return ".jpg";
+            case "image/png":
+                return ".png";
+            case "image/webp":
+                return ".webp";
+            case "image/bmp":
+                return ".bmp";
+            case "image/tiff":
+            case "image/tif":
+                return ".tiff";
+            default:
+                throw new IllegalArgumentException("不支持的图片格式: " + mimeType + "，当前仅支持 JPEG、PNG、WEBP、BMP、TIFF");
+        }
+    }
+
+    private record ImagePayload(byte[] bytes, String extension) {
+    }
+
+    private record PreparedImageInput(String input, Path tempFile) {
     }
     
     @Override
@@ -1042,7 +1276,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
             log.info("=".repeat(60));
             log.info("步骤4: 生成实验数据");
             log.info("=".repeat(60));
-            generateExperimentData(experimentId, finalVariants, visitorCount);
+            generateExperimentData(experimentId, finalVariants, visitorCount, Math.max(1, daysAgo));
             result.put("dataGenerated", true);
             result.put("visitorCount", visitorCount * finalVariants.size());
             log.info("步骤4完成: 已生成 {} 个访客的实验数据", visitorCount * finalVariants.size());
@@ -1055,7 +1289,9 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
             
             // 精简返回结果：只返回最终变体的核心实验信息
             result.put("experimentId", experimentId);
-            result.put("variants", analysisResult.get("variants")); // 只返回变体结果
+            result.put("experimentName", "AI生成变体实验 - " + prompt);
+            result.put("variants", analysisResult.get("variants"));
+            result.put("analysisSummary", analysisResult.get("summary"));
             
             // 获取最佳变体
             Object summaryObj = analysisResult.get("summary");
@@ -1145,7 +1381,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
     /**
      * 生成实验数据
      */
-    private void generateExperimentData(String experimentId, List<Map<String, Object>> variants, int visitorCount) {
+    private void generateExperimentData(String experimentId, List<Map<String, Object>> variants, int visitorCount, int daysSpan) {
         Map<String, List<String>> groupVisitors = new HashMap<>();
         
         // 为每个实验组生成访客并分配
@@ -1153,19 +1389,16 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
             String groupId = "group_" + (i == 0 ? "A" : String.valueOf((char)('A' + i)));
             List<String> visitors = new ArrayList<>();
             
-            for (int j = 0; j < visitorCount; j++) {
+            int maxAttempts = Math.max(visitorCount * 20, 1000);
+            int attempts = 0;
+            while (visitors.size() < visitorCount && attempts < maxAttempts) {
                 String visitorId = "visitor_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
                 // 分配访客到实验组
                 String assignedGroup = trafficService.assignGroup(experimentId, visitorId);
                 if (groupId.equals(assignedGroup)) {
                     visitors.add(visitorId);
                 }
-            }
-            
-            // 如果分配的访客不足，补充一些
-            while (visitors.size() < visitorCount) {
-                String visitorId = "visitor_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
-                visitors.add(visitorId);
+                attempts++;
             }
             
             groupVisitors.put(groupId, visitors);
@@ -1183,19 +1416,34 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
             
             for (String visitorId : visitors) {
                 // 所有访客都有浏览事件
-                dataService.reportEvent(experimentId, visitorId, "VIEW", "商品详情页浏览", null);
+                LocalDateTime eventTime = randomEventTime(daysSpan);
+                Map<String, Object> viewProperties = new HashMap<>();
+                viewProperties.put("eventTime", eventTime);
+                dataService.reportEvent(experimentId, visitorId, "VIEW", "商品详情页浏览", viewProperties);
                 
                 // 80%的访客有点击事件
                 if (random.nextDouble() < 0.8) {
-                    dataService.reportEvent(experimentId, visitorId, "CLICK", "价格咨询点击", null);
+                    Map<String, Object> clickProperties = new HashMap<>();
+                    clickProperties.put("eventTime", eventTime.plusMinutes(random.nextInt(90) + 1));
+                    dataService.reportEvent(experimentId, visitorId, "CLICK", "价格咨询点击", clickProperties);
                 }
                 
                 // 根据转化率生成转化事件
                 if (random.nextDouble() < conversionRate) {
-                    dataService.reportEvent(experimentId, visitorId, "CONVERT", "成交", null);
+                    Map<String, Object> convertProperties = new HashMap<>();
+                    convertProperties.put("eventTime", eventTime.plusHours(random.nextInt(24) + 1));
+                    dataService.reportEvent(experimentId, visitorId, "CONVERT", "成交", convertProperties);
                 }
             }
         }
+    }
+
+    private LocalDateTime randomEventTime(int daysSpan) {
+        return LocalDateTime.now()
+                .minusDays(Math.max(0, daysSpan - 1L))
+                .plusDays(random.nextInt(Math.max(1, daysSpan)))
+                .plusHours(random.nextInt(24))
+                .plusMinutes(random.nextInt(60));
     }
     
     /**

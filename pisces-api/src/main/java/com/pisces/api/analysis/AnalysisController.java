@@ -249,5 +249,43 @@ public class AnalysisController {
         Map<String, Object> prediction = analysisService.predictExperimentCompletion(id);
         return BaseResponse.of(prediction);
     }
+
+    /**
+     * SRM 检测（Sample Ratio Mismatch）
+     * 检测实验各组的实际流量比例是否与预设比例一致。若存在 SRM，实验结论不可信。
+     * @param id 实验ID
+     * @return 卡方统计量、p 值、是否存在 SRM、各组实际/期望访客数等
+     */
+    @GetMapping("/experiment/{id}/srm")
+    @NoTokenRequired
+    public BaseResponse<Map<String, Object>> detectSRM(@PathVariable String id) {
+        Map<String, Object> result = analysisService.detectSRM(id);
+        return BaseResponse.of(result);
+    }
+
+    /**
+     * 序贯检验（SPRT — Sequential Probability Ratio Test）
+     * 适合实验期间持续监控，解决传统频繁查看导致的 Peeking Problem。
+     * @param id              实验ID
+     * @param variantGroupId  变体组ID
+     * @param baselineGroupId 基准组ID
+     * @param mde             最小可检测效应（相对，如 0.05 表示 5%）
+     * @param alpha           I 类错误率（默认 0.05）
+     * @param beta            II 类错误率（默认 0.20，即 power=0.80）
+     * @return 当前决策（ACCEPT_H1 / ACCEPT_H0 / CONTINUE）、对数似然比及阈值
+     */
+    @GetMapping("/experiment/{id}/sequential")
+    @NoTokenRequired
+    public BaseResponse<Map<String, Object>> sequentialTest(
+            @PathVariable String id,
+            @RequestParam String variantGroupId,
+            @RequestParam String baselineGroupId,
+            @RequestParam(required = false, defaultValue = "0.05") Double mde,
+            @RequestParam(required = false, defaultValue = "0.05") Double alpha,
+            @RequestParam(required = false, defaultValue = "0.20") Double beta) {
+        Map<String, Object> result = analysisService.sequentialTest(
+                id, variantGroupId, baselineGroupId, mde, alpha, beta);
+        return BaseResponse.of(result);
+    }
 }
 

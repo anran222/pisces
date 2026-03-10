@@ -30,7 +30,7 @@ public class TongYiConfig {
     
     /**
      * 是否启用通义API（默认：true）
-     * 如果为false，将使用模拟数据
+     * 如果为false，将直接拒绝AI请求
      */
     private boolean enabled = true;
 }

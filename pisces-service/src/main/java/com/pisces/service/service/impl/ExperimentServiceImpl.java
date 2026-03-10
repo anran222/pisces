@@ -89,6 +89,7 @@ public class ExperimentServiceImpl implements ExperimentService {
         
         // 构建实验元数据
         ExperimentMetadata metadata = new ExperimentMetadata();
+        metadata.setConfigVersion(1L);
         metadata.setExperiment(experiment);
         metadata.setGroups(groups);
         metadata.setTraffic(trafficConfig);
@@ -162,6 +163,7 @@ public class ExperimentServiceImpl implements ExperimentService {
         // 更新白名单和黑名单
         metadata.setWhitelist(request.getWhitelist() != null ? request.getWhitelist() : new ArrayList<>());
         metadata.setBlacklist(request.getBlacklist() != null ? request.getBlacklist() : new ArrayList<>());
+        metadata.setConfigVersion(Math.max(1L, metadata.getConfigVersion()) + 1);
         
         try {
             configService.saveExperimentConfig(experimentId, metadata);
@@ -731,4 +733,3 @@ public class ExperimentServiceImpl implements ExperimentService {
         }
     }
 }
-

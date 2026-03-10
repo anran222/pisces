@@ -110,7 +110,7 @@ public class ApiBodyLogFilter extends OncePerRequestFilter {
         if (buf == null || buf.length == 0) return "";
         if (buf.length > MAX_BODY_BYTES) return "[skipped-too-large]";
 
-        String body = bytesToString(buf, req.getCharacterEncoding());
+        String body = bytesToString(buf, req.getCharacterEncoding(), contentTypeLower);
         return maskAndTruncate(body);
     }
 
@@ -122,7 +122,7 @@ public class ApiBodyLogFilter extends OncePerRequestFilter {
         if (buf == null || buf.length == 0) return "";
         if (buf.length > MAX_BODY_BYTES) return "[skipped-too-large]";
 
-        String body = bytesToString(buf, resp.getCharacterEncoding());
+        String body = bytesToString(buf, resp.getCharacterEncoding(), contentTypeLower);
         return maskAndTruncate(body);
     }
 
@@ -146,7 +146,7 @@ public class ApiBodyLogFilter extends OncePerRequestFilter {
                 || contentTypeLower.contains("javascript");
     }
 
-    private String bytesToString(byte[] bytes, String encoding) {
+    private String bytesToString(byte[] bytes, String encoding, String contentTypeLower) {
         Charset charset = StandardCharsets.UTF_8;
         if (StringUtils.hasText(encoding)) {
             try {
@@ -154,7 +154,22 @@ public class ApiBodyLogFilter extends OncePerRequestFilter {
             } catch (Exception ignored) {
             }
         }
+        if (shouldUseUtf8ByDefault(contentTypeLower, charset)) {
+            charset = StandardCharsets.UTF_8;
+        }
         return new String(bytes, charset);
+    }
+
+    private boolean shouldUseUtf8ByDefault(String contentTypeLower, Charset charset) {
+        if (!StringUtils.hasText(contentTypeLower)) {
+            return StandardCharsets.ISO_8859_1.equals(charset);
+        }
+        boolean textualPayload = contentTypeLower.contains("json")
+                || contentTypeLower.contains("text")
+                || contentTypeLower.contains("xml")
+                || contentTypeLower.contains("javascript")
+                || contentTypeLower.contains("form-urlencoded");
+        return textualPayload && StandardCharsets.ISO_8859_1.equals(charset);
     }
 
     private String maskAndTruncate(String body) {
@@ -168,4 +183,3 @@ public class ApiBodyLogFilter extends OncePerRequestFilter {
         return s == null ? "" : s.toLowerCase(Locale.ROOT);
     }
 }
-

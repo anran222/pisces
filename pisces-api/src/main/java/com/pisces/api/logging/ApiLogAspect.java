@@ -144,9 +144,9 @@ public class ApiLogAspect {
             if (v instanceof HttpServletRequest) continue;
             String key = name == null ? "" : name.toLowerCase(Locale.ROOT);
             if (SENSITIVE_KEYS.contains(key) || key.contains("password") || key.contains("token") || key.contains("apikey")) {
-                out.add(Map.of(name, "***"));
+                out.add(singleEntry(name, "***"));
             } else {
-                out.add(Map.of(name, summarizeValue(v)));
+                out.add(singleEntry(name, summarizeValue(v)));
             }
         }
         return out;
@@ -219,5 +219,10 @@ public class ApiLogAspect {
         if (v.length() <= 8) return "****";
         return v.substring(0, 2) + "****" + v.substring(v.length() - 2);
     }
-}
 
+    private Map<String, Object> singleEntry(String key, Object value) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put(StringUtils.hasText(key) ? key : "unknown", value);
+        return map;
+    }
+}

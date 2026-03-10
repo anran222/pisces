@@ -9,10 +9,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
+import org.springframework.data.redis.core.ScanOptions;
+
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -37,22 +42,38 @@ public class DataServiceImpl implements DataService {
     private static final String EVENT_COUNTER_PREFIX = "pisces:event:counter:";  // 事件计数器
     private static final String VISITOR_SET_PREFIX = "pisces:visitor:set:";  // 访客集合
     
+    // 事件去重键前缀（用于客户端幂等上报）
+    private static final String EVENT_DEDUP_PREFIX = "pisces:event:dedup:";
+    // 事件去重过期时间（天）—— 与数据保留时长一致
+    private static final long DEDUP_EXPIRE_DAYS = 90;
     // 数据过期时间（天）
     private static final long DATA_EXPIRE_DAYS = 90;
     
     /**
      * 上报事件（使用visitorId，可以是userId、设备ID、会话ID等）
+     * properties 中可携带 clientEventId 字段用于客户端幂等去重
      */
     @Override
-    public void reportEvent(String experimentId, String visitorId, String eventType, 
+    public void reportEvent(String experimentId, String visitorId, String eventType,
                            String eventName, Map<String, Object> properties) {
+        // 客户端幂等去重：若调用方携带了 clientEventId，则以此作为去重键（原子 SetIfAbsent）
+        if (properties != null && properties.containsKey("clientEventId")) {
+            String clientEventId = String.valueOf(properties.get("clientEventId"));
+            String dedupKey = EVENT_DEDUP_PREFIX + experimentId + ":" + clientEventId;
+            Boolean added = redisTemplate.opsForValue().setIfAbsent(dedupKey, "1", DEDUP_EXPIRE_DAYS, TimeUnit.DAYS);
+            if (Boolean.FALSE.equals(added)) {
+                log.debug("重复事件已丢弃: clientEventId={}, experimentId={}", clientEventId, experimentId);
+                return;
+            }
+        }
+
         // 获取访客所在组
         String groupId = trafficService.getUserGroup(experimentId, visitorId);
         if (groupId == null) {
             log.warn("访客 {} 不在实验 {} 中", visitorId, experimentId);
             return;
         }
-        
+
         // 创建事件
         Event event = new Event();
         event.setEventId("evt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8));
@@ -62,7 +83,7 @@ public class DataServiceImpl implements DataService {
         event.setEventType(Event.EventType.valueOf(eventType));
         event.setEventName(eventName);
         event.setProperties(properties);
-        event.setTimestamp(LocalDateTime.now());
+        event.setTimestamp(resolveEventTimestamp(properties));
         
         // 存储事件到Redis（使用List存储）
         String eventStoreKey = EVENT_STORE_PREFIX + experimentId + ":" + groupId;
@@ -78,27 +99,20 @@ public class DataServiceImpl implements DataService {
         redisTemplate.expire(visitorSetKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
         
         // 更新MAB算法奖励
-        // 对于价格提升实验，使用成交价格作为奖励指标
+        // 转化事件默认视为成功，业务方可通过 properties.mabSuccess=false 覆盖
         if (mabService != null && Event.EventType.CONVERT.name().equals(eventType)) {
             try {
-                // 从properties中获取成交价格，用于计算奖励
-                // 检查properties是否为null
-                if (properties != null) {
-                    Object transactionPrice = properties.get("transactionPrice");
-                    if (transactionPrice != null) {
-                        // 价格越高，奖励越大（简化处理：价格>4500视为成功）
-                        boolean success = ((Number) transactionPrice).doubleValue() > 4500;
-                        mabService.updateReward(experimentId, groupId, success);
-                        log.debug("更新MAB奖励: 实验={}, 组={}, 价格={}, 成功={}", 
-                                experimentId, groupId, transactionPrice, success);
+                boolean success = true;
+                if (properties != null && properties.containsKey("mabSuccess")) {
+                    Object flag = properties.get("mabSuccess");
+                    if (flag instanceof Boolean) {
+                        success = (Boolean) flag;
                     } else {
-                        // 如果没有价格信息，默认视为成功
-                        mabService.updateReward(experimentId, groupId, true);
+                        success = Boolean.parseBoolean(String.valueOf(flag));
                     }
-                } else {
-                    // 如果properties为null，默认视为成功
-                    mabService.updateReward(experimentId, groupId, true);
                 }
+                mabService.updateReward(experimentId, groupId, success);
+                log.debug("更新MAB奖励: 实验={}, 组={}, 成功={}", experimentId, groupId, success);
             } catch (Exception e) {
                 log.warn("更新MAB奖励失败: 实验={}, 组={}", experimentId, groupId, e);
             }
@@ -106,6 +120,31 @@ public class DataServiceImpl implements DataService {
         
         log.debug("上报事件: 实验={}, 访客={}, 组={}, 事件={}", 
                 experimentId, visitorId, groupId, eventName);
+    }
+
+    private LocalDateTime resolveEventTimestamp(Map<String, Object> properties) {
+        if (properties == null || properties.isEmpty()) {
+            return LocalDateTime.now();
+        }
+
+        for (String key : List.of("eventTime", "timestamp", "transactionDate")) {
+            Object value = properties.get(key);
+            if (value == null) {
+                continue;
+            }
+            if (value instanceof LocalDateTime localDateTime) {
+                return localDateTime;
+            }
+            if (value instanceof String stringValue) {
+                try {
+                    return LocalDateTime.parse(stringValue);
+                } catch (Exception ignored) {
+                    // Continue trying the next field/value.
+                }
+            }
+        }
+
+        return LocalDateTime.now();
     }
 
     /**
@@ -212,9 +251,9 @@ public class DataServiceImpl implements DataService {
             long totalClicks = 0;
             long totalConversions = 0;
             
-            // 扫描所有以该实验ID开头的key
+            // 使用 SCAN 游标遍历键，避免 KEYS 命令在大数据量时阻塞 Redis
             String pattern = VISITOR_SET_PREFIX + experimentId + ":*";
-            java.util.Set<String> visitorKeys = redisTemplate.keys(pattern);
+            Set<String> visitorKeys = scanKeys(pattern);
             
             if (visitorKeys != null) {
                 for (String key : visitorKeys) {
@@ -241,6 +280,24 @@ public class DataServiceImpl implements DataService {
         return summary;
     }
     
+    /**
+     * 使用 SCAN 游标安全扫描 Redis 键，替代阻塞式 KEYS 命令
+     */
+    private Set<String> scanKeys(String pattern) {
+        Set<String> keys = new HashSet<>();
+        ScanOptions options = ScanOptions.scanOptions().match(pattern).count(200).build();
+        try (var cursor = redisTemplate.execute(
+                (org.springframework.data.redis.core.RedisCallback<org.springframework.data.redis.core.Cursor<byte[]>>) connection ->
+                        connection.keyCommands().scan(options))) {
+            if (cursor != null) {
+                cursor.forEachRemaining(key -> keys.add(new String(key, StandardCharsets.UTF_8)));
+            }
+        } catch (Exception e) {
+            log.error("扫描 Redis 键失败: pattern={}", pattern, e);
+        }
+        return keys;
+    }
+
     /**
      * 将Map转换为Event对象
      */
@@ -278,4 +335,3 @@ public class DataServiceImpl implements DataService {
         }
     }
 }
-

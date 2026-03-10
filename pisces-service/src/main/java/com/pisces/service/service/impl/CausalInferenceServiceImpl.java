@@ -1,8 +1,11 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.Event;
+import com.pisces.common.enums.ResponseCode;
+import com.pisces.service.exception.BusinessException;
 import com.pisces.service.service.CausalInferenceService;
 import com.pisces.service.service.DataService;
+import com.pisces.service.util.StatisticalUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -81,82 +84,172 @@ public class CausalInferenceServiceImpl implements CausalInferenceService {
     @Override
     public Map<String, Object> analyzeByPSM(String experimentId, String treatmentGroupId,
                                            String controlGroupId, List<String> userFeatures) {
-        log.info("执行PSM分析: experimentId={}, treatment={}, control={}, features={}", 
-                experimentId, treatmentGroupId, controlGroupId, userFeatures);
-        
-        // TODO: 实际实现需要：
-        // 1. 获取用户特征数据
-        // 2. 使用逻辑回归计算倾向得分
-        // 3. 进行匹配（最近邻匹配、半径匹配等）
-        // 4. 计算匹配后的处理效应
-        
-        // 简化实现：模拟PSM结果
+        log.info("执行PSM分析: experimentId={}, treatment={}, control={}", experimentId, treatmentGroupId, controlGroupId);
+
+        // 获取两组事件数据
+        List<Event> treatEvents = dataService.getEvents(experimentId, treatmentGroupId);
+        List<Event> ctrlEvents  = dataService.getEvents(experimentId, controlGroupId);
+
+        if (treatEvents.isEmpty() || ctrlEvents.isEmpty()) {
+            throw new BusinessException(ResponseCode.DATA_NOT_FOUND,
+                    "PSM分析所需事件数据不足，无法执行真实因果推断");
+        }
+
+        // ── 1. 构建访客级别数据（以 VIEW 事件为单位，outcome = 是否有 CONVERT）──
+        Map<String, VisitorData> treatVisitors = buildVisitorMap(treatEvents, true);
+        Map<String, VisitorData> ctrlVisitors  = buildVisitorMap(ctrlEvents, false);
+
+        if (treatVisitors.isEmpty() || ctrlVisitors.isEmpty()) {
+            throw new BusinessException(ResponseCode.DATA_NOT_FOUND,
+                    "PSM分析所需访客特征不足，无法执行真实因果推断");
+        }
+
+        // ── 2. 用逻辑回归计算倾向得分 P(treatment=1 | X) ──
+        // 特征：viewCount（活跃度代理）、isEarlyAdopter（首次出现时间序号）
+        List<VisitorData> allVisitors = new ArrayList<>();
+        allVisitors.addAll(treatVisitors.values());
+        allVisitors.addAll(ctrlVisitors.values());
+
+        normalizeFeatures(allVisitors);
+        double[] weights = fitLogisticRegression(allVisitors);
+        for (VisitorData v : allVisitors) {
+            v.propensityScore = sigmoid(weights[0] + weights[1] * v.feat1 + weights[2] * v.feat2);
+        }
+
+        // ── 3. 最近邻 1:1 匹配（caliper = 0.05 * SD of propensity scores）──
+        double caliper = computeCaliper(allVisitors);
+        List<double[]> matchedPairs = nearestNeighborMatch(treatVisitors.values(), ctrlVisitors.values(), caliper);
+
+        // ── 4. 计算 ATT（平均处理效应，matched pairs 上）──
+        double sumDiff = 0;
+        for (double[] pair : matchedPairs) {
+            sumDiff += pair[0] - pair[1]; // 处理组 outcome - 对照组 outcome
+        }
+        double ate = matchedPairs.isEmpty() ? 0 : sumDiff / matchedPairs.size();
+
+        // ── 5. 配对 t 检验 SE ──
+        double variance = 0;
+        for (double[] pair : matchedPairs) {
+            variance += Math.pow((pair[0] - pair[1]) - ate, 2);
+        }
+        double se = matchedPairs.size() > 1 ? Math.sqrt(variance / (matchedPairs.size() * (matchedPairs.size() - 1))) : 0;
+        double tStat = se > 0 ? ate / se : 0;
+        double pValue = StatisticalUtils.zToPValue(tStat);
+
         Map<String, Object> result = new HashMap<>();
         result.put("method", "PSM");
-        result.put("matchedPairs", 100); // 匹配的对数
-        result.put("unmatchedTreatment", 50);
-        result.put("unmatchedControl", 30);
-        result.put("averageTreatmentEffect", 0.05); // ATE估计量
-        result.put("standardError", 0.02);
-        result.put("interpretation", "通过倾向得分匹配，在控制了观测混淆变量后，处理效应为0.05");
-        
-        log.warn("PSM分析使用模拟数据，实际实现需要用户特征数据和匹配算法");
+        result.put("totalTreatment", treatVisitors.size());
+        result.put("totalControl", ctrlVisitors.size());
+        result.put("matchedPairs", matchedPairs.size());
+        result.put("unmatchedTreatment", treatVisitors.size() - matchedPairs.size());
+        result.put("averageTreatmentEffect", ate);
+        result.put("standardError", se);
+        result.put("tStatistic", tStat);
+        result.put("pValue", pValue);
+        result.put("isSignificant", pValue < 0.05);
+        result.put("caliper", caliper);
+        result.put("interpretation", String.format(
+                "PSM(%d对匹配)：控制观测混淆后，ATT=%.4f，%s（p=%.4f）",
+                matchedPairs.size(), ate, pValue < 0.05 ? "统计显著" : "不显著", pValue));
         return result;
     }
-    
+
+    // ── PSM 内部辅助 ──
+
+    private static class VisitorData {
+        String visitorId;
+        int treatment;   // 1=处理组, 0=对照组
+        int outcome;     // 1=转化, 0=未转化
+        int viewCount;
+        int rank;        // 事件序号（时间先后代理）
+        double feat1;    // 归一化特征1：viewCount
+        double feat2;    // 归一化特征2：rank
+        double propensityScore;
+    }
+
+    private Map<String, VisitorData> buildVisitorMap(List<Event> events, boolean isTreatment) {
+        Map<String, VisitorData> map = new LinkedHashMap<>();
+        int rank = 0;
+        for (Event e : events) {
+            String vid = e.getUserId();
+            if (vid == null) continue;
+            VisitorData vd = map.computeIfAbsent(vid, k -> {
+                VisitorData v = new VisitorData();
+                v.visitorId = k;
+                v.treatment = isTreatment ? 1 : 0;
+                return v;
+            });
+            if (Event.EventType.VIEW.equals(e.getEventType())) vd.viewCount++;
+            if (Event.EventType.CONVERT.equals(e.getEventType())) vd.outcome = 1;
+            if (vd.rank == 0) vd.rank = ++rank;
+        }
+        return map;
+    }
+
+    private void normalizeFeatures(List<VisitorData> list) {
+        double meanV = list.stream().mapToInt(v -> v.viewCount).average().orElse(1);
+        double stdV  = Math.max(1, Math.sqrt(list.stream().mapToDouble(v -> Math.pow(v.viewCount - meanV, 2)).average().orElse(1)));
+        double meanR = list.stream().mapToInt(v -> v.rank).average().orElse(1);
+        double stdR  = Math.max(1, Math.sqrt(list.stream().mapToDouble(v -> Math.pow(v.rank - meanR, 2)).average().orElse(1)));
+        for (VisitorData v : list) {
+            v.feat1 = (v.viewCount - meanV) / stdV;
+            v.feat2 = (v.rank - meanR) / stdR;
+        }
+    }
+
+    /** 逻辑回归（梯度下降，50 轮，学习率 0.1）*/
+    private double[] fitLogisticRegression(List<VisitorData> data) {
+        double w0 = 0, w1 = 0, w2 = 0;
+        double lr = 0.1;
+        for (int iter = 0; iter < 50; iter++) {
+            double dw0 = 0, dw1 = 0, dw2 = 0;
+            for (VisitorData v : data) {
+                double pred = sigmoid(w0 + w1 * v.feat1 + w2 * v.feat2);
+                double err = pred - v.treatment;
+                dw0 += err; dw1 += err * v.feat1; dw2 += err * v.feat2;
+            }
+            int n = data.size();
+            w0 -= lr * dw0 / n; w1 -= lr * dw1 / n; w2 -= lr * dw2 / n;
+        }
+        return new double[]{w0, w1, w2};
+    }
+
+    private double sigmoid(double x) {
+        return 1.0 / (1.0 + Math.exp(-x));
+    }
+
+    private double computeCaliper(List<VisitorData> list) {
+        double mean = list.stream().mapToDouble(v -> v.propensityScore).average().orElse(0.5);
+        double variance = list.stream().mapToDouble(v -> Math.pow(v.propensityScore - mean, 2)).average().orElse(0.01);
+        return 0.2 * Math.sqrt(variance); // Cochran & Rubin 推荐的 0.2 倍标准差
+    }
+
+    /** 贪心最近邻匹配（处理组 → 对照组，不放回） */
+    private List<double[]> nearestNeighborMatch(Collection<VisitorData> treat, Collection<VisitorData> ctrl, double caliper) {
+        List<VisitorData> ctrlList = new ArrayList<>(ctrl);
+        List<double[]> pairs = new ArrayList<>();
+        for (VisitorData t : treat) {
+            VisitorData best = null;
+            double bestDist = caliper;
+            for (VisitorData c : ctrlList) {
+                double dist = Math.abs(t.propensityScore - c.propensityScore);
+                if (dist < bestDist) { bestDist = dist; best = c; }
+            }
+            if (best != null) {
+                pairs.add(new double[]{t.outcome, best.outcome});
+                ctrlList.remove(best);
+            }
+        }
+        return pairs;
+    }
+
     @Override
     public Map<String, Object> analyzeByCausalForest(String experimentId, String treatmentGroupId,
                                                        String controlGroupId, List<String> userFeatures) {
         log.info("执行因果森林分析: experimentId={}, treatment={}, control={}, features={}", 
                 experimentId, treatmentGroupId, controlGroupId, userFeatures);
-        
-        // TODO: 实际实现需要：
-        // 1. 使用随机森林算法构建因果森林模型
-        // 2. 估计每个用户的处理效应（ITE）
-        // 3. 计算平均处理效应（ATE）
-        // 4. 根据处理效应划分敏感群体
-        
-        // 简化实现：模拟因果森林结果
-        Map<String, Object> result = new HashMap<>();
-        
-        // ATE（平均处理效应）
-        double ate = 0.06;
-        result.put("averageTreatmentEffect", ate);
-        
-        // CATE（条件平均处理效应）- 按用户特征分组
-        Map<String, Double> cateByFeature = new HashMap<>();
-        cateByFeature.put("age_25_35", 0.08);
-        cateByFeature.put("age_35_45", 0.04);
-        cateByFeature.put("high_credit", 0.10);
-        cateByFeature.put("low_credit", 0.02);
-        result.put("conditionalATE", cateByFeature);
-        
-        // 敏感群体划分
-        Map<String, Object> sensitiveGroups = new HashMap<>();
-        sensitiveGroups.put("highSensitive", Map.of(
-                "criteria", "age_25_35 AND high_credit",
-                "treatmentEffect", 0.12,
-                "userCount", 500
-        ));
-        sensitiveGroups.put("mediumSensitive", Map.of(
-                "criteria", "age_35_45 OR low_credit",
-                "treatmentEffect", 0.04,
-                "userCount", 800
-        ));
-        sensitiveGroups.put("lowSensitive", Map.of(
-                "criteria", "other",
-                "treatmentEffect", 0.01,
-                "userCount", 200
-        ));
-        result.put("sensitiveGroups", sensitiveGroups);
-        
-        result.put("method", "CausalForest");
-        result.put("interpretation", String.format(
-                "平均处理效应为%.4f，其中高敏感群体（25-35岁高信用用户）的处理效应为%.4f",
-                ate, 0.12));
-        
-        log.warn("因果森林分析使用模拟数据，实际实现需要机器学习模型");
-        return result;
+        throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE,
+                "因果森林分析尚未接入真实模型，禁止返回模拟结果");
     }
     
     /**
@@ -172,31 +265,38 @@ public class CausalInferenceServiceImpl implements CausalInferenceService {
     }
     
     /**
-     * 计算标准误（简化实现）
+     * 计算 DID 标准误
+     * 基于 Delta Method：SE ≈ sqrt( Var(post_treat) + Var(pre_treat) + Var(post_ctrl) + Var(pre_ctrl) )
+     * 各期方差 = p*(1-p)/n，当无法获取实际 n 时退化为简化估计
      */
     private double calculateStandardError(String experimentId, String treatmentGroupId,
                                          String controlGroupId,
                                          LocalDateTime beforeStart, LocalDateTime beforeEnd,
                                          LocalDateTime afterStart, LocalDateTime afterEnd) {
-        // TODO: 实际实现需要计算DID的标准误
-        // 这里使用简化的近似方法
-        double treatmentBefore = calculateConversionRate(experimentId, treatmentGroupId, beforeStart, beforeEnd);
-        double treatmentAfter = calculateConversionRate(experimentId, treatmentGroupId, afterStart, afterEnd);
-        double controlBefore = calculateConversionRate(experimentId, controlGroupId, beforeStart, beforeEnd);
-        double controlAfter = calculateConversionRate(experimentId, controlGroupId, afterStart, afterEnd);
-        
-        // 简化的标准误计算
-        double variance = Math.abs(treatmentAfter - treatmentBefore) + Math.abs(controlAfter - controlBefore);
-        return Math.sqrt(variance / 1000.0); // 假设样本量为1000
+        long nTreatBefore = dataService.getEventCountInTimeRange(experimentId, treatmentGroupId, "VIEW", beforeStart, beforeEnd);
+        long nTreatAfter  = dataService.getEventCountInTimeRange(experimentId, treatmentGroupId, "VIEW", afterStart, afterEnd);
+        long nCtrlBefore  = dataService.getEventCountInTimeRange(experimentId, controlGroupId, "VIEW", beforeStart, beforeEnd);
+        long nCtrlAfter   = dataService.getEventCountInTimeRange(experimentId, controlGroupId, "VIEW", afterStart, afterEnd);
+
+        double pTB = calculateConversionRate(experimentId, treatmentGroupId, beforeStart, beforeEnd);
+        double pTA = calculateConversionRate(experimentId, treatmentGroupId, afterStart, afterEnd);
+        double pCB = calculateConversionRate(experimentId, controlGroupId, beforeStart, beforeEnd);
+        double pCA = calculateConversionRate(experimentId, controlGroupId, afterStart, afterEnd);
+
+        long safeN = 10; // 防止除以 0
+        double varTA = pTA * (1 - pTA) / Math.max(nTreatAfter, safeN);
+        double varTB = pTB * (1 - pTB) / Math.max(nTreatBefore, safeN);
+        double varCA = pCA * (1 - pCA) / Math.max(nCtrlAfter, safeN);
+        double varCB = pCB * (1 - pCB) / Math.max(nCtrlBefore, safeN);
+
+        return Math.sqrt(varTA + varTB + varCA + varCB);
     }
-    
+
     /**
-     * 计算p值（简化实现）
+     * 双尾 p 值（基于正态 CDF 近似，替代之前的硬编码返回值）
      */
     private double calculatePValue(double tStat) {
-        // TODO: 实际实现需要使用t分布计算p值
-        // 这里使用简化的近似：|t| > 1.96 对应 p < 0.05
-        return Math.abs(tStat) > 1.96 ? 0.04 : 0.10;
+        return StatisticalUtils.zToPValue(tStat);
     }
     
     /**

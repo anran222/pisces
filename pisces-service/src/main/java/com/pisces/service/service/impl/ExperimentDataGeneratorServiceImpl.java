@@ -1,7 +1,11 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.Experiment;
+import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.common.request.ExperimentCreateRequest;
+import com.pisces.service.exception.BusinessException;
+import com.pisces.common.enums.ResponseCode;
+import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.DataService;
 import com.pisces.service.service.ExperimentDataGeneratorService;
 import com.pisces.service.service.ExperimentService;
@@ -28,6 +32,9 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
     
     @Autowired
     private DataService dataService;
+
+    @Autowired
+    private ConfigService configService;
     
     /**
      * 生成完整的实验流程数据
@@ -49,7 +56,7 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
         Map<String, List<String>> groupVisitors = assignVisitorsToGroups(experimentId, visitorCount);
         
         // 3. 生成事件数据
-        generateEventData(experimentId, groupVisitors);
+        generateEventData(experimentId, groupVisitors, Math.max(1, daysAgo));
         
         log.info("实验数据生成完成: 实验ID={}, 总访客数={}", 
                 experimentId, visitorCount * 4); // 4个实验组
@@ -83,6 +90,21 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
                 200,  // 每个组200个访客，总800个访客
                 14    // 14天前开始
         );
+    }
+
+    @Override
+    public void generateDataForExistingExperiment(String experimentId, int visitorCountPerGroup, int daysSpan) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata == null || metadata.getGroups() == null || metadata.getGroups().isEmpty()) {
+            throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND, "实验不存在或未配置实验组");
+        }
+
+        Map<String, List<String>> groupVisitors = assignVisitorsToConfiguredGroups(
+                experimentId,
+                new ArrayList<>(new TreeSet<>(metadata.getGroups().keySet())),
+                visitorCountPerGroup
+        );
+        generateEventData(experimentId, groupVisitors, Math.max(1, daysSpan));
     }
     
     /**
@@ -200,26 +222,43 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
      * 分配访客到实验组
      */
     private Map<String, List<String>> assignVisitorsToGroups(String experimentId, int visitorCountPerGroup) {
-        Map<String, List<String>> groupVisitors = new HashMap<>();
-        groupVisitors.put("A", new ArrayList<>());
-        groupVisitors.put("B", new ArrayList<>());
-        groupVisitors.put("C", new ArrayList<>());
-        groupVisitors.put("D", new ArrayList<>());
-        
-        Random random = new Random();
-        int totalVisitors = visitorCountPerGroup * 4;
-        
-        for (int i = 1; i <= totalVisitors; i++) {
-            String visitorId = "visitor_" + String.format("%05d", i);
-            
-            // 分配访客到实验组（系统会根据流量分配策略自动分配）
+        return assignVisitorsToConfiguredGroups(
+                experimentId,
+                List.of("A", "B", "C", "D"),
+                visitorCountPerGroup
+        );
+    }
+
+    private Map<String, List<String>> assignVisitorsToConfiguredGroups(
+            String experimentId,
+            List<String> groupIds,
+            int visitorCountPerGroup
+    ) {
+        Map<String, List<String>> groupVisitors = new LinkedHashMap<>();
+        for (String groupId : groupIds) {
+            groupVisitors.put(groupId, new ArrayList<>());
+        }
+
+        int visitorSequence = 1;
+        int maxAttempts = Math.max(1000, groupIds.size() * visitorCountPerGroup * 20);
+        int attempts = 0;
+
+        while (groupVisitors.values().stream().anyMatch(visitors -> visitors.size() < visitorCountPerGroup)
+                && attempts < maxAttempts) {
+            String visitorId = "visitor_" + String.format("%06d", visitorSequence++);
             String groupId = trafficService.assignGroup(experimentId, visitorId);
-            
-            if (groupId != null && groupVisitors.containsKey(groupId)) {
-                groupVisitors.get(groupId).add(visitorId);
+            attempts++;
+
+            if (groupId == null || !groupVisitors.containsKey(groupId)) {
+                continue;
+            }
+
+            List<String> visitors = groupVisitors.get(groupId);
+            if (visitors.size() < visitorCountPerGroup) {
+                visitors.add(visitorId);
             }
         }
-        
+
         log.info("访客分配完成: 实验ID={}, 各组访客数={}", 
                 experimentId, groupVisitors.entrySet().stream()
                         .collect(java.util.stream.Collectors.toMap(
@@ -232,9 +271,9 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
     /**
      * 生成事件数据
      */
-    private void generateEventData(String experimentId, Map<String, List<String>> groupVisitors) {
+    private void generateEventData(String experimentId, Map<String, List<String>> groupVisitors, int daysSpan) {
         Random random = new Random();
-        LocalDateTime baseTime = LocalDateTime.now().minusDays(7); // 从7天前开始
+        LocalDateTime baseTime = LocalDateTime.now().minusDays(daysSpan); // 从指定天数前开始
         
         // 不同组的转化率和价格提升效果
         Map<String, GroupStats> groupStats = new HashMap<>();
@@ -250,18 +289,18 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
             
             for (String visitorId : visitors) {
                 // 生成VIEW事件（所有访客都会浏览）
-                generateViewEvent(experimentId, visitorId, groupId, baseTime, random);
+                generateViewEvent(experimentId, visitorId, groupId, baseTime, random, daysSpan);
                 
                 // 根据转化率决定是否点击和转化
                 // 点击率约为转化率的5倍（例如：10%转化率 → 50%点击率）
                 double clickRate = stats.conversionRate * 5;
                 if (random.nextDouble() < clickRate) {
-                    generateClickEvent(experimentId, visitorId, groupId, baseTime, random);
+                    generateClickEvent(experimentId, visitorId, groupId, baseTime, random, daysSpan);
                     
                     // 根据转化率决定是否转化
                     // 在已点击的访客中，按转化率决定是否转化
                     if (random.nextDouble() < (stats.conversionRate / clickRate)) {
-                        generateConvertEvent(experimentId, visitorId, groupId, baseTime, random, stats);
+                        generateConvertEvent(experimentId, visitorId, groupId, baseTime, random, stats, daysSpan);
                     }
                 }
             }
@@ -270,32 +309,35 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
         log.info("事件数据生成完成: 实验ID={}", experimentId);
     }
     
-    private void generateViewEvent(String experimentId, String visitorId, String groupId, 
-                                   LocalDateTime baseTime, Random random) {
+    private void generateViewEvent(String experimentId, String visitorId, String groupId,
+                                   LocalDateTime baseTime, Random random, int daysSpan) {
         Map<String, Object> properties = new HashMap<>();
         properties.put("productId", "product_" + String.format("%03d", random.nextInt(100)));
         properties.put("productPrice", 4500 + random.nextInt(500));
         properties.put("marketPrice", 6000);
         properties.put("productModel", "iPhone 13 Pro");
         properties.put("condition", getRandomCondition(random));
+        properties.put("eventTime", randomEventTime(baseTime, random, daysSpan));
         
         dataService.reportEvent(experimentId, visitorId, "VIEW", "product_detail_view", properties);
     }
     
-    private void generateClickEvent(String experimentId, String visitorId, String groupId, 
-                                    LocalDateTime baseTime, Random random) {
+    private void generateClickEvent(String experimentId, String visitorId, String groupId,
+                                    LocalDateTime baseTime, Random random, int daysSpan) {
         Map<String, Object> properties = new HashMap<>();
         properties.put("productId", "product_" + String.format("%03d", random.nextInt(100)));
         properties.put("productPrice", 4500 + random.nextInt(500));
+        properties.put("eventTime", randomEventTime(baseTime, random, daysSpan));
         
         dataService.reportEvent(experimentId, visitorId, "CLICK", "contact_seller", properties);
     }
     
-    private void generateConvertEvent(String experimentId, String visitorId, String groupId, 
-                                      LocalDateTime baseTime, Random random, GroupStats stats) {
+    private void generateConvertEvent(String experimentId, String visitorId, String groupId,
+                                      LocalDateTime baseTime, Random random, GroupStats stats, int daysSpan) {
         // 在基准价格基础上添加随机波动
         int priceVariation = random.nextInt(300) - 150; // -150到+150的波动
         int transactionPrice = stats.basePrice + priceVariation;
+        LocalDateTime eventTime = randomEventTime(baseTime, random, daysSpan);
         
         Map<String, Object> properties = new HashMap<>();
         properties.put("productId", "product_" + String.format("%03d", random.nextInt(100)));
@@ -303,11 +345,17 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
         properties.put("listPrice", 4500);
         properties.put("marketPrice", 6000);
         properties.put("priceRatio", (double) transactionPrice / 6000);
-        properties.put("transactionDate", baseTime.plusDays(random.nextInt(7))
-                .plusHours(random.nextInt(24))
-                .plusMinutes(random.nextInt(60)));
+        properties.put("transactionDate", eventTime);
+        properties.put("eventTime", eventTime);
         
         dataService.reportEvent(experimentId, visitorId, "CONVERT", "transaction_completed", properties);
+    }
+
+    private LocalDateTime randomEventTime(LocalDateTime baseTime, Random random, int daysSpan) {
+        return baseTime
+                .plusDays(random.nextInt(Math.max(1, daysSpan)))
+                .plusHours(random.nextInt(24))
+                .plusMinutes(random.nextInt(60));
     }
     
     private String getRandomCondition(Random random) {

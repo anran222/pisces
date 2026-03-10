@@ -101,6 +101,24 @@ public class ExperimentDataGeneratorController {
         
         return BaseResponse.of("实验数据生成成功", result);
     }
+
+    @PostMapping("/{experimentId}/simulate")
+    public BaseResponse<Map<String, Object>> simulateExistingExperimentData(
+            @PathVariable String experimentId,
+            @RequestBody(required = false) GenerateRequest request) {
+        GenerateRequest safeRequest = request == null ? new GenerateRequest() : request;
+        int visitorCount = safeRequest.getVisitorCount() != null ? safeRequest.getVisitorCount() : 100;
+        int daysAgo = safeRequest.getDaysAgo() != null ? safeRequest.getDaysAgo() : 7;
+
+        generatorService.generateDataForExistingExperiment(experimentId, visitorCount, daysAgo);
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("experimentId", experimentId);
+        result.put("visitorCountPerGroup", visitorCount);
+        result.put("daysSpan", daysAgo);
+        result.put("message", "实验演示数据生成成功");
+        return BaseResponse.of("实验演示数据生成成功", result);
+    }
     
     /**
      * 生成请求参数

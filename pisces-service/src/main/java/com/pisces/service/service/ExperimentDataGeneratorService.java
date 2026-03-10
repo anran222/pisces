@@ -29,4 +29,13 @@ public interface ExperimentDataGeneratorService {
      * @return 生成的实验ID
      */
     String generateQuickExperimentData();
+
+    /**
+     * 为已有实验补充演示数据。
+     *
+     * @param experimentId 实验ID
+     * @param visitorCountPerGroup 每个实验组补充的访客数
+     * @param daysSpan 数据覆盖的天数
+     */
+    void generateDataForExistingExperiment(String experimentId, int visitorCountPerGroup, int daysSpan);
 }

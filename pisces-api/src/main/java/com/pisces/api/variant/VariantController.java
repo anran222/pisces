@@ -1,11 +1,24 @@
 package com.pisces.api.variant;
 
 import com.pisces.common.response.BaseResponse;
+import com.pisces.service.exception.BusinessException;
 import com.pisces.service.annotation.NoTokenRequired;
 import com.pisces.service.service.VariantGenerationService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.IOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -17,6 +30,11 @@ import java.util.Map;
 @RequestMapping("/variants")
 @NoTokenRequired  // 无需Token认证
 public class VariantController {
+
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .connectTimeout(Duration.ofSeconds(15))
+            .build();
     
     @Autowired
     private VariantGenerationService variantGenerationService;
@@ -61,11 +79,6 @@ public class VariantController {
             return BaseResponse.error(com.pisces.common.enums.ResponseCode.BAD_REQUEST, "请上传图片");
         }
         
-        // 移除可能的data:image前缀
-        if (imageBase64.contains(",")) {
-            imageBase64 = imageBase64.split(",")[1];
-        }
-        
         List<String> imageUrls = variantGenerationService.generateImageVariantsFromImage(
                 imageBase64, prompt, count);
         return BaseResponse.of("图生图成功", imageUrls);
@@ -86,14 +99,6 @@ public class VariantController {
             return BaseResponse.error(com.pisces.common.enums.ResponseCode.BAD_REQUEST, "请上传图片");
         }
         
-        // 移除可能的data:image前缀
-        if (imageBase64.contains(",")) {
-            imageBase64 = imageBase64.split(",")[1];
-        }
-        if (maskBase64 != null && maskBase64.contains(",")) {
-            maskBase64 = maskBase64.split(",")[1];
-        }
-        
         String resultUrl = variantGenerationService.editImage(imageBase64, maskBase64, prompt);
         return BaseResponse.of("编辑成功", resultUrl);
     }
@@ -104,7 +109,7 @@ public class VariantController {
      * @param request 包含 imageBase64、style（风格：cartoon, oil-painting, sketch, anime, watercolor, pixel, 3d, minimalist）
      */
     @PostMapping("/image/style-transfer")
-    public BaseResponse<String> transferImageStyle(@RequestBody Map<String, Object> request) {
+    public BaseResponse<Map<String, String>> transferImageStyle(@RequestBody Map<String, Object> request) {
         String imageBase64 = (String) request.get("imageBase64");
         String style = (String) request.getOrDefault("style", "cartoon");
         
@@ -112,13 +117,50 @@ public class VariantController {
             return BaseResponse.error(com.pisces.common.enums.ResponseCode.BAD_REQUEST, "请上传图片");
         }
         
-        // 移除可能的data:image前缀
-        if (imageBase64.contains(",")) {
-            imageBase64 = imageBase64.split(",")[1];
-        }
-        
         String resultUrl = variantGenerationService.transferImageStyle(imageBase64, style);
-        return BaseResponse.of("风格转换成功", resultUrl);
+        return BaseResponse.of("风格转换成功", buildImageResultPayload(resultUrl, "style-" + style + ".png", style));
+    }
+
+    @GetMapping("/image/download")
+    public ResponseEntity<byte[]> downloadGeneratedImage(@RequestParam String url,
+                                                         @RequestParam(required = false) String fileName) {
+        if (url == null || url.isBlank()) {
+            throw new BusinessException(com.pisces.common.enums.ResponseCode.BAD_REQUEST, "下载地址不能为空");
+        }
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            throw new BusinessException(com.pisces.common.enums.ResponseCode.BAD_REQUEST, "仅支持下载 HTTP/HTTPS 图片");
+        }
+
+        String targetFileName = (fileName == null || fileName.isBlank()) ? "generated-image.png" : fileName;
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(30))
+                    .GET()
+                    .build();
+            HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new BusinessException(com.pisces.common.enums.ResponseCode.SERVICE_UNAVAILABLE,
+                        "图片下载失败，上游响应码: " + response.statusCode());
+            }
+
+            String contentType = response.headers().firstValue("Content-Type")
+                    .orElse(MediaType.APPLICATION_OCTET_STREAM_VALUE);
+
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION,
+                            "attachment; filename=\"" + sanitizeFileName(targetFileName) + "\"")
+                    .contentType(MediaType.parseMediaType(contentType))
+                    .body(response.body());
+        } catch (BusinessException e) {
+            throw e;
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            throw new BusinessException(com.pisces.common.enums.ResponseCode.SERVICE_UNAVAILABLE,
+                    "图片下载失败: " + e.getMessage());
+        }
     }
     
     /**
@@ -128,16 +170,30 @@ public class VariantController {
     public BaseResponse<List<Map<String, String>>> getImageStyles() {
         List<Map<String, String>> styles = new java.util.ArrayList<>();
         
-        styles.add(Map.of("id", "cartoon", "name", "卡通风格", "description", "色彩鲜艳的卡通漫画效果"));
-        styles.add(Map.of("id", "oil-painting", "name", "油画风格", "description", "厚重笔触的印象派油画"));
-        styles.add(Map.of("id", "sketch", "name", "素描风格", "description", "黑白铅笔素描效果"));
-        styles.add(Map.of("id", "anime", "name", "动漫风格", "description", "日本动漫风格"));
-        styles.add(Map.of("id", "watercolor", "name", "水彩风格", "description", "柔和的水彩画效果"));
-        styles.add(Map.of("id", "pixel", "name", "像素风格", "description", "8bit复古像素艺术"));
-        styles.add(Map.of("id", "3d", "name", "3D风格", "description", "立体3D渲染效果"));
-        styles.add(Map.of("id", "minimalist", "name", "极简风格", "description", "简洁线条的极简设计"));
+        styles.add(Map.of("id", "french-book", "name", "法国绘本", "description", "官方全局风格化能力，生成明显的法式绘本质感"));
+        styles.add(Map.of("id", "gold-foil", "name", "金箔艺术", "description", "官方全局风格化能力，生成高对比的金箔装饰效果"));
         
         return BaseResponse.of(styles);
+    }
+
+    private Map<String, String> buildImageResultPayload(String resultImageUrl, String downloadFileName, String style) {
+        Map<String, String> payload = new LinkedHashMap<>();
+        payload.put("resultImageUrl", resultImageUrl);
+        payload.put("downloadFileName", sanitizeFileName(downloadFileName));
+        payload.put("downloadUrl", buildDownloadUrl(resultImageUrl, downloadFileName));
+        payload.put("style", style);
+        return payload;
+    }
+
+    private String buildDownloadUrl(String resultImageUrl, String downloadFileName) {
+        return "/api/variants/image/download?url="
+                + URLEncoder.encode(resultImageUrl, StandardCharsets.UTF_8)
+                + "&fileName="
+                + URLEncoder.encode(sanitizeFileName(downloadFileName), StandardCharsets.UTF_8);
+    }
+
+    private String sanitizeFileName(String fileName) {
+        return fileName.replaceAll("[\\\\/:*?\"<>|\\s]+", "-");
     }
     
     /**

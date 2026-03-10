@@ -11,7 +11,18 @@ import java.util.Map;
 @Data
 public class ExperimentMetadata implements Serializable {
     private static final long serialVersionUID = 1L;
-    
+
+    /**
+     * 配置版本号（每次更新实验配置时自增）
+     * TrafficService 用此字段感知配置变更，使旧缓存失效
+     */
+    private long configVersion = 1L;
+
+    /**
+     * 所属流量分层 ID（支持实验互斥/正交分层，null 表示不属于任何层）
+     */
+    private String layerId;
+
     /**
      * 实验基本信息
      */
