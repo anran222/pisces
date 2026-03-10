@@ -32,7 +32,7 @@ zookeeper:
 
 # 阿里通义千问API配置
 tongyi:
-  apiKey: sk-51d72fee74474b9f89b1b234978b762d # 必须配置真实通义 API Key，否则 AI 流程直接失败
+  apiKey: ${apiKey} # 必须配置真实通义 API Key，否则 AI 流程直接失败
   model: qwen-plus  # 模型名称：qwen-turbo, qwen-plus, qwen-max等
   timeout: 30000  # 请求超时时间（毫秒）
   enabled: true  # 是否启用通义API；关闭后 AI 流程将直接失败
