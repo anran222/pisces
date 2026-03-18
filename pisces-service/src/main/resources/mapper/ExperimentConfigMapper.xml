@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.ExperimentConfigMapper">
+
+    <resultMap id="experimentConfigEntityResultMap" type="com.pisces.service.entity.ExperimentConfigEntity">
+        <id column="id" property="id"/>
+        <result column="experiment_id" property="experimentId"/>
+        <result column="config_version" property="configVersion"/>
+        <result column="metadata_json" property="metadataJson"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <insert id="upsert" parameterType="com.pisces.service.entity.ExperimentConfigEntity">
+        INSERT INTO pisces_experiment_config
+            (experiment_id, config_version, metadata_json)
+        VALUES
+            (#{entity.experimentId}, #{entity.configVersion}, #{entity.metadataJson})
+        ON DUPLICATE KEY UPDATE
+            config_version = VALUES(config_version),
+            metadata_json = VALUES(metadata_json),
+            updated_at = CURRENT_TIMESTAMP
+    </insert>
+
+    <select id="selectByExperimentId" resultMap="experimentConfigEntityResultMap">
+        SELECT id, experiment_id, config_version, metadata_json, created_at, updated_at
+        FROM pisces_experiment_config
+        WHERE experiment_id = #{experimentId}
+    </select>
+
+    <delete id="deleteByExperimentId">
+        DELETE FROM pisces_experiment_config
+        WHERE experiment_id = #{experimentId}
+    </delete>
+
+    <select id="selectAllExperimentIds" resultType="java.lang.String">
+        SELECT experiment_id
+        FROM pisces_experiment_config
+        ORDER BY experiment_id
+    </select>
+</mapper>

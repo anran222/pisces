@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "mode": "create",
+  "generatedAt": "2026-03-18",
+  "generator": "codex",
+  "scope": "markdown-knowledge-base",
+  "files": [
+    "README.md",
+    "architecture.md",
+    "domain-model.md",
+    "api-surface.md",
+    "module-map.md",
+    "implementation-status.md"
+  ]
+}

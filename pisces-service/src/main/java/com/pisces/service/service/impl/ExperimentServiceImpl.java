@@ -3,11 +3,18 @@ package com.pisces.service.service.impl;
 import com.pisces.common.enums.ResponseCode;
 import com.pisces.common.model.Experiment;
 import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.common.model.MetricDefinition;
+import com.pisces.common.model.TrafficConfig;
+import com.pisces.common.request.ExperimentConclusionStatusUpdateRequest;
 import com.pisces.common.request.ExperimentCreateRequest;
 import com.pisces.common.response.ExperimentResponse;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.ExperimentService;
 import com.pisces.service.exception.BusinessException;
+import com.pisces.service.service.AnalysisService;
+import com.pisces.service.conclusion.ExperimentConclusionStatusPolicy;
+import com.pisces.service.rule.TrafficRuleEvaluator;
+import com.pisces.common.model.ExperimentReportSnapshot;
 import org.springframework.beans.BeanUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,6 +23,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -30,6 +38,12 @@ public class ExperimentServiceImpl implements ExperimentService {
     
     @Autowired
     private ConfigService configService;
+
+    @Autowired
+    private TrafficRuleEvaluator trafficRuleEvaluator;
+
+    @Autowired
+    private AnalysisService analysisService;
     
     /**
      * 创建实验（无用户系统版本）
@@ -55,7 +69,7 @@ public class ExperimentServiceImpl implements ExperimentService {
         experiment.setUpdateTime(LocalDateTime.now());
         
         // 构建实验组
-        Map<String, com.pisces.common.model.ExperimentGroup> groups = new HashMap<>();
+        Map<String, com.pisces.common.model.ExperimentGroup> groups = new LinkedHashMap<>();
         if (request.getGroups() != null) {
             for (ExperimentCreateRequest.GroupConfig groupConfig : request.getGroups()) {
                 com.pisces.common.model.ExperimentGroup group = new com.pisces.common.model.ExperimentGroup();
@@ -68,24 +82,7 @@ public class ExperimentServiceImpl implements ExperimentService {
         }
         
         // 构建流量配置
-        com.pisces.common.model.TrafficConfig trafficConfig = new com.pisces.common.model.TrafficConfig();
-        if (request.getTraffic() != null) {
-            trafficConfig.setTotalTraffic(request.getTraffic().getTotalTraffic());
-            trafficConfig.setStrategy(com.pisces.common.model.TrafficConfig.TrafficStrategy.valueOf(
-                    request.getTraffic().getStrategy()));
-            trafficConfig.setHashKey(request.getTraffic().getHashKey());
-            
-            List<com.pisces.common.model.TrafficConfig.GroupAllocation> allocations = new ArrayList<>();
-            for (ExperimentCreateRequest.GroupAllocationRequest allocationRequest : 
-                    request.getTraffic().getAllocation()) {
-                com.pisces.common.model.TrafficConfig.GroupAllocation allocation = 
-                        new com.pisces.common.model.TrafficConfig.GroupAllocation();
-                allocation.setGroup(allocationRequest.getGroup());
-                allocation.setRatio(allocationRequest.getRatio());
-                allocations.add(allocation);
-            }
-            trafficConfig.setAllocation(allocations);
-        }
+        TrafficConfig trafficConfig = buildTrafficConfig(request.getTraffic());
         
         // 构建实验元数据
         ExperimentMetadata metadata = new ExperimentMetadata();
@@ -95,6 +92,9 @@ public class ExperimentServiceImpl implements ExperimentService {
         metadata.setTraffic(trafficConfig);
         metadata.setWhitelist(request.getWhitelist() != null ? request.getWhitelist() : new ArrayList<>());
         metadata.setBlacklist(request.getBlacklist() != null ? request.getBlacklist() : new ArrayList<>());
+        metadata.setMetricDefinitions(resolveMetricDefinitions(request));
+        metadata.setConclusionStatus(ExperimentMetadata.ConclusionStatus.NOT_READY);
+        metadata.setConclusionUpdatedAt(LocalDateTime.now());
         
         // 保存到Zookeeper
         try {
@@ -126,7 +126,7 @@ public class ExperimentServiceImpl implements ExperimentService {
         experiment.setUpdateTime(LocalDateTime.now());
         
         // 更新实验组
-        Map<String, com.pisces.common.model.ExperimentGroup> groups = new HashMap<>();
+        Map<String, com.pisces.common.model.ExperimentGroup> groups = new LinkedHashMap<>();
         if (request.getGroups() != null) {
             for (ExperimentCreateRequest.GroupConfig groupConfig : request.getGroups()) {
                 com.pisces.common.model.ExperimentGroup group = new com.pisces.common.model.ExperimentGroup();
@@ -140,30 +140,20 @@ public class ExperimentServiceImpl implements ExperimentService {
         metadata.setGroups(groups);
         
         // 更新流量配置
-        com.pisces.common.model.TrafficConfig trafficConfig = new com.pisces.common.model.TrafficConfig();
-        if (request.getTraffic() != null) {
-            trafficConfig.setTotalTraffic(request.getTraffic().getTotalTraffic());
-            trafficConfig.setStrategy(com.pisces.common.model.TrafficConfig.TrafficStrategy.valueOf(
-                    request.getTraffic().getStrategy()));
-            trafficConfig.setHashKey(request.getTraffic().getHashKey());
-            
-            List<com.pisces.common.model.TrafficConfig.GroupAllocation> allocations = new ArrayList<>();
-            for (ExperimentCreateRequest.GroupAllocationRequest allocationRequest : 
-                    request.getTraffic().getAllocation()) {
-                com.pisces.common.model.TrafficConfig.GroupAllocation allocation = 
-                        new com.pisces.common.model.TrafficConfig.GroupAllocation();
-                allocation.setGroup(allocationRequest.getGroup());
-                allocation.setRatio(allocationRequest.getRatio());
-                allocations.add(allocation);
-            }
-            trafficConfig.setAllocation(allocations);
-        }
+        TrafficConfig trafficConfig = buildTrafficConfig(request.getTraffic());
         metadata.setTraffic(trafficConfig);
         
         // 更新白名单和黑名单
         metadata.setWhitelist(request.getWhitelist() != null ? request.getWhitelist() : new ArrayList<>());
         metadata.setBlacklist(request.getBlacklist() != null ? request.getBlacklist() : new ArrayList<>());
+        metadata.setMetricDefinitions(resolveMetricDefinitions(request));
         metadata.setConfigVersion(Math.max(1L, metadata.getConfigVersion()) + 1);
+        if (metadata.getConclusionStatus() == null) {
+            metadata.setConclusionStatus(ExperimentMetadata.ConclusionStatus.NOT_READY);
+        }
+        if (metadata.getConclusionUpdatedAt() == null) {
+            metadata.setConclusionUpdatedAt(LocalDateTime.now());
+        }
         
         try {
             configService.saveExperimentConfig(experimentId, metadata);
@@ -293,7 +283,37 @@ public class ExperimentServiceImpl implements ExperimentService {
         if (metadata == null) {
             throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
         }
+        enrichSuggestedConclusion(experimentId, metadata);
         return convertToResponse(metadata);
+    }
+
+    @Override
+    public void updateConclusionStatus(String experimentId, ExperimentConclusionStatusUpdateRequest request) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata == null) {
+            throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
+        }
+
+        ExperimentMetadata.ConclusionStatus targetStatus;
+        try {
+            targetStatus = ExperimentMetadata.ConclusionStatus.ofOrThrow(request.getConclusionStatus());
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(ResponseCode.BAD_REQUEST, e.getMessage());
+        }
+
+        ExperimentMetadata.ConclusionStatus currentStatus = metadata.getConclusionStatus() != null
+                ? metadata.getConclusionStatus() : ExperimentMetadata.ConclusionStatus.NOT_READY;
+        validateConclusionStatusTransition(currentStatus, targetStatus);
+
+        metadata.setConclusionStatus(targetStatus);
+        metadata.setConclusionUpdatedAt(LocalDateTime.now());
+        try {
+            configService.saveExperimentConfig(experimentId, metadata);
+        } catch (Exception e) {
+            throw new BusinessException(ResponseCode.OPERATION_FAILED, "保存实验结论状态失败: " + e.getMessage());
+        }
+        log.info("更新实验结论状态成功: experimentId={}, from={}, to={}, operator={}",
+                experimentId, currentStatus, targetStatus, request.getOperator());
     }
     
     /**
@@ -324,8 +344,11 @@ public class ExperimentServiceImpl implements ExperimentService {
         if (metadata.getTraffic() != null) {
             ExperimentResponse.TrafficConfigResponse traffic = new ExperimentResponse.TrafficConfigResponse();
             traffic.setTotalTraffic(metadata.getTraffic().getTotalTraffic());
-            traffic.setStrategy(metadata.getTraffic().getStrategy().name());
+            traffic.setStrategy(metadata.getTraffic().getStrategy() != null
+                    ? metadata.getTraffic().getStrategy().name() : null);
             traffic.setHashKey(metadata.getTraffic().getHashKey());
+            traffic.setRuleFallbackStrategy(metadata.getTraffic().getRuleFallbackStrategy() != null
+                    ? metadata.getTraffic().getRuleFallbackStrategy().name() : null);
             
             if (metadata.getTraffic().getAllocation() != null) {
                 List<ExperimentResponse.GroupAllocationResponse> allocations = 
@@ -340,14 +363,174 @@ public class ExperimentServiceImpl implements ExperimentService {
                                 .collect(Collectors.toList());
                 traffic.setAllocation(allocations);
             }
+
+            if (metadata.getTraffic().getRules() != null) {
+                List<ExperimentResponse.TrafficRuleResponse> trafficRules = metadata.getTraffic().getRules().stream()
+                        .map(rule -> {
+                            ExperimentResponse.TrafficRuleResponse responseRule =
+                                    new ExperimentResponse.TrafficRuleResponse();
+                            responseRule.setName(rule.getName());
+                            responseRule.setPriority(rule.getPriority());
+                            responseRule.setGroup(rule.getGroup());
+                            if (rule.getConditions() != null) {
+                                List<ExperimentResponse.RuleConditionResponse> conditions = rule.getConditions().stream()
+                                        .map(condition -> {
+                                            ExperimentResponse.RuleConditionResponse responseCondition =
+                                                    new ExperimentResponse.RuleConditionResponse();
+                                            responseCondition.setField(condition.getField());
+                                            responseCondition.setOperator(condition.getOperator() != null
+                                                    ? condition.getOperator().name() : null);
+                                            responseCondition.setValue(condition.getValue());
+                                            responseCondition.setValues(condition.getValues());
+                                            return responseCondition;
+                                        })
+                                        .collect(Collectors.toList());
+                                responseRule.setConditions(conditions);
+                            }
+                            return responseRule;
+                        })
+                        .collect(Collectors.toList());
+                traffic.setRules(trafficRules);
+            }
             
             response.setTraffic(traffic);
         }
         
         response.setWhitelist(metadata.getWhitelist());
         response.setBlacklist(metadata.getBlacklist());
+        response.setMetricDefinitions(metadata.getMetricDefinitions());
+        response.setConclusionStatus(metadata.getConclusionStatus());
+        response.setConclusionUpdatedAt(metadata.getConclusionUpdatedAt());
+        response.setSuggestedConclusionStatus(metadata.getSuggestedConclusionStatus());
+        response.setSuggestedConclusionUpdatedAt(metadata.getSuggestedConclusionUpdatedAt());
         
         return response;
+    }
+
+    private void enrichSuggestedConclusion(String experimentId, ExperimentMetadata metadata) {
+        try {
+            List<ExperimentReportSnapshot> reportSnapshots = analysisService.listReportSnapshots(experimentId);
+            metadata.setSuggestedConclusionStatus(ExperimentConclusionStatusPolicy.resolveSuggestedStatus(reportSnapshots));
+            metadata.setSuggestedConclusionUpdatedAt(
+                    ExperimentConclusionStatusPolicy.resolveSuggestedUpdatedAt(reportSnapshots));
+        } catch (Exception e) {
+            log.debug("加载实验建议状态失败: experimentId={}", experimentId, e);
+        }
+    }
+
+    private List<MetricDefinition> resolveMetricDefinitions(ExperimentCreateRequest request) {
+        if (request.getMetricDefinitions() != null && !request.getMetricDefinitions().isEmpty()) {
+            return normalizeMetricDefinitions(request.getMetricDefinitions());
+        }
+        return buildDefaultMetricDefinitions();
+    }
+
+    private List<MetricDefinition> buildDefaultMetricDefinitions() {
+        List<MetricDefinition> metricDefinitions = new ArrayList<>();
+        metricDefinitions.add(buildRateMetric("click_rate", "点击率", "CLICK", "VIEW", false, true));
+        metricDefinitions.add(buildRateMetric("conversion_rate", "转化率", "CONVERT", "VIEW", true, false));
+        return metricDefinitions;
+    }
+
+    private TrafficConfig buildTrafficConfig(ExperimentCreateRequest.TrafficConfigRequest trafficRequest) {
+        if (trafficRequest == null) {
+            return null;
+        }
+
+        TrafficConfig trafficConfig = new TrafficConfig();
+        trafficConfig.setTotalTraffic(trafficRequest.getTotalTraffic());
+        trafficConfig.setStrategy(TrafficConfig.TrafficStrategy.ofOrThrow(trafficRequest.getStrategy()));
+        trafficConfig.setHashKey(trafficRequest.getHashKey());
+        trafficConfig.setRuleFallbackStrategy(trafficRequest.getRuleFallbackStrategy() != null
+                ? TrafficConfig.RuleFallbackStrategy.ofOrThrow(trafficRequest.getRuleFallbackStrategy())
+                : null);
+
+        if (trafficRequest.getAllocation() != null) {
+            List<TrafficConfig.GroupAllocation> allocations = new ArrayList<>();
+            for (ExperimentCreateRequest.GroupAllocationRequest allocationRequest : trafficRequest.getAllocation()) {
+                TrafficConfig.GroupAllocation allocation = new TrafficConfig.GroupAllocation();
+                allocation.setGroup(allocationRequest.getGroup());
+                allocation.setRatio(allocationRequest.getRatio());
+                allocations.add(allocation);
+            }
+            trafficConfig.setAllocation(allocations);
+        }
+
+        if (trafficRequest.getRules() != null) {
+            List<TrafficConfig.TrafficRule> trafficRules = new ArrayList<>();
+            for (ExperimentCreateRequest.TrafficRuleRequest ruleRequest : trafficRequest.getRules()) {
+                TrafficConfig.TrafficRule trafficRule = new TrafficConfig.TrafficRule();
+                trafficRule.setName(ruleRequest.getName());
+                trafficRule.setPriority(ruleRequest.getPriority());
+                trafficRule.setGroup(ruleRequest.getGroup());
+
+                if (ruleRequest.getConditions() != null) {
+                    List<TrafficConfig.RuleCondition> conditions = new ArrayList<>();
+                    for (ExperimentCreateRequest.RuleConditionRequest conditionRequest : ruleRequest.getConditions()) {
+                        TrafficConfig.RuleCondition condition = new TrafficConfig.RuleCondition();
+                        condition.setField(conditionRequest.getField());
+                        condition.setOperator(TrafficConfig.RuleOperator.ofOrThrow(conditionRequest.getOperator()));
+                        condition.setValue(conditionRequest.getValue());
+                        condition.setValues(conditionRequest.getValues());
+                        conditions.add(condition);
+                    }
+                    trafficRule.setConditions(conditions);
+                }
+                trafficRules.add(trafficRule);
+            }
+            trafficConfig.setRules(trafficRules);
+        }
+        return trafficConfig;
+    }
+
+    private void validateConclusionStatusTransition(ExperimentMetadata.ConclusionStatus currentStatus,
+                                                    ExperimentMetadata.ConclusionStatus targetStatus) {
+        if (!currentStatus.canTransitionTo(targetStatus)) {
+            throw new BusinessException(ResponseCode.BAD_REQUEST,
+                    "不允许的结论状态流转: " + currentStatus + " -> " + targetStatus
+                            + "，允许的下一步: " + currentStatus.allowedTransitions());
+        }
+    }
+
+    private MetricDefinition buildRateMetric(String key, String name, String numeratorEventType,
+                                             String denominatorEventType, boolean primaryMetric,
+                                             boolean guardrailMetric) {
+        MetricDefinition metricDefinition = new MetricDefinition();
+        metricDefinition.setKey(key);
+        metricDefinition.setName(name);
+        metricDefinition.setDescription(name + "（默认指标）");
+        metricDefinition.setAggregationType(MetricDefinition.AggregationType.RATE);
+        metricDefinition.setNumeratorEventType(numeratorEventType);
+        metricDefinition.setDenominatorType(MetricDefinition.DenominatorType.EVENT_COUNT);
+        metricDefinition.setDenominatorEventType(denominatorEventType);
+        metricDefinition.setPrimaryMetric(primaryMetric);
+        metricDefinition.setGuardrailMetric(guardrailMetric);
+        return metricDefinition;
+    }
+
+    private List<MetricDefinition> normalizeMetricDefinitions(List<MetricDefinition> metricDefinitions) {
+        List<MetricDefinition> normalizedDefinitions = new ArrayList<>();
+        boolean hasPrimaryMetric = false;
+        for (MetricDefinition metricDefinition : metricDefinitions) {
+            MetricDefinition normalizedMetric = new MetricDefinition();
+            normalizedMetric.setKey(metricDefinition.getKey());
+            normalizedMetric.setName(metricDefinition.getName());
+            normalizedMetric.setDescription(metricDefinition.getDescription());
+            normalizedMetric.setAggregationType(metricDefinition.getAggregationType());
+            normalizedMetric.setNumeratorEventType(metricDefinition.getNumeratorEventType());
+            normalizedMetric.setDenominatorType(metricDefinition.getDenominatorType());
+            normalizedMetric.setDenominatorEventType(metricDefinition.getDenominatorEventType());
+            normalizedMetric.setPrimaryMetric(Boolean.TRUE.equals(metricDefinition.getPrimaryMetric()));
+            normalizedMetric.setGuardrailMetric(Boolean.TRUE.equals(metricDefinition.getGuardrailMetric()));
+            if (Boolean.TRUE.equals(normalizedMetric.getPrimaryMetric())) {
+                hasPrimaryMetric = true;
+            }
+            normalizedDefinitions.add(normalizedMetric);
+        }
+        if (!hasPrimaryMetric && !normalizedDefinitions.isEmpty()) {
+            normalizedDefinitions.get(0).setPrimaryMetric(true);
+        }
+        return normalizedDefinitions;
     }
     
     /**
@@ -691,7 +874,7 @@ public class ExperimentServiceImpl implements ExperimentService {
             // 校验流量分配策略
             if (traffic.getStrategy() != null) {
                 try {
-                    com.pisces.common.model.TrafficConfig.TrafficStrategy.valueOf(traffic.getStrategy());
+                    TrafficConfig.TrafficStrategy.ofOrThrow(traffic.getStrategy());
                 } catch (IllegalArgumentException e) {
                     throw new BusinessException(ResponseCode.VALIDATION_ERROR, 
                             "不支持的流量分配策略: " + traffic.getStrategy() + 
@@ -723,6 +906,19 @@ public class ExperimentServiceImpl implements ExperimentService {
                             String.format("流量分配比例总和必须等于1，当前为%.4f", totalRatio));
                 }
             }
+
+            if (traffic.getRuleFallbackStrategy() != null) {
+                try {
+                    TrafficConfig.RuleFallbackStrategy.ofOrThrow(traffic.getRuleFallbackStrategy());
+                } catch (IllegalArgumentException e) {
+                    throw new BusinessException(ResponseCode.VALIDATION_ERROR,
+                            "不支持的规则回退策略: " + traffic.getRuleFallbackStrategy()
+                                    + "，支持的策略: HASH, FIRST_ALLOCATION");
+                }
+            }
+
+            TrafficConfig trafficConfig = buildTrafficConfig(traffic);
+            trafficRuleEvaluator.validateRules(trafficConfig, groupIds);
         }
         
         // 校验时间范围
@@ -730,6 +926,57 @@ public class ExperimentServiceImpl implements ExperimentService {
             if (request.getEndTime().isBefore(request.getStartTime())) {
                 throw new BusinessException(ResponseCode.VALIDATION_ERROR, "结束时间不能早于开始时间");
             }
+        }
+
+        validateMetricDefinitions(request.getMetricDefinitions());
+    }
+
+    private void validateMetricDefinitions(List<MetricDefinition> metricDefinitions) {
+        if (metricDefinitions == null || metricDefinitions.isEmpty()) {
+            return;
+        }
+
+        java.util.Set<String> metricKeys = new java.util.HashSet<>();
+        int primaryMetricCount = 0;
+        for (MetricDefinition metricDefinition : metricDefinitions) {
+            if (metricDefinition == null) {
+                throw new BusinessException(ResponseCode.VALIDATION_ERROR, "指标定义不能为空");
+            }
+            if (metricDefinition.getKey() == null || metricDefinition.getKey().trim().isEmpty()) {
+                throw new BusinessException(ResponseCode.VALIDATION_ERROR, "指标编码不能为空");
+            }
+            if (!metricKeys.add(metricDefinition.getKey())) {
+                throw new BusinessException(ResponseCode.VALIDATION_ERROR,
+                        "指标编码重复: " + metricDefinition.getKey());
+            }
+            if (metricDefinition.getAggregationType() == null) {
+                throw new BusinessException(ResponseCode.VALIDATION_ERROR,
+                        "指标聚合类型不能为空: " + metricDefinition.getKey());
+            }
+            if (metricDefinition.getAggregationType() == MetricDefinition.AggregationType.RATE) {
+                if (metricDefinition.getDenominatorType() == null) {
+                    throw new BusinessException(ResponseCode.VALIDATION_ERROR,
+                            "RATE 指标必须配置分母类型: " + metricDefinition.getKey());
+                }
+                if (metricDefinition.getNumeratorEventType() == null
+                        || metricDefinition.getNumeratorEventType().trim().isEmpty()) {
+                    throw new BusinessException(ResponseCode.VALIDATION_ERROR,
+                            "RATE 指标必须配置分子事件: " + metricDefinition.getKey());
+                }
+                if (metricDefinition.getDenominatorType() == MetricDefinition.DenominatorType.EVENT_COUNT
+                        && (metricDefinition.getDenominatorEventType() == null
+                        || metricDefinition.getDenominatorEventType().trim().isEmpty())) {
+                    throw new BusinessException(ResponseCode.VALIDATION_ERROR,
+                            "事件型分母必须配置分母事件: " + metricDefinition.getKey());
+                }
+            }
+            if (Boolean.TRUE.equals(metricDefinition.getPrimaryMetric())) {
+                primaryMetricCount++;
+            }
+        }
+
+        if (primaryMetricCount > 1) {
+            throw new BusinessException(ResponseCode.VALIDATION_ERROR, "只能配置一个主指标");
         }
     }
 }

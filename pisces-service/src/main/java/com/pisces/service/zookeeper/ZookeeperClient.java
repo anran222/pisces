@@ -1,23 +1,18 @@
 package com.pisces.service.zookeeper;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
-import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
+import com.pisces.service.util.JsonUtil;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.retry.RetryNTimes;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.data.Stat;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.nio.charset.StandardCharsets;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 /**
@@ -25,27 +20,17 @@ import java.util.List;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class ZookeeperClient {
-    
-    @Autowired
-    private ZookeeperConfig zookeeperConfig;
-    
+
+    private final ZookeeperConfig zookeeperConfig;
+
+    private final JsonUtil jsonUtil;
+
     private CuratorFramework client;
-    private final ObjectMapper objectMapper;
+
     private boolean initFailed = false;
-    
-    /**
-     * 初始化ObjectMapper，配置LocalDateTime序列化支持
-     */
-    public ZookeeperClient() {
-        this.objectMapper = new ObjectMapper();
-        JavaTimeModule javaTimeModule = new JavaTimeModule();
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
-        javaTimeModule.addSerializer(LocalDateTime.class, new LocalDateTimeSerializer(formatter));
-        javaTimeModule.addDeserializer(LocalDateTime.class, new LocalDateTimeDeserializer(formatter));
-        objectMapper.registerModule(javaTimeModule);
-    }
-    
+
     @PostConstruct
     public void init() {
         try {
@@ -162,7 +147,7 @@ public class ZookeeperClient {
      * 保存对象为JSON
      */
     public void saveObject(String path, Object obj) throws Exception {
-        String json = objectMapper.writeValueAsString(obj);
+        String json = jsonUtil.toJson(obj);
         createNode(path, json);
     }
     
@@ -174,7 +159,7 @@ public class ZookeeperClient {
         if (json == null) {
             return null;
         }
-        return objectMapper.readValue(json, clazz);
+        return jsonUtil.toObject(json, clazz);
     }
     
     /**
@@ -206,4 +191,3 @@ public class ZookeeperClient {
         return client;
     }
 }
-

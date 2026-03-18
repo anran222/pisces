@@ -2,13 +2,14 @@ package com.pisces.service.service.impl;
 
 import com.pisces.common.model.ExperimentLayer;
 import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.service.repository.ExperimentConfigRepository;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.zookeeper.ZookeeperClient;
 import com.pisces.service.zookeeper.ZookeeperConfig;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.curator.framework.recipes.cache.ChildData;
 import org.apache.curator.framework.recipes.cache.PathChildrenCache;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
@@ -22,13 +23,14 @@ import java.util.function.Consumer;
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class ConfigServiceImpl implements ConfigService {
-    
-    @Autowired
-    private ZookeeperClient zookeeperClient;
-    
-    @Autowired
-    private ZookeeperConfig zookeeperConfig;
+
+    private final ZookeeperClient zookeeperClient;
+
+    private final ZookeeperConfig zookeeperConfig;
+
+    private final ExperimentConfigRepository experimentConfigRepository;
     
     private static final String EXPERIMENTS_PATH = "/experiments";
     
@@ -36,16 +38,6 @@ public class ConfigServiceImpl implements ConfigService {
      * 配置变更监听器列表
      */
     private final ConcurrentHashMap<String, List<Consumer<ExperimentMetadata>>> listeners = new ConcurrentHashMap<>();
-    
-    /**
-     * 实验配置缓存
-     */
-    private final ConcurrentHashMap<String, ExperimentMetadata> configCache = new ConcurrentHashMap<>();
-
-    /**
-     * 分层配置缓存
-     */
-    private final ConcurrentHashMap<String, ExperimentLayer> layerCache = new ConcurrentHashMap<>();
 
     private static final String LAYERS_PATH = "/layers";
     
@@ -67,8 +59,6 @@ public class ConfigServiceImpl implements ConfigService {
                     String experimentId = extractExperimentId(path);
                     if (experimentId != null) {
                         log.info("实验配置变更: {}", experimentId);
-                        // 清除缓存，下次获取时重新加载
-                        configCache.remove(experimentId);
                         notifyListeners(experimentId);
                     }
                 }
@@ -86,8 +76,7 @@ public class ConfigServiceImpl implements ConfigService {
      */
     @Override
     public void saveExperimentConfig(String experimentId, ExperimentMetadata metadata) throws Exception {
-        // 无论Zookeeper是否可用，都保存到本地缓存
-        configCache.put(experimentId, metadata);
+        experimentConfigRepository.save(experimentId, metadata);
         
         // 如果Zookeeper可用，同步到Zookeeper
         if (zookeeperClient.isConnected()) {
@@ -96,10 +85,10 @@ public class ConfigServiceImpl implements ConfigService {
                 zookeeperClient.saveObject(path, metadata);
                 log.info("保存实验配置到Zookeeper: {}", experimentId);
             } catch (Exception e) {
-                log.warn("保存实验配置到Zookeeper失败（已保存到本地缓存）: {}", experimentId, e);
+                log.warn("保存实验配置到Zookeeper失败（实验配置仓库已成功写入）: {}", experimentId, e);
             }
         } else {
-            log.info("保存实验配置到本地缓存（Zookeeper不可用）: {}", experimentId);
+            log.info("Zookeeper不可用，实验配置仅写入数据库仓库: {}", experimentId);
         }
     }
     
@@ -108,24 +97,21 @@ public class ConfigServiceImpl implements ConfigService {
      */
     @Override
     public ExperimentMetadata getExperimentConfig(String experimentId) {
-        // 先从缓存获取
-        ExperimentMetadata cached = configCache.get(experimentId);
-        if (cached != null) {
-            return cached;
+        ExperimentMetadata repositoryMetadata = experimentConfigRepository.findById(experimentId).orElse(null);
+        if (repositoryMetadata != null) {
+            return repositoryMetadata;
         }
-        
-        // 如果Zookeeper不可用，直接返回null
+
         if (!zookeeperClient.isConnected()) {
-            log.debug("Zookeeper不可用，从本地缓存获取实验配置: {}", experimentId);
+            log.debug("Zookeeper不可用，数据库仓库中也未命中实验配置: {}", experimentId);
             return null;
         }
         
-        // 从Zookeeper获取（带超时保护）
         try {
             String path = EXPERIMENTS_PATH + "/" + experimentId;
             ExperimentMetadata metadata = zookeeperClient.getObject(path, ExperimentMetadata.class);
             if (metadata != null) {
-                configCache.put(experimentId, metadata);
+                experimentConfigRepository.save(experimentId, metadata);
             }
             return metadata;
         } catch (Exception e) {
@@ -139,10 +125,8 @@ public class ConfigServiceImpl implements ConfigService {
      */
     @Override
     public void deleteExperimentConfig(String experimentId) throws Exception {
-        // 从本地缓存删除
-        configCache.remove(experimentId);
+        experimentConfigRepository.delete(experimentId);
         
-        // 如果Zookeeper可用，也从Zookeeper删除
         if (zookeeperClient.isConnected()) {
             try {
                 String path = EXPERIMENTS_PATH + "/" + experimentId;
@@ -152,7 +136,7 @@ public class ConfigServiceImpl implements ConfigService {
                 log.warn("从Zookeeper删除实验配置失败: {}", experimentId, e);
             }
         } else {
-            log.info("从本地缓存删除实验配置（Zookeeper不可用）: {}", experimentId);
+            log.info("数据库仓库中的实验配置已删除，Zookeeper当前不可用: {}", experimentId);
         }
     }
     
@@ -161,19 +145,24 @@ public class ConfigServiceImpl implements ConfigService {
      */
     @Override
     public List<String> getAllExperimentIds() throws Exception {
-        // 如果Zookeeper不可用，返回本地缓存的实验ID
+        List<String> repositoryExperimentIds = experimentConfigRepository.findAllExperimentIds();
+
+        // 如果Zookeeper不可用，返回实验配置仓库中的实验ID
         if (!zookeeperClient.isConnected()) {
-            log.debug("Zookeeper不可用，从本地缓存获取实验列表");
-            return new ArrayList<>(configCache.keySet());
+            log.debug("Zookeeper不可用，从实验配置仓库获取实验列表");
+            return repositoryExperimentIds;
         }
         
         try {
             List<String> children = zookeeperClient.getChildren(EXPERIMENTS_PATH);
             log.debug("从Zookeeper获取实验列表: 数量={}", children != null ? children.size() : 0);
-            return children != null ? children : new ArrayList<>();
+            if (children != null && !children.isEmpty()) {
+                return children;
+            }
+            return repositoryExperimentIds;
         } catch (Exception e) {
-            log.error("获取实验列表失败，返回本地缓存", e);
-            return new ArrayList<>(configCache.keySet());
+            log.error("获取实验列表失败，返回实验配置仓库中的结果", e);
+            return repositoryExperimentIds;
         }
     }
     
@@ -219,34 +208,22 @@ public class ConfigServiceImpl implements ConfigService {
 
     @Override
     public void saveLayerConfig(String layerId, ExperimentLayer layer) throws Exception {
-        layerCache.put(layerId, layer);
-        if (zookeeperClient.isConnected()) {
-            try {
-                String path = LAYERS_PATH + "/" + layerId;
-                zookeeperClient.saveObject(path, layer);
-                log.info("保存分层配置到Zookeeper: {}", layerId);
-            } catch (Exception e) {
-                log.warn("保存分层配置到Zookeeper失败（已保存到本地缓存）: {}", layerId, e);
-            }
+        if (!zookeeperClient.isConnected()) {
+            throw new IllegalStateException("Zookeeper不可用，无法保存分层配置: " + layerId);
         }
+        String path = LAYERS_PATH + "/" + layerId;
+        zookeeperClient.saveObject(path, layer);
+        log.info("保存分层配置到Zookeeper: {}", layerId);
     }
 
     @Override
     public ExperimentLayer getLayerConfig(String layerId) {
-        ExperimentLayer cached = layerCache.get(layerId);
-        if (cached != null) {
-            return cached;
-        }
         if (!zookeeperClient.isConnected()) {
             return null;
         }
         try {
             String path = LAYERS_PATH + "/" + layerId;
-            ExperimentLayer layer = zookeeperClient.getObject(path, ExperimentLayer.class);
-            if (layer != null) {
-                layerCache.put(layerId, layer);
-            }
-            return layer;
+            return zookeeperClient.getObject(path, ExperimentLayer.class);
         } catch (Exception e) {
             log.error("获取分层配置失败: {}", layerId, e);
             return null;
@@ -255,16 +232,11 @@ public class ConfigServiceImpl implements ConfigService {
 
     @Override
     public void deleteLayerConfig(String layerId) throws Exception {
-        layerCache.remove(layerId);
-        if (zookeeperClient.isConnected()) {
-            try {
-                String path = LAYERS_PATH + "/" + layerId;
-                zookeeperClient.deleteNode(path);
-                log.info("从Zookeeper删除分层配置: {}", layerId);
-            } catch (Exception e) {
-                log.warn("从Zookeeper删除分层配置失败: {}", layerId, e);
-            }
+        if (!zookeeperClient.isConnected()) {
+            throw new IllegalStateException("Zookeeper不可用，无法删除分层配置: " + layerId);
         }
+        String path = LAYERS_PATH + "/" + layerId;
+        zookeeperClient.deleteNode(path);
+        log.info("从Zookeeper删除分层配置: {}", layerId);
     }
 }
-

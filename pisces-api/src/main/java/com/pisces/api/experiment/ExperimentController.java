@@ -1,6 +1,7 @@
 package com.pisces.api.experiment;
 
 import com.pisces.common.model.Experiment;
+import com.pisces.common.request.ExperimentConclusionStatusUpdateRequest;
 import com.pisces.common.request.ExperimentCreateRequest;
 import com.pisces.common.response.BaseResponse;
 import com.pisces.common.response.ExperimentResponse;
@@ -122,6 +123,16 @@ public class ExperimentController {
         experimentService.resumeExperiment(id);
         return BaseResponse.of("实验恢复成功", null);
     }
+
+    /**
+     * 更新实验结论状态
+     */
+    @PostMapping("/{id}/conclusion-status")
+    public BaseResponse<Void> updateConclusionStatus(@PathVariable String id,
+                                                     @Valid @RequestBody ExperimentConclusionStatusUpdateRequest request) {
+        experimentService.updateConclusionStatus(id, request);
+        return BaseResponse.of("实验结论状态更新成功", null);
+    }
     
     /**
      * 删除实验
@@ -176,4 +187,3 @@ public class ExperimentController {
         return BaseResponse.of((String) result.get("message"), result);
     }
 }
-

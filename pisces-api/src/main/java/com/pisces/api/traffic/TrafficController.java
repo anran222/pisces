@@ -1,11 +1,12 @@
 package com.pisces.api.traffic;
 
 import com.pisces.common.enums.ResponseCode;
+import com.pisces.common.request.TrafficAssignRequest;
 import com.pisces.common.response.BaseResponse;
 import com.pisces.service.annotation.NoTokenRequired;
 import com.pisces.service.service.MultiArmedBanditService;
 import com.pisces.service.service.TrafficService;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -17,28 +18,27 @@ import java.util.Map;
 @RestController
 @RequestMapping("/traffic")
 @NoTokenRequired  // 无需Token认证
+@RequiredArgsConstructor
 public class TrafficController {
-    
-    @Autowired
-    private TrafficService trafficService;
-    
-    @Autowired
-    private MultiArmedBanditService mabService;
+
+    private final TrafficService trafficService;
+
+    private final MultiArmedBanditService mabService;
     
     /**
      * 分配访客到实验组（无用户系统版本）
      * 使用visitorId（访客唯一标识，可以是设备ID、会话ID等）
      */
     @PostMapping("/assign")
-    public BaseResponse<String> assignGroup(@RequestBody Map<String, String> request) {
-        String experimentId = request.get("experimentId");
-        String visitorId = request.get("visitorId");
+    public BaseResponse<String> assignGroup(@RequestBody TrafficAssignRequest request) {
+        String experimentId = request.getExperimentId();
+        String visitorId = request.getVisitorId();
         
         if (experimentId == null || visitorId == null) {
             return BaseResponse.error(ResponseCode.BAD_REQUEST, "experimentId和visitorId不能为空");
         }
         
-        String groupId = trafficService.assignGroup(experimentId, visitorId);
+        String groupId = trafficService.assignGroup(experimentId, visitorId, request.getAttributes());
         return BaseResponse.of(groupId);
     }
     
@@ -99,4 +99,3 @@ public class TrafficController {
         return BaseResponse.of("MAB数据重置成功", null);
     }
 }
-

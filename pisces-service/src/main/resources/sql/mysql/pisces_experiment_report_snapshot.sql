@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS pisces_experiment_report_snapshot (
+    id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    experiment_id VARCHAR(64) NOT NULL COMMENT '实验ID',
+    snapshot_version INT NOT NULL COMMENT '快照版本',
+    conclusion_status VARCHAR(32) NOT NULL COMMENT '结论状态',
+    primary_metric_key VARCHAR(64) DEFAULT NULL COMMENT '主指标编码',
+    best_performing_group VARCHAR(64) DEFAULT NULL COMMENT '最优实验组',
+    winning_variant VARCHAR(64) DEFAULT NULL COMMENT '胜出变体',
+    analysis_ready TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否满足分析门禁',
+    has_srm TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否存在SRM',
+    breached_guardrails_json JSON NOT NULL COMMENT '护栏异常JSON',
+    decision_context_json JSON NOT NULL COMMENT '决策上下文JSON',
+    report_json JSON NOT NULL COMMENT '完整报告JSON',
+    generated_by VARCHAR(64) NOT NULL COMMENT '生成来源或操作者',
+    generated_at DATETIME NOT NULL COMMENT '生成时间',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_experiment_snapshot_version (experiment_id, snapshot_version),
+    KEY idx_generated_at (generated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='实验报告快照表';

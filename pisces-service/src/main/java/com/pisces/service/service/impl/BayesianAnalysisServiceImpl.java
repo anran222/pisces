@@ -1,14 +1,18 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.common.model.MetricDefinition;
 import com.pisces.service.service.BayesianAnalysisService;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.DataService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -46,25 +50,29 @@ public class BayesianAnalysisServiceImpl implements BayesianAnalysisService {
     
     @Override
     public double calculateWinRate(String experimentId, String variantGroupId, String baselineGroupId) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        MetricDefinition primaryMetricDefinition = resolveRateMetricForBayesian(metadata);
+        String metricKey = primaryMetricDefinition != null ? primaryMetricDefinition.getKey() : "conversion_rate";
+
         // 先检查缓存
-        String cacheKey = experimentId + ":" + variantGroupId + ":" + baselineGroupId;
+        String cacheKey = experimentId + ":" + (metadata != null ? metadata.getConfigVersion() : 0L)
+                + ":" + metricKey + ":" + variantGroupId + ":" + baselineGroupId;
         CachedWinRate cached = winRateCache.get(cacheKey);
         if (cached != null && !cached.isExpired()) {
             return cached.winRate;
         }
         
-        // 获取两个组的统计数据
-        long variantViews = dataService.getEventCount(experimentId, variantGroupId, "VIEW");
-        long variantConverts = dataService.getEventCount(experimentId, variantGroupId, "CONVERT");
-        long baselineViews = dataService.getEventCount(experimentId, baselineGroupId, "VIEW");
-        long baselineConverts = dataService.getEventCount(experimentId, baselineGroupId, "CONVERT");
+        long variantDenominator = resolveMetricDenominator(primaryMetricDefinition, experimentId, variantGroupId);
+        long variantNumerator = resolveMetricNumerator(primaryMetricDefinition, experimentId, variantGroupId);
+        long baselineDenominator = resolveMetricDenominator(primaryMetricDefinition, experimentId, baselineGroupId);
+        long baselineNumerator = resolveMetricNumerator(primaryMetricDefinition, experimentId, baselineGroupId);
         
         // 使用Beta-Binomial共轭先验，先验分布：Beta(1, 1) - 均匀先验
         // 不再限制最大值：sampleFromGamma 内部对大 shape 值使用正态近似，性能可控
-        int variantAlpha = (int) Math.max(variantConverts + 1, 1);
-        int variantBeta = (int) Math.max(variantViews - variantConverts + 1, 1);
-        int baselineAlpha = (int) Math.max(baselineConverts + 1, 1);
-        int baselineBeta = (int) Math.max(baselineViews - baselineConverts + 1, 1);
+        int variantAlpha = (int) Math.max(variantNumerator + 1, 1);
+        int variantBeta = (int) Math.max(variantDenominator - variantNumerator + 1, 1);
+        int baselineAlpha = (int) Math.max(baselineNumerator + 1, 1);
+        int baselineBeta = (int) Math.max(baselineDenominator - baselineNumerator + 1, 1);
         
         // 计算胜率：P(variant > baseline)
         // 使用蒙特卡洛方法近似计算
@@ -93,12 +101,11 @@ public class BayesianAnalysisServiceImpl implements BayesianAnalysisService {
         
         Map<String, Object> result = new HashMap<>();
         
-        // 获取第一个组作为基准
-        String baselineGroupId = metadata.getGroups().keySet().iterator().next();
+        String baselineGroupId = resolveBaselineGroupId(metadata);
         result.put("baselineGroup", baselineGroupId);
         
         // 计算各变体相对于基准的胜率
-        Map<String, Double> winRates = new HashMap<>();
+        Map<String, Double> winRates = new LinkedHashMap<>();
         for (String groupId : metadata.getGroups().keySet()) {
             if (!groupId.equals(baselineGroupId)) {
                 double winRate = calculateWinRate(experimentId, groupId, baselineGroupId);
@@ -150,6 +157,84 @@ public class BayesianAnalysisServiceImpl implements BayesianAnalysisService {
                                               String baselineGroupId, double winRateThreshold) {
         double winRate = calculateWinRate(experimentId, variantGroupId, baselineGroupId);
         return createEarlyStopInfo(winRate, winRateThreshold);
+    }
+
+    private String resolveBaselineGroupId(ExperimentMetadata metadata) {
+        if (metadata == null || metadata.getGroups() == null || metadata.getGroups().isEmpty()) {
+            return null;
+        }
+        if (metadata.getTraffic() != null && metadata.getTraffic().getAllocation() != null) {
+            for (com.pisces.common.model.TrafficConfig.GroupAllocation allocation : metadata.getTraffic().getAllocation()) {
+                if (allocation != null && StringUtils.hasText(allocation.getGroup())
+                        && metadata.getGroups().containsKey(allocation.getGroup())) {
+                    return allocation.getGroup();
+                }
+            }
+        }
+        return metadata.getGroups().keySet().stream().sorted().findFirst().orElse(null);
+    }
+
+    private MetricDefinition resolveRateMetricForBayesian(ExperimentMetadata metadata) {
+        List<MetricDefinition> metricDefinitions = resolveMetricDefinitions(metadata);
+        for (MetricDefinition metricDefinition : metricDefinitions) {
+            if (Boolean.TRUE.equals(metricDefinition.getPrimaryMetric())
+                    && metricDefinition.getAggregationType() == MetricDefinition.AggregationType.RATE) {
+                return metricDefinition;
+            }
+        }
+        for (MetricDefinition metricDefinition : metricDefinitions) {
+            if (metricDefinition.getAggregationType() == MetricDefinition.AggregationType.RATE) {
+                return metricDefinition;
+            }
+        }
+
+        MetricDefinition conversionRateMetric = new MetricDefinition();
+        conversionRateMetric.setKey("conversion_rate");
+        conversionRateMetric.setAggregationType(MetricDefinition.AggregationType.RATE);
+        conversionRateMetric.setNumeratorEventType("CONVERT");
+        conversionRateMetric.setDenominatorType(MetricDefinition.DenominatorType.EVENT_COUNT);
+        conversionRateMetric.setDenominatorEventType("VIEW");
+        return conversionRateMetric;
+    }
+
+    private List<MetricDefinition> resolveMetricDefinitions(ExperimentMetadata metadata) {
+        if (metadata != null && metadata.getMetricDefinitions() != null && !metadata.getMetricDefinitions().isEmpty()) {
+            return metadata.getMetricDefinitions();
+        }
+
+        MetricDefinition conversionRateMetric = new MetricDefinition();
+        conversionRateMetric.setKey("conversion_rate");
+        conversionRateMetric.setAggregationType(MetricDefinition.AggregationType.RATE);
+        conversionRateMetric.setNumeratorEventType("CONVERT");
+        conversionRateMetric.setDenominatorType(MetricDefinition.DenominatorType.EVENT_COUNT);
+        conversionRateMetric.setDenominatorEventType("VIEW");
+        return List.of(conversionRateMetric);
+    }
+
+    private long resolveMetricNumerator(MetricDefinition metricDefinition, String experimentId, String groupId) {
+        if (metricDefinition == null || !StringUtils.hasText(metricDefinition.getNumeratorEventType())) {
+            return 0L;
+        }
+        return dataService.getEventCount(experimentId, groupId, metricDefinition.getNumeratorEventType().toUpperCase());
+    }
+
+    private long resolveMetricDenominator(MetricDefinition metricDefinition, String experimentId, String groupId) {
+        if (metricDefinition == null || metricDefinition.getDenominatorType() == null) {
+            return 0L;
+        }
+        return switch (metricDefinition.getDenominatorType()) {
+            case VISITOR_COUNT -> dataService.getVisitorCount(experimentId, groupId);
+            case ASSIGNMENT_COUNT -> dataService.getAssignmentCount(experimentId, groupId);
+            case EXPOSURE_COUNT -> dataService.getExposureCount(experimentId, groupId);
+            case EVENT_COUNT -> resolveEventDenominator(metricDefinition.getDenominatorEventType(), experimentId, groupId);
+        };
+    }
+
+    private long resolveEventDenominator(String denominatorEventType, String experimentId, String groupId) {
+        if (!StringUtils.hasText(denominatorEventType)) {
+            return 0L;
+        }
+        return dataService.getEventCount(experimentId, groupId, denominatorEventType.toUpperCase());
     }
     
     /**

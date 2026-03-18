@@ -1,7 +1,9 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.Event;
+import com.pisces.common.model.ExperimentExposure;
 import com.pisces.service.service.DataService;
+import com.pisces.service.service.IdentityService;
 import com.pisces.service.service.MultiArmedBanditService;
 import com.pisces.service.service.TrafficService;
 import lombok.extern.slf4j.Slf4j;
@@ -33,6 +35,9 @@ public class DataServiceImpl implements DataService {
     
     @Autowired(required = false)
     private MultiArmedBanditService mabService;
+
+    @Autowired(required = false)
+    private IdentityService identityService;
     
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
@@ -41,6 +46,9 @@ public class DataServiceImpl implements DataService {
     private static final String EVENT_STORE_PREFIX = "pisces:event:store:";  // 事件存储
     private static final String EVENT_COUNTER_PREFIX = "pisces:event:counter:";  // 事件计数器
     private static final String VISITOR_SET_PREFIX = "pisces:visitor:set:";  // 访客集合
+    private static final String EXPOSURE_STORE_PREFIX = "pisces:exposure:store:";
+    private static final String EXPOSURE_SET_PREFIX = "pisces:exposure:set:";
+    private static final String ASSIGNMENT_SET_PREFIX = "pisces:assignment:set:";
     
     // 事件去重键前缀（用于客户端幂等上报）
     private static final String EVENT_DEDUP_PREFIX = "pisces:event:dedup:";
@@ -56,6 +64,8 @@ public class DataServiceImpl implements DataService {
     @Override
     public void reportEvent(String experimentId, String visitorId, String eventType,
                            String eventName, Map<String, Object> properties) {
+        String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
+
         // 客户端幂等去重：若调用方携带了 clientEventId，则以此作为去重键（原子 SetIfAbsent）
         if (properties != null && properties.containsKey("clientEventId")) {
             String clientEventId = String.valueOf(properties.get("clientEventId"));
@@ -68,9 +78,9 @@ public class DataServiceImpl implements DataService {
         }
 
         // 获取访客所在组
-        String groupId = trafficService.getUserGroup(experimentId, visitorId);
+        String groupId = trafficService.getUserGroup(experimentId, canonicalVisitorId);
         if (groupId == null) {
-            log.warn("访客 {} 不在实验 {} 中", visitorId, experimentId);
+            log.warn("访客 {} 不在实验 {} 中", canonicalVisitorId, experimentId);
             return;
         }
 
@@ -78,7 +88,7 @@ public class DataServiceImpl implements DataService {
         Event event = new Event();
         event.setEventId("evt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8));
         event.setExperimentId(experimentId);
-        event.setUserId(visitorId);  // 使用visitorId（兼容原有字段名）
+        event.setUserId(canonicalVisitorId);  // 使用visitorId（兼容原有字段名）
         event.setGroupId(groupId);
         event.setEventType(Event.EventType.valueOf(eventType));
         event.setEventName(eventName);
@@ -95,7 +105,7 @@ public class DataServiceImpl implements DataService {
         
         // 更新访客集合（使用Set存储，自动去重）
         String visitorSetKey = VISITOR_SET_PREFIX + experimentId + ":" + groupId;
-        redisTemplate.opsForSet().add(visitorSetKey, visitorId);
+        redisTemplate.opsForSet().add(visitorSetKey, canonicalVisitorId);
         redisTemplate.expire(visitorSetKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
         
         // 更新MAB算法奖励
@@ -119,7 +129,33 @@ public class DataServiceImpl implements DataService {
         }
         
         log.debug("上报事件: 实验={}, 访客={}, 组={}, 事件={}", 
-                experimentId, visitorId, groupId, eventName);
+                experimentId, canonicalVisitorId, groupId, eventName);
+    }
+
+    @Override
+    public void reportExposure(String experimentId, String visitorId, Map<String, Object> properties) {
+        String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
+        String groupId = trafficService.getUserGroup(experimentId, canonicalVisitorId);
+        if (groupId == null) {
+            log.warn("访客 {} 不在实验 {} 中，无法记录曝光", canonicalVisitorId, experimentId);
+            return;
+        }
+
+        ExperimentExposure exposure = new ExperimentExposure();
+        exposure.setExposureId("expo_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8));
+        exposure.setExperimentId(experimentId);
+        exposure.setVisitorId(canonicalVisitorId);
+        exposure.setGroupId(groupId);
+        exposure.setProperties(properties);
+        exposure.setExposedAt(resolveEventTimestamp(properties));
+
+        String exposureStoreKey = EXPOSURE_STORE_PREFIX + experimentId + ":" + groupId;
+        redisTemplate.opsForList().rightPush(exposureStoreKey, exposure);
+        redisTemplate.expire(exposureStoreKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
+
+        String exposureSetKey = EXPOSURE_SET_PREFIX + experimentId + ":" + groupId;
+        redisTemplate.opsForSet().add(exposureSetKey, canonicalVisitorId);
+        redisTemplate.expire(exposureSetKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
     }
 
     private LocalDateTime resolveEventTimestamp(Map<String, Object> properties) {
@@ -176,6 +212,20 @@ public class DataServiceImpl implements DataService {
     public long getVisitorCount(String experimentId, String groupId) {
         String visitorSetKey = VISITOR_SET_PREFIX + experimentId + ":" + groupId;
         Long size = redisTemplate.opsForSet().size(visitorSetKey);
+        return size != null ? size : 0;
+    }
+
+    @Override
+    public long getAssignmentCount(String experimentId, String groupId) {
+        String assignmentSetKey = ASSIGNMENT_SET_PREFIX + experimentId + ":" + groupId;
+        Long size = redisTemplate.opsForSet().size(assignmentSetKey);
+        return size != null ? size : 0;
+    }
+
+    @Override
+    public long getExposureCount(String experimentId, String groupId) {
+        String exposureSetKey = EXPOSURE_SET_PREFIX + experimentId + ":" + groupId;
+        Long size = redisTemplate.opsForSet().size(exposureSetKey);
         return size != null ? size : 0;
     }
     
@@ -247,6 +297,8 @@ public class DataServiceImpl implements DataService {
         try {
             // 统计所有组的数据
             long totalVisitors = 0;
+            long totalAssignments = 0;
+            long totalExposures = 0;
             long totalViews = 0;
             long totalClicks = 0;
             long totalConversions = 0;
@@ -259,6 +311,8 @@ public class DataServiceImpl implements DataService {
                 for (String key : visitorKeys) {
                     String groupId = key.substring(key.lastIndexOf(":") + 1);
                     totalVisitors += getVisitorCount(experimentId, groupId);
+                    totalAssignments += getAssignmentCount(experimentId, groupId);
+                    totalExposures += getExposureCount(experimentId, groupId);
                     totalViews += getEventCount(experimentId, groupId, "VIEW");
                     totalClicks += getEventCount(experimentId, groupId, "CLICK");
                     totalConversions += getEventCount(experimentId, groupId, "CONVERT");
@@ -267,6 +321,8 @@ public class DataServiceImpl implements DataService {
             
             summary.put("experimentId", experimentId);
             summary.put("totalVisitors", totalVisitors);
+            summary.put("totalAssignments", totalAssignments);
+            summary.put("totalExposures", totalExposures);
             summary.put("totalViews", totalViews);
             summary.put("totalClicks", totalClicks);
             summary.put("totalConversions", totalConversions);
@@ -333,5 +389,69 @@ public class DataServiceImpl implements DataService {
             log.warn("转换事件对象失败: {}", e.getMessage());
             return null;
         }
+    }
+
+    @Override
+    public List<ExperimentExposure> getExposures(String experimentId, String groupId) {
+        String exposureStoreKey = EXPOSURE_STORE_PREFIX + experimentId + ":" + groupId;
+        List<Object> exposureObjects = redisTemplate.opsForList().range(exposureStoreKey, 0, -1);
+
+        List<ExperimentExposure> exposures = new ArrayList<>();
+        if (exposureObjects == null) {
+            return exposures;
+        }
+
+        for (Object exposureObject : exposureObjects) {
+            if (exposureObject instanceof ExperimentExposure experimentExposure) {
+                exposures.add(experimentExposure);
+                continue;
+            }
+            if (exposureObject instanceof Map<?, ?> exposureMap) {
+                ExperimentExposure exposure = convertMapToExposure(castMap(exposureMap));
+                if (exposure != null) {
+                    exposures.add(exposure);
+                }
+            }
+        }
+        return exposures;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> castMap(Map<?, ?> map) {
+        return (Map<String, Object>) map;
+    }
+
+    private ExperimentExposure convertMapToExposure(Map<String, Object> map) {
+        try {
+            ExperimentExposure exposure = new ExperimentExposure();
+            exposure.setExposureId((String) map.get("exposureId"));
+            exposure.setExperimentId((String) map.get("experimentId"));
+            exposure.setVisitorId((String) map.get("visitorId"));
+            exposure.setGroupId((String) map.get("groupId"));
+            exposure.setProperties(castProperties(map.get("properties")));
+
+            Object exposedAtObject = map.get("exposedAt");
+            if (exposedAtObject instanceof LocalDateTime localDateTime) {
+                exposure.setExposedAt(localDateTime);
+            } else if (exposedAtObject instanceof String exposedAtText) {
+                exposure.setExposedAt(LocalDateTime.parse(exposedAtText));
+            }
+            return exposure;
+        } catch (Exception e) {
+            log.warn("转换曝光对象失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> castProperties(Object propertiesObject) {
+        if (propertiesObject instanceof Map<?, ?> propertyMap) {
+            return (Map<String, Object>) propertyMap;
+        }
+        return null;
+    }
+
+    private String resolveCanonicalVisitorId(String visitorId) {
+        return identityService != null ? identityService.resolveCanonicalId(visitorId) : visitorId;
     }
 }

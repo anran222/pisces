@@ -3,6 +3,7 @@ package com.pisces.service.service;
 import com.pisces.common.model.Experiment;
 import com.pisces.common.response.ExperimentResponse;
 import com.pisces.common.request.ExperimentCreateRequest;
+import com.pisces.common.request.ExperimentConclusionStatusUpdateRequest;
 
 import java.util.List;
 
@@ -97,5 +98,12 @@ public interface ExperimentService {
      * @return 操作结果，包含成功和失败的实验ID
      */
     java.util.Map<String, Object> batchDeleteExperiments(List<String> experimentIds);
-}
 
+    /**
+     * 更新实验结论状态
+     *
+     * @param experimentId 实验ID
+     * @param request 结论状态更新请求
+     */
+    void updateConclusionStatus(String experimentId, ExperimentConclusionStatusUpdateRequest request);
+}

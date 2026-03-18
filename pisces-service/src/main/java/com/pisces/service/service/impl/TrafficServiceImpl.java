@@ -1,21 +1,27 @@
 package com.pisces.service.service.impl;
 
+import com.pisces.common.model.ExperimentAssignment;
 import com.pisces.common.enums.ResponseCode;
 import com.pisces.common.model.ExperimentLayer;
 import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.common.model.TrafficConfig;
 import com.pisces.service.service.ConfigService;
+import com.pisces.service.service.IdentityService;
 import com.pisces.service.service.MultiArmedBanditService;
 import com.pisces.service.service.TrafficService;
 import com.pisces.service.exception.BusinessException;
+import com.pisces.service.rule.TrafficRuleEvaluator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -32,6 +38,12 @@ public class TrafficServiceImpl implements TrafficService {
     
     @Autowired
     private MultiArmedBanditService mabService;
+
+    @Autowired
+    private IdentityService identityService;
+
+    @Autowired
+    private TrafficRuleEvaluator trafficRuleEvaluator;
     
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
@@ -39,6 +51,8 @@ public class TrafficServiceImpl implements TrafficService {
     // Redis Key前缀
     private static final String USER_GROUP_CACHE_PREFIX = "pisces:traffic:group:";  // 访客分组缓存
     private static final String LAYER_ASSIGN_PREFIX = "pisces:layer:assign:";        // 分层互斥缓存
+    private static final String ASSIGNMENT_PREFIX = "pisces:assignment:";
+    private static final String ASSIGNMENT_SET_PREFIX = "pisces:assignment:set:";
 
     // 缓存过期时间（天）
     private static final long CACHE_EXPIRE_DAYS = 30;
@@ -51,14 +65,23 @@ public class TrafficServiceImpl implements TrafficService {
      */
     @Override
     public String assignGroup(String experimentId, String visitorId) {
+        return assignGroup(experimentId, visitorId, Collections.emptyMap());
+    }
+
+    @Override
+    public String assignGroup(String experimentId, String visitorId, Map<String, Object> attributes) {
+        String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
+
         // 先获取实验配置（需要 configVersion 做缓存校验）
         ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
         if (metadata == null) {
             throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
         }
 
+        migrateExistingIdentityAssignmentIfNeeded(experimentId, visitorId, canonicalVisitorId, metadata);
+
         // 检查 Redis 缓存（带版本校验）
-        String cacheKey = USER_GROUP_CACHE_PREFIX + visitorId;
+        String cacheKey = USER_GROUP_CACHE_PREFIX + canonicalVisitorId;
         String verField  = experimentId + VER_SUFFIX;
         Object cachedGroupId = redisTemplate.opsForHash().get(cacheKey, experimentId);
         Object cachedVersion = redisTemplate.opsForHash().get(cacheKey, verField);
@@ -67,12 +90,13 @@ public class TrafficServiceImpl implements TrafficService {
             try {
                 long cachedVer = Long.parseLong(cachedVersion.toString());
                 if (cachedVer == metadata.getConfigVersion()) {
+                    ensureAssignmentRecorded(experimentId, canonicalVisitorId, cachedGroupId.toString(), metadata);
                     return cachedGroupId.toString(); // 版本匹配，缓存有效
                 }
                 // 配置已更新，删除旧缓存字段，重新分配
                 redisTemplate.opsForHash().delete(cacheKey, experimentId, verField);
                 log.info("实验配置变更（v{} → v{}），访客 {} 重新分配分组",
-                        cachedVer, metadata.getConfigVersion(), visitorId);
+                        cachedVer, metadata.getConfigVersion(), canonicalVisitorId);
             } catch (NumberFormatException ignored) {
                 // 格式异常，视为版本不匹配，重新分配
             }
@@ -84,15 +108,16 @@ public class TrafficServiceImpl implements TrafficService {
         }
 
         // 检查白名单/黑名单
-        if (metadata.getWhitelist() != null && metadata.getWhitelist().contains(visitorId)) {
+        if (metadata.getWhitelist() != null && metadata.getWhitelist().contains(canonicalVisitorId)) {
             if (metadata.getGroups() != null && !metadata.getGroups().isEmpty()) {
                 String groupId = metadata.getGroups().keySet().iterator().next();
-                cacheUserGroup(visitorId, experimentId, groupId, metadata.getConfigVersion());
+                cacheUserGroup(canonicalVisitorId, experimentId, groupId, metadata.getConfigVersion());
+                recordAssignment(experimentId, canonicalVisitorId, groupId, metadata);
                 return groupId;
             }
         }
 
-        if (metadata.getBlacklist() != null && metadata.getBlacklist().contains(visitorId)) {
+        if (metadata.getBlacklist() != null && metadata.getBlacklist().contains(canonicalVisitorId)) {
             return null;
         }
 
@@ -103,10 +128,10 @@ public class TrafficServiceImpl implements TrafficService {
 
         // 分层互斥检查：同一 MUTEX 层内，每个访客只能进入一个实验
         if (metadata.getLayerId() != null) {
-            String blockedExperiment = checkLayerMutex(metadata.getLayerId(), experimentId, visitorId);
+            String blockedExperiment = checkLayerMutex(metadata.getLayerId(), experimentId, canonicalVisitorId);
             if (blockedExperiment != null) {
                 log.debug("访客 {} 已在层 {} 的实验 {} 中，实验 {} 被拒绝（互斥）",
-                        visitorId, metadata.getLayerId(), blockedExperiment, experimentId);
+                        canonicalVisitorId, metadata.getLayerId(), blockedExperiment, experimentId);
                 return null;
             }
         }
@@ -118,16 +143,18 @@ public class TrafficServiceImpl implements TrafficService {
         }
 
         // 检查是否在流量范围内
-        double randomValue = generateHashValue(visitorId + experimentId);
+        double randomValue = generateHashValue(canonicalVisitorId + experimentId);
         if (randomValue >= trafficConfig.getTotalTraffic()) {
             return null;
         }
 
         // 根据策略分配组
-        String groupId = allocateGroup(trafficConfig, visitorId, experimentId);
+        Map<String, Object> ruleContext = buildRuleContext(experimentId, canonicalVisitorId, attributes);
+        String groupId = allocateGroup(trafficConfig, canonicalVisitorId, experimentId, ruleContext);
         if (groupId != null) {
-            cacheUserGroup(visitorId, experimentId, groupId, metadata.getConfigVersion());
-            recordLayerAssignment(metadata.getLayerId(), experimentId, visitorId);
+            cacheUserGroup(canonicalVisitorId, experimentId, groupId, metadata.getConfigVersion());
+            recordAssignment(experimentId, canonicalVisitorId, groupId, metadata);
+            recordLayerAssignment(metadata.getLayerId(), experimentId, canonicalVisitorId);
             return groupId;
         }
 
@@ -139,37 +166,71 @@ public class TrafficServiceImpl implements TrafficService {
      */
     @Override
     public String getUserGroup(String experimentId, String visitorId) {
+        String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
+
         // 从Redis缓存获取
-        String cacheKey = USER_GROUP_CACHE_PREFIX + visitorId;
+        String cacheKey = USER_GROUP_CACHE_PREFIX + canonicalVisitorId;
         Object cachedGroupId = redisTemplate.opsForHash().get(cacheKey, experimentId);
         if (cachedGroupId != null) {
             return cachedGroupId.toString();
         }
+
+        if (!canonicalVisitorId.equals(visitorId)) {
+            Object legacyGroupId = redisTemplate.opsForHash().get(USER_GROUP_CACHE_PREFIX + visitorId, experimentId);
+            if (legacyGroupId != null) {
+                return legacyGroupId.toString();
+            }
+        }
         
         // 如果缓存中没有，重新分配
-        return assignGroup(experimentId, visitorId);
+        return assignGroup(experimentId, canonicalVisitorId);
+    }
+
+    @Override
+    public ExperimentAssignment getAssignment(String experimentId, String visitorId) {
+        String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
+        Object assignmentObject = redisTemplate.opsForValue().get(buildAssignmentKey(experimentId, canonicalVisitorId));
+        if (assignmentObject instanceof ExperimentAssignment experimentAssignment) {
+            return experimentAssignment;
+        }
+        if (!canonicalVisitorId.equals(visitorId)) {
+            Object legacyAssignmentObject = redisTemplate.opsForValue().get(buildAssignmentKey(experimentId, visitorId));
+            if (legacyAssignmentObject instanceof ExperimentAssignment experimentAssignment) {
+                return experimentAssignment;
+            }
+        }
+        return null;
     }
     
     /**
      * 根据策略分配组
      */
-    private String allocateGroup(TrafficConfig trafficConfig, String visitorId, String experimentId) {
+    private String allocateGroup(TrafficConfig trafficConfig, String visitorId, String experimentId,
+                                 Map<String, Object> ruleContext) {
         TrafficConfig.TrafficStrategy strategy = trafficConfig.getStrategy();
         
         if (strategy == TrafficConfig.TrafficStrategy.HASH) {
             return allocateByHash(trafficConfig, visitorId, experimentId);
-        } else if (strategy == TrafficConfig.TrafficStrategy.RANDOM) {
+        }
+        if (strategy == TrafficConfig.TrafficStrategy.RANDOM) {
             return allocateByRandom(trafficConfig);
-        } else if (strategy == TrafficConfig.TrafficStrategy.THOMPSON_SAMPLING) {
+        }
+        if (strategy == TrafficConfig.TrafficStrategy.RULE) {
+            String matchedGroup = trafficRuleEvaluator.evaluateGroup(trafficConfig, ruleContext);
+            if (matchedGroup != null) {
+                return matchedGroup;
+            }
+            return allocateByRuleFallback(trafficConfig, visitorId, experimentId);
+        }
+        if (strategy == TrafficConfig.TrafficStrategy.THOMPSON_SAMPLING) {
             // 多臂老虎机算法：Thompson Sampling
             return mabService.selectGroupByThompsonSampling(experimentId, visitorId);
-        } else if (strategy == TrafficConfig.TrafficStrategy.UCB) {
+        }
+        if (strategy == TrafficConfig.TrafficStrategy.UCB) {
             // 多臂老虎机算法：UCB
             return mabService.selectGroupByUCB(experimentId, visitorId);
-        } else {
-            // RULE策略需要根据业务规则实现
-            return allocateByHash(trafficConfig, visitorId, experimentId);
         }
+        return null;
     }
     
     /**
@@ -217,6 +278,19 @@ public class TrafficServiceImpl implements TrafficService {
             }
         }
         
+        return allocations.get(0).getGroup();
+    }
+
+    private String allocateByRuleFallback(TrafficConfig trafficConfig, String visitorId, String experimentId) {
+        TrafficConfig.RuleFallbackStrategy fallbackStrategy = trafficConfig.getRuleFallbackStrategy();
+        if (fallbackStrategy == null || fallbackStrategy == TrafficConfig.RuleFallbackStrategy.HASH) {
+            return allocateByHash(trafficConfig, visitorId, experimentId);
+        }
+
+        List<TrafficConfig.GroupAllocation> allocations = trafficConfig.getAllocation();
+        if (CollectionUtils.isEmpty(allocations)) {
+            return null;
+        }
         return allocations.get(0).getGroup();
     }
     
@@ -312,5 +386,85 @@ public class TrafficServiceImpl implements TrafficService {
         }
         return result;
     }
-}
 
+    private void ensureAssignmentRecorded(String experimentId, String visitorId, String groupId,
+                                          ExperimentMetadata metadata) {
+        if (getAssignment(experimentId, visitorId) != null) {
+            return;
+        }
+        recordAssignment(experimentId, visitorId, groupId, metadata);
+    }
+
+    private void recordAssignment(String experimentId, String visitorId, String groupId, ExperimentMetadata metadata) {
+        ExperimentAssignment previousAssignment = getAssignment(experimentId, visitorId);
+
+        ExperimentAssignment assignment = new ExperimentAssignment();
+        assignment.setExperimentId(experimentId);
+        assignment.setVisitorId(visitorId);
+        assignment.setGroupId(groupId);
+        assignment.setAssignedAt(java.time.LocalDateTime.now());
+        assignment.setConfigVersion(metadata.getConfigVersion());
+        assignment.setStrategy(metadata.getTraffic() != null && metadata.getTraffic().getStrategy() != null
+                ? metadata.getTraffic().getStrategy().name() : null);
+
+        redisTemplate.opsForValue().set(buildAssignmentKey(experimentId, visitorId), assignment,
+                CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
+
+        if (previousAssignment != null && previousAssignment.getGroupId() != null
+                && !previousAssignment.getGroupId().equals(groupId)) {
+            redisTemplate.opsForSet().remove(buildAssignmentSetKey(experimentId, previousAssignment.getGroupId()),
+                    visitorId);
+        }
+
+        String assignmentSetKey = buildAssignmentSetKey(experimentId, groupId);
+        redisTemplate.opsForSet().add(assignmentSetKey, visitorId);
+        redisTemplate.expire(assignmentSetKey, CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
+    }
+
+    private String buildAssignmentKey(String experimentId, String visitorId) {
+        return ASSIGNMENT_PREFIX + experimentId + ":" + visitorId;
+    }
+
+    private String buildAssignmentSetKey(String experimentId, String groupId) {
+        return ASSIGNMENT_SET_PREFIX + experimentId + ":" + groupId;
+    }
+
+    private Map<String, Object> buildRuleContext(String experimentId, String visitorId, Map<String, Object> attributes) {
+        Map<String, Object> ruleContext = new LinkedHashMap<>();
+        ruleContext.put("experimentId", experimentId);
+        ruleContext.put("visitorId", visitorId);
+        if (attributes != null && !attributes.isEmpty()) {
+            ruleContext.putAll(attributes);
+        }
+        return ruleContext;
+    }
+
+    private String resolveCanonicalVisitorId(String visitorId) {
+        return identityService != null ? identityService.resolveCanonicalId(visitorId) : visitorId;
+    }
+
+    private void migrateExistingIdentityAssignmentIfNeeded(String experimentId, String rawVisitorId,
+                                                           String canonicalVisitorId, ExperimentMetadata metadata) {
+        if (canonicalVisitorId == null || canonicalVisitorId.equals(rawVisitorId)) {
+            return;
+        }
+
+        Object legacyGroupId = redisTemplate.opsForHash().get(USER_GROUP_CACHE_PREFIX + rawVisitorId, experimentId);
+        Object legacyVersion = redisTemplate.opsForHash().get(USER_GROUP_CACHE_PREFIX + rawVisitorId, experimentId + VER_SUFFIX);
+        if (legacyGroupId == null) {
+            return;
+        }
+
+        long configVersion = metadata.getConfigVersion();
+        if (legacyVersion != null) {
+            try {
+                configVersion = Long.parseLong(legacyVersion.toString());
+            } catch (NumberFormatException ignored) {
+                // 使用当前配置版本继续迁移
+            }
+        }
+
+        cacheUserGroup(canonicalVisitorId, experimentId, legacyGroupId.toString(), configVersion);
+        ensureAssignmentRecorded(experimentId, canonicalVisitorId, legacyGroupId.toString(), metadata);
+    }
+}

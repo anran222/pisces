@@ -1,11 +1,12 @@
 package com.pisces.api.data;
 
 import com.pisces.common.request.EventReportRequest;
+import com.pisces.common.request.ExposureReportRequest;
 import com.pisces.common.response.BaseResponse;
 import com.pisces.service.annotation.NoTokenRequired;
 import com.pisces.service.service.DataService;
 import jakarta.validation.Valid;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -15,10 +16,10 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/data")
 @NoTokenRequired  // 无需Token认证
+@RequiredArgsConstructor
 public class DataController {
-    
-    @Autowired
-    private DataService dataService;
+
+    private final DataService dataService;
     
     /**
      * 上报事件
@@ -37,5 +38,17 @@ public class DataController {
         );
         return BaseResponse.of("事件上报成功", null);
     }
-}
 
+    /**
+     * 上报实验曝光
+     */
+    @PostMapping("/exposure")
+    public BaseResponse<Void> reportExposure(@Valid @RequestBody ExposureReportRequest request) {
+        dataService.reportExposure(
+                request.getExperimentId(),
+                request.getVisitorId(),
+                request.getProperties()
+        );
+        return BaseResponse.of("曝光上报成功", null);
+    }
+}

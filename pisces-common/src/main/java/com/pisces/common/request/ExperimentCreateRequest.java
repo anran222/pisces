@@ -1,5 +1,6 @@
 package com.pisces.common.request;
 
+import com.pisces.common.model.MetricDefinition;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
@@ -45,6 +46,11 @@ public class ExperimentCreateRequest extends BaseRequest {
      * 黑名单用户ID列表
      */
     private List<String> blacklist;
+
+    /**
+     * 指标定义列表
+     */
+    private List<MetricDefinition> metricDefinitions;
     
     @Data
     public static class GroupConfig {
@@ -75,6 +81,10 @@ public class ExperimentCreateRequest extends BaseRequest {
         private String strategy; // RANDOM, HASH, RULE, THOMPSON_SAMPLING, UCB
         
         private String hashKey;
+
+        private List<TrafficRuleRequest> rules;
+
+        private String ruleFallbackStrategy;
     }
     
     @Data
@@ -85,5 +95,20 @@ public class ExperimentCreateRequest extends BaseRequest {
         @NotNull(message = "流量比例不能为空")
         private Double ratio;
     }
-}
 
+    @Data
+    public static class TrafficRuleRequest {
+        private String name;
+        private Integer priority;
+        private String group;
+        private List<RuleConditionRequest> conditions;
+    }
+
+    @Data
+    public static class RuleConditionRequest {
+        private String field;
+        private String operator;
+        private String value;
+        private List<String> values;
+    }
+}

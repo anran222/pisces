@@ -1,5 +1,6 @@
 package com.pisces.api.analysis;
 
+import com.pisces.common.model.ExperimentReportSnapshot;
 import com.pisces.common.model.Statistics;
 import com.pisces.common.response.BaseResponse;
 import com.pisces.service.annotation.NoTokenRequired;
@@ -7,6 +8,7 @@ import com.pisces.service.service.AnalysisService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -173,6 +175,28 @@ public class AnalysisController {
         Map<String, Object> report = analysisService.exportExperimentReport(id);
         return BaseResponse.of(report);
     }
+
+    /**
+     * 生成并保存实验报告快照
+     */
+    @PostMapping("/experiment/{id}/report/snapshots")
+    @NoTokenRequired
+    public BaseResponse<ExperimentReportSnapshot> createReportSnapshot(
+            @PathVariable String id,
+            @RequestParam(value = "generatedBy", required = false, defaultValue = "system") String generatedBy) {
+        ExperimentReportSnapshot snapshot = analysisService.createReportSnapshot(id, generatedBy);
+        return BaseResponse.of("实验报告快照生成成功", snapshot);
+    }
+
+    /**
+     * 查询实验报告快照列表
+     */
+    @GetMapping("/experiment/{id}/report/snapshots")
+    @NoTokenRequired
+    public BaseResponse<List<ExperimentReportSnapshot>> listReportSnapshots(@PathVariable String id) {
+        List<ExperimentReportSnapshot> snapshots = analysisService.listReportSnapshots(id);
+        return BaseResponse.of(snapshots);
+    }
     
     /**
      * 获取实验时间线数据
@@ -288,4 +312,3 @@ public class AnalysisController {
         return BaseResponse.of(result);
     }
 }
-

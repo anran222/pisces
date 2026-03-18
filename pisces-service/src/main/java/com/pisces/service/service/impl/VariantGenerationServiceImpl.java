@@ -26,6 +26,7 @@ import com.pisces.service.service.DataService;
 import com.pisces.service.service.ExperimentService;
 import com.pisces.service.service.TrafficService;
 import com.pisces.service.service.VariantGenerationService;
+import com.pisces.service.util.JsonUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -71,6 +72,9 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
     
     @Autowired
     private AnalysisService analysisService;
+
+    @Autowired
+    private JsonUtil jsonUtil;
     
     private final Random random = new Random();
     
@@ -285,8 +289,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
                     .connectTimeout(java.time.Duration.ofSeconds(30))
                     .build();
             
-            String jsonBody = new com.fasterxml.jackson.databind.ObjectMapper()
-                    .writeValueAsString(requestBody);
+            String jsonBody = jsonUtil.toJson(requestBody);
             
             java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
                     .uri(java.net.URI.create(apiUrl))
@@ -305,8 +308,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
             if (response.statusCode() == 200) {
                 // 解析异步任务响应
                 @SuppressWarnings("unchecked")
-                Map<String, Object> responseMap = new com.fasterxml.jackson.databind.ObjectMapper()
-                        .readValue(response.body(), Map.class);
+                Map<String, Object> responseMap = jsonUtil.toObject(response.body(), Map.class);
                 
                 @SuppressWarnings("unchecked")
                 Map<String, Object> output = (Map<String, Object>) responseMap.get("output");
@@ -368,8 +370,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
                 
                 if (response.statusCode() == 200) {
                     @SuppressWarnings("unchecked")
-                    Map<String, Object> responseMap = new com.fasterxml.jackson.databind.ObjectMapper()
-                            .readValue(response.body(), Map.class);
+                    Map<String, Object> responseMap = jsonUtil.toObject(response.body(), Map.class);
                     
                     @SuppressWarnings("unchecked")
                     Map<String, Object> output = (Map<String, Object>) responseMap.get("output");

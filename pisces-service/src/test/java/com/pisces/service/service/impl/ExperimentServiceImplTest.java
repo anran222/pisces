@@ -3,7 +3,9 @@ package com.pisces.service.service.impl;
 import com.pisces.common.model.Experiment;
 import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.common.request.ExperimentCreateRequest;
+import com.pisces.service.rule.TrafficRuleEvaluator;
 import com.pisces.service.service.ConfigService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -27,6 +29,11 @@ class ExperimentServiceImplTest {
 
     @InjectMocks
     private ExperimentServiceImpl experimentService;
+
+    @BeforeEach
+    void setUp() {
+        ReflectionTestUtils.setField(experimentService, "trafficRuleEvaluator", new TrafficRuleEvaluator());
+    }
 
     @Test
     void createExperimentShouldInitializeConfigVersion() throws Exception {

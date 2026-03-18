@@ -7,10 +7,13 @@ import com.alibaba.dashscope.common.Message;
 import com.alibaba.dashscope.common.Role;
 import com.pisces.common.model.Event;
 import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.common.model.ExperimentReportSnapshot;
+import com.pisces.common.model.MetricDefinition;
 import com.pisces.common.model.Statistics;
 import com.pisces.common.enums.ResponseCode;
 import com.pisces.service.config.TongYiConfig;
 import com.pisces.service.exception.BusinessException;
+import com.pisces.service.repository.ExperimentReportSnapshotRepository;
 import com.pisces.service.service.AnalysisService;
 import com.pisces.service.util.StatisticalUtils;
 import com.pisces.service.service.BayesianAnalysisService;
@@ -25,6 +28,7 @@ import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Collections;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -39,6 +43,12 @@ import java.util.Set;
 @Slf4j
 @Service
 public class AnalysisServiceImpl implements AnalysisService {
+
+    private static final double DEFAULT_GATE_MDE = 0.05;
+
+    private static final double DEFAULT_GATE_ALPHA = 0.05;
+
+    private static final double DEFAULT_GATE_POWER = 0.80;
     
     @Autowired
     private ConfigService configService;
@@ -57,6 +67,9 @@ public class AnalysisServiceImpl implements AnalysisService {
     
     @Autowired
     private TongYiConfig tongYiConfig;
+
+    @Autowired
+    private ExperimentReportSnapshotRepository experimentReportSnapshotRepository;
     
     /**
      * 获取实验统计数据
@@ -75,17 +88,21 @@ public class AnalysisServiceImpl implements AnalysisService {
         statistics.setStatisticsStartTime(metadata.getExperiment().getStartTime());
         statistics.setStatisticsEndTime(java.time.LocalDateTime.now());
         
-        Map<String, Statistics.GroupStatistics> groupStatsMap = new HashMap<>();
+        Map<String, Statistics.GroupStatistics> groupStatsMap = new LinkedHashMap<>();
+        List<MetricDefinition> metricDefinitions = resolveMetricDefinitions(metadata);
+        MetricDefinition primaryMetricDefinition = resolvePrimaryMetric(metricDefinitions);
         
         // 用于计算总览的变量
         long totalVisitors = 0;
         long totalEvents = 0;
+        long totalAssignments = 0;
+        long totalExposures = 0;
         double bestConversionRate = 0.0;
+        double bestPrimaryMetricValue = Double.NEGATIVE_INFINITY;
         String bestPerformingGroup = null;
         
         // 确定基准组（第一个组为基准组）
-        String baselineGroupId = metadata.getGroups() != null && !metadata.getGroups().isEmpty() ?
-                metadata.getGroups().keySet().iterator().next() : null;
+        String baselineGroupId = resolveBaselineGroupId(metadata);
         double baselineConversionRate = 0.0;
         
         // 遍历所有实验组计算基础统计
@@ -95,11 +112,13 @@ public class AnalysisServiceImpl implements AnalysisService {
                 com.pisces.common.model.ExperimentGroup group = entry.getValue();
                 
                 Statistics.GroupStatistics groupStats = calculateGroupStatistics(
-                        experimentId, groupId, group, baselineGroupId);
+                        experimentId, groupId, group, baselineGroupId, metricDefinitions);
                 groupStatsMap.put(groupId, groupStats);
                 
                 // 累计总访客和事件
                 totalVisitors += groupStats.getUserCount() != null ? groupStats.getUserCount() : 0;
+                totalAssignments += dataService.getAssignmentCount(experimentId, groupId);
+                totalExposures += dataService.getExposureCount(experimentId, groupId);
                 if (groupStats.getEventCounts() != null) {
                     for (Long count : groupStats.getEventCounts().values()) {
                         totalEvents += count != null ? count : 0;
@@ -116,6 +135,11 @@ public class AnalysisServiceImpl implements AnalysisService {
                 Double conversionRate = groupStats.getConversionRate();
                 if (conversionRate != null && conversionRate > bestConversionRate) {
                     bestConversionRate = conversionRate;
+                }
+
+                double primaryMetricValue = extractPrimaryMetricValue(groupStats, primaryMetricDefinition);
+                if (primaryMetricValue > bestPrimaryMetricValue) {
+                    bestPrimaryMetricValue = primaryMetricValue;
                     bestPerformingGroup = groupId;
                 }
             }
@@ -139,8 +163,14 @@ public class AnalysisServiceImpl implements AnalysisService {
         Statistics.ExperimentSummary summary = new Statistics.ExperimentSummary();
         summary.setTotalVisitors(totalVisitors);
         summary.setTotalEvents(totalEvents);
+        summary.setTotalAssignments(totalAssignments);
+        summary.setTotalExposures(totalExposures);
         summary.setBestPerformingGroup(bestPerformingGroup);
         summary.setBestConversionRate(bestConversionRate);
+        summary.setPrimaryMetricKey(primaryMetricDefinition != null ? primaryMetricDefinition.getKey() : null);
+        summary.setBestPrimaryMetricValue(bestPrimaryMetricValue == Double.NEGATIVE_INFINITY ? null : bestPrimaryMetricValue);
+        summary.setBreachedGuardrails(resolveBreachedGuardrails(groupStatsMap, metricDefinitions, baselineGroupId,
+                bestPerformingGroup));
         
         // 计算总体转化率和点击率
         long totalViews = 0;
@@ -158,6 +188,7 @@ public class AnalysisServiceImpl implements AnalysisService {
         summary.setOverallConversionRate(totalViews > 0 ? (double) totalConversions / totalViews : 0.0);
         
         statistics.setSummary(summary);
+        statistics.setDataQualityCheck(buildDataQualityCheck(experimentId, metadata, groupStatsMap, baselineGroupId));
         
         return statistics;
     }
@@ -167,7 +198,8 @@ public class AnalysisServiceImpl implements AnalysisService {
      */
     private Statistics.GroupStatistics calculateGroupStatistics(String experimentId, String groupId,
                                                                   com.pisces.common.model.ExperimentGroup group,
-                                                                  String baselineGroupId) {
+                                                                  String baselineGroupId,
+                                                                  List<MetricDefinition> metricDefinitions) {
         Statistics.GroupStatistics groupStats = new Statistics.GroupStatistics();
         groupStats.setGroupId(groupId);
         groupStats.setGroupName(group != null ? group.getName() : groupId);
@@ -195,10 +227,14 @@ public class AnalysisServiceImpl implements AnalysisService {
         groupStats.setViewCount(viewCount);
         groupStats.setClickCount(clickCount);
         groupStats.setConversionCount(convertCount);
-        
-        // 计算点击率和转化率
-        double clickRate = viewCount > 0 ? (double) clickCount / viewCount : 0.0;
-        double conversionRate = viewCount > 0 ? (double) convertCount / viewCount : 0.0;
+
+        Map<String, Double> metricValues = buildMetricValues(experimentId, groupId, viewCount, clickCount,
+                convertCount, visitorCount, metricDefinitions);
+        groupStats.setMetricValues(metricValues);
+
+        double clickRate = metricValues.getOrDefault("click_rate", viewCount > 0 ? (double) clickCount / viewCount : 0.0);
+        double conversionRate = metricValues.getOrDefault("conversion_rate",
+                viewCount > 0 ? (double) convertCount / viewCount : 0.0);
         groupStats.setClickRate(clickRate);
         groupStats.setConversionRate(conversionRate);
         
@@ -207,12 +243,301 @@ public class AnalysisServiceImpl implements AnalysisService {
         
         return groupStats;
     }
+
+    private List<MetricDefinition> resolveMetricDefinitions(ExperimentMetadata metadata) {
+        if (metadata.getMetricDefinitions() != null && !metadata.getMetricDefinitions().isEmpty()) {
+            return metadata.getMetricDefinitions();
+        }
+
+        MetricDefinition clickRateMetric = new MetricDefinition();
+        clickRateMetric.setKey("click_rate");
+        clickRateMetric.setName("点击率");
+        clickRateMetric.setAggregationType(MetricDefinition.AggregationType.RATE);
+        clickRateMetric.setNumeratorEventType("CLICK");
+        clickRateMetric.setDenominatorType(MetricDefinition.DenominatorType.EVENT_COUNT);
+        clickRateMetric.setDenominatorEventType("VIEW");
+
+        MetricDefinition conversionRateMetric = new MetricDefinition();
+        conversionRateMetric.setKey("conversion_rate");
+        conversionRateMetric.setName("转化率");
+        conversionRateMetric.setAggregationType(MetricDefinition.AggregationType.RATE);
+        conversionRateMetric.setNumeratorEventType("CONVERT");
+        conversionRateMetric.setDenominatorType(MetricDefinition.DenominatorType.EVENT_COUNT);
+        conversionRateMetric.setDenominatorEventType("VIEW");
+
+        return List.of(clickRateMetric, conversionRateMetric);
+    }
+
+    private MetricDefinition resolvePrimaryMetric(List<MetricDefinition> metricDefinitions) {
+        for (MetricDefinition metricDefinition : metricDefinitions) {
+            if (Boolean.TRUE.equals(metricDefinition.getPrimaryMetric())) {
+                return metricDefinition;
+            }
+        }
+        return metricDefinitions.isEmpty() ? null : metricDefinitions.get(0);
+    }
+
+    private String resolveBaselineGroupId(ExperimentMetadata metadata) {
+        if (metadata == null || metadata.getGroups() == null || metadata.getGroups().isEmpty()) {
+            return null;
+        }
+        if (metadata.getTraffic() != null && metadata.getTraffic().getAllocation() != null) {
+            for (com.pisces.common.model.TrafficConfig.GroupAllocation allocation : metadata.getTraffic().getAllocation()) {
+                if (allocation != null && StringUtils.hasText(allocation.getGroup())
+                        && metadata.getGroups().containsKey(allocation.getGroup())) {
+                    return allocation.getGroup();
+                }
+            }
+        }
+        return metadata.getGroups().keySet().stream().sorted().findFirst().orElse(null);
+    }
+
+    private MetricDefinition resolveRateMetricForInference(MetricDefinition primaryMetricDefinition) {
+        if (primaryMetricDefinition != null
+                && primaryMetricDefinition.getAggregationType() == MetricDefinition.AggregationType.RATE) {
+            return primaryMetricDefinition;
+        }
+        MetricDefinition conversionRateMetric = new MetricDefinition();
+        conversionRateMetric.setKey("conversion_rate");
+        conversionRateMetric.setAggregationType(MetricDefinition.AggregationType.RATE);
+        conversionRateMetric.setNumeratorEventType("CONVERT");
+        conversionRateMetric.setDenominatorType(MetricDefinition.DenominatorType.EVENT_COUNT);
+        conversionRateMetric.setDenominatorEventType("VIEW");
+        return conversionRateMetric;
+    }
+
+    private double extractPrimaryMetricValue(Statistics.GroupStatistics groupStatistics,
+                                             MetricDefinition primaryMetricDefinition) {
+        if (groupStatistics == null || primaryMetricDefinition == null || groupStatistics.getMetricValues() == null) {
+            return groupStatistics != null && groupStatistics.getConversionRate() != null
+                    ? groupStatistics.getConversionRate() : Double.NEGATIVE_INFINITY;
+        }
+        Double metricValue = groupStatistics.getMetricValues().get(primaryMetricDefinition.getKey());
+        return metricValue != null ? metricValue : Double.NEGATIVE_INFINITY;
+    }
+
+    private Map<String, Double> buildMetricValues(String experimentId, String groupId, long viewCount,
+                                                  long clickCount, long convertCount, long visitorCount,
+                                                  List<MetricDefinition> metricDefinitions) {
+        Map<String, Double> metricValues = new LinkedHashMap<>();
+        for (MetricDefinition metricDefinition : metricDefinitions) {
+            if (metricDefinition == null || metricDefinition.getKey() == null) {
+                continue;
+            }
+
+            long numerator = resolveMetricNumerator(metricDefinition, viewCount, clickCount, convertCount,
+                    experimentId, groupId);
+            double metricValue = metricDefinition.getAggregationType() == MetricDefinition.AggregationType.COUNT
+                    ? numerator
+                    : calculateRateMetric(metricDefinition, numerator, experimentId, groupId, viewCount,
+                    clickCount, convertCount, visitorCount);
+            metricValues.put(metricDefinition.getKey(), metricValue);
+        }
+        return metricValues;
+    }
+
+    private long resolveMetricNumerator(MetricDefinition metricDefinition, long viewCount, long clickCount,
+                                        long convertCount, String experimentId, String groupId) {
+        String numeratorEventType = metricDefinition.getNumeratorEventType();
+        if ("VIEW".equalsIgnoreCase(numeratorEventType)) {
+            return viewCount;
+        }
+        if ("CLICK".equalsIgnoreCase(numeratorEventType)) {
+            return clickCount;
+        }
+        if ("CONVERT".equalsIgnoreCase(numeratorEventType)) {
+            return convertCount;
+        }
+        if (numeratorEventType == null || numeratorEventType.isBlank()) {
+            return 0;
+        }
+        return dataService.getEventCount(experimentId, groupId, numeratorEventType.toUpperCase());
+    }
+
+    private long resolveMetricNumerator(MetricDefinition metricDefinition, Statistics.GroupStatistics groupStatistics,
+                                        String experimentId, String groupId) {
+        if (groupStatistics == null) {
+            return 0L;
+        }
+        return resolveMetricNumerator(metricDefinition,
+                groupStatistics.getViewCount() != null ? groupStatistics.getViewCount() : 0L,
+                groupStatistics.getClickCount() != null ? groupStatistics.getClickCount() : 0L,
+                groupStatistics.getConversionCount() != null ? groupStatistics.getConversionCount() : 0L,
+                experimentId, groupId);
+    }
+
+    private double calculateRateMetric(MetricDefinition metricDefinition, long numerator, String experimentId,
+                                       String groupId, long viewCount, long clickCount, long convertCount,
+                                       long visitorCount) {
+        long denominator = resolveMetricDenominator(metricDefinition, experimentId, groupId, viewCount, clickCount,
+                convertCount, visitorCount);
+        return denominator > 0 ? (double) numerator / denominator : 0.0;
+    }
+
+    private long resolveMetricDenominator(MetricDefinition metricDefinition, Statistics.GroupStatistics groupStatistics,
+                                          String experimentId, String groupId) {
+        if (groupStatistics == null) {
+            return 0L;
+        }
+        return resolveMetricDenominator(metricDefinition, experimentId, groupId,
+                groupStatistics.getViewCount() != null ? groupStatistics.getViewCount() : 0L,
+                groupStatistics.getClickCount() != null ? groupStatistics.getClickCount() : 0L,
+                groupStatistics.getConversionCount() != null ? groupStatistics.getConversionCount() : 0L,
+                groupStatistics.getUserCount() != null ? groupStatistics.getUserCount() : 0L);
+    }
+
+    private long resolveMetricDenominator(MetricDefinition metricDefinition, String experimentId, String groupId,
+                                          long viewCount, long clickCount, long convertCount, long visitorCount) {
+        return switch (metricDefinition.getDenominatorType()) {
+            case VISITOR_COUNT -> visitorCount;
+            case ASSIGNMENT_COUNT -> dataService.getAssignmentCount(experimentId, groupId);
+            case EXPOSURE_COUNT -> dataService.getExposureCount(experimentId, groupId);
+            case EVENT_COUNT -> resolveEventDenominator(metricDefinition.getDenominatorEventType(), experimentId,
+                    groupId, viewCount, clickCount, convertCount);
+        };
+    }
+
+    private long resolveEventDenominator(String denominatorEventType, String experimentId, String groupId,
+                                         long viewCount, long clickCount, long convertCount) {
+        if ("VIEW".equalsIgnoreCase(denominatorEventType)) {
+            return viewCount;
+        }
+        if ("CLICK".equalsIgnoreCase(denominatorEventType)) {
+            return clickCount;
+        }
+        if ("CONVERT".equalsIgnoreCase(denominatorEventType)) {
+            return convertCount;
+        }
+        if (denominatorEventType == null || denominatorEventType.isBlank()) {
+            return 0;
+        }
+        return dataService.getEventCount(experimentId, groupId, denominatorEventType.toUpperCase());
+    }
+
+    private List<String> resolveBreachedGuardrails(Map<String, Statistics.GroupStatistics> groupStatsMap,
+                                                   List<MetricDefinition> metricDefinitions,
+                                                   String baselineGroupId,
+                                                   String targetGroupId) {
+        if (baselineGroupId == null || targetGroupId == null || baselineGroupId.equals(targetGroupId)) {
+            return new ArrayList<>();
+        }
+
+        Statistics.GroupStatistics baselineStats = groupStatsMap.get(baselineGroupId);
+        Statistics.GroupStatistics targetStats = groupStatsMap.get(targetGroupId);
+        if (baselineStats == null || targetStats == null
+                || baselineStats.getMetricValues() == null || targetStats.getMetricValues() == null) {
+            return new ArrayList<>();
+        }
+
+        List<String> breachedGuardrails = new ArrayList<>();
+        for (MetricDefinition metricDefinition : metricDefinitions) {
+            if (!Boolean.TRUE.equals(metricDefinition.getGuardrailMetric())) {
+                continue;
+            }
+            Double baselineValue = baselineStats.getMetricValues().get(metricDefinition.getKey());
+            Double targetValue = targetStats.getMetricValues().get(metricDefinition.getKey());
+            if (baselineValue == null || targetValue == null) {
+                continue;
+            }
+            if (targetValue < baselineValue) {
+                breachedGuardrails.add(String.format("护栏指标 %s 下降（基准 %.4f -> 当前 %.4f）",
+                        metricDefinition.getKey(), baselineValue, targetValue));
+            }
+        }
+        return breachedGuardrails;
+    }
+
+    private Statistics.DataQualityCheck buildDataQualityCheck(String experimentId, ExperimentMetadata metadata,
+                                                              Map<String, Statistics.GroupStatistics> groupStatsMap,
+                                                              String baselineGroupId) {
+        Statistics.DataQualityCheck dataQualityCheck = new Statistics.DataQualityCheck();
+        List<String> blockingIssues = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+
+        Map<String, Object> srmResult = buildSrmResult(experimentId, metadata);
+        boolean hasSrm = Boolean.TRUE.equals(srmResult.get("hasSRM"));
+        dataQualityCheck.setHasSrm(hasSrm);
+        if (srmResult.get("pValue") instanceof Number pValueNumber) {
+            dataQualityCheck.setSrmPValue(pValueNumber.doubleValue());
+        }
+        if (hasSrm) {
+            blockingIssues.add("检测到 SRM，当前实验分流比例异常");
+        }
+
+        long minAssignmentCount = Long.MAX_VALUE;
+        long totalExposureCount = 0L;
+        if (metadata.getGroups() != null) {
+            for (String groupId : metadata.getGroups().keySet()) {
+                long assignmentCount = dataService.getAssignmentCount(experimentId, groupId);
+                minAssignmentCount = Math.min(minAssignmentCount, assignmentCount);
+                totalExposureCount += dataService.getExposureCount(experimentId, groupId);
+            }
+        }
+        if (minAssignmentCount == Long.MAX_VALUE) {
+            minAssignmentCount = 0L;
+        }
+        if (minAssignmentCount <= 0) {
+            blockingIssues.add("至少一个实验组尚无真实 assignment 数据");
+        }
+        if (totalExposureCount <= 0) {
+            warnings.add("当前尚无 exposure 数据，曝光口径指标暂不可用于结论判断");
+        }
+
+        Statistics.GroupStatistics baselineStats = groupStatsMap.get(baselineGroupId);
+        Double baselineRate = baselineStats != null ? baselineStats.getConversionRate() : null;
+        if (baselineRate == null || baselineRate <= 0 || baselineRate >= 1) {
+            warnings.add("基准组转化率不足以估算建议样本量，请先积累真实曝光与转化数据");
+            dataQualityCheck.setSampleSizeReached(false);
+        } else {
+            long requiredSampleSize = StatisticalUtils.calculateSampleSize(baselineRate, DEFAULT_GATE_MDE,
+                    DEFAULT_GATE_ALPHA, DEFAULT_GATE_POWER);
+            dataQualityCheck.setRequiredSampleSizePerGroup(requiredSampleSize);
+            boolean sampleSizeReached = minAssignmentCount >= requiredSampleSize;
+            dataQualityCheck.setSampleSizeReached(sampleSizeReached);
+            if (!sampleSizeReached) {
+                blockingIssues.add(String.format("样本量不足，当前每组最少 assignment=%d，建议至少达到 %d",
+                        minAssignmentCount, requiredSampleSize));
+            }
+        }
+
+        dataQualityCheck.setAnalysisReady(blockingIssues.isEmpty());
+        dataQualityCheck.setBlockingIssues(blockingIssues);
+        dataQualityCheck.setWarnings(warnings);
+        return dataQualityCheck;
+    }
+
+    private Map<String, Object> buildSrmResult(String experimentId, ExperimentMetadata metadata) {
+        List<String> groupIds = new ArrayList<>(metadata.getGroups().keySet());
+        long[] observed = new long[groupIds.size()];
+        double[] expectedRatios = new double[groupIds.size()];
+
+        boolean hasAssignmentFacts = false;
+        for (int i = 0; i < groupIds.size(); i++) {
+            String groupId = groupIds.get(i);
+            long assignmentCount = dataService.getAssignmentCount(experimentId, groupId);
+            observed[i] = assignmentCount;
+            if (assignmentCount > 0) {
+                hasAssignmentFacts = true;
+            }
+            com.pisces.common.model.ExperimentGroup group = metadata.getGroups().get(groupId);
+            expectedRatios[i] = group != null && group.getTrafficRatio() != null
+                    ? group.getTrafficRatio() : 1.0 / groupIds.size();
+        }
+
+        if (!hasAssignmentFacts) {
+            for (int i = 0; i < groupIds.size(); i++) {
+                observed[i] = dataService.getVisitorCount(experimentId, groupIds.get(i));
+            }
+        }
+        return StatisticalUtils.detectSRM(observed, expectedRatios);
+    }
     
     /**
      * 对比实验组
      */
     @Override
     public Map<String, Object> compareGroups(String experimentId) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
         Statistics statistics = getStatistics(experimentId);
         if (statistics == null) {
             Map<String, Object> error = new HashMap<>();
@@ -234,7 +559,10 @@ public class AnalysisServiceImpl implements AnalysisService {
         }
         
         // 获取第一个组作为基准
-        String baselineGroup = groupStats.keySet().iterator().next();
+        String baselineGroup = resolveBaselineGroupId(metadata);
+        if (!StringUtils.hasText(baselineGroup) || !groupStats.containsKey(baselineGroup)) {
+            baselineGroup = groupStats.keySet().iterator().next();
+        }
         Statistics.GroupStatistics baseline = groupStats.get(baselineGroup);
         
         if (baseline == null) {
@@ -244,6 +572,7 @@ public class AnalysisServiceImpl implements AnalysisService {
         
         comparison.put("baseline", baselineGroup);
         comparison.put("baselineStats", baseline);
+        comparison.put("dataQualityCheck", statistics.getDataQualityCheck());
         
         // 对比其他组
         Map<String, Map<String, Object>> comparisons = new HashMap<>();
@@ -319,12 +648,28 @@ public class AnalysisServiceImpl implements AnalysisService {
     public Map<String, Object> statisticalSignificanceTest(String experimentId, String variantGroupId,
                                                             String baselineGroupId, Double confidenceLevel) {
         double confidence = confidenceLevel != null ? confidenceLevel : 0.95;
+        Statistics statistics = getStatistics(experimentId);
+        if (statistics == null) {
+            Map<String, Object> error = new HashMap<>();
+            error.put("error", "实验不存在或没有统计数据");
+            return error;
+        }
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        MetricDefinition primaryMetricDefinition = metadata != null
+                ? resolvePrimaryMetric(resolveMetricDefinitions(metadata)) : null;
+        Statistics.GroupStatistics variantGroupStats = statistics.getGroupStatistics().get(variantGroupId);
+        Statistics.GroupStatistics baselineGroupStats = statistics.getGroupStatistics().get(baselineGroupId);
+        MetricDefinition significanceMetricDefinition = resolveRateMetricForInference(primaryMetricDefinition);
         
         // 获取两组数据
-        long variantViews = dataService.getEventCount(experimentId, variantGroupId, "VIEW");
-        long variantConverts = dataService.getEventCount(experimentId, variantGroupId, "CONVERT");
-        long baselineViews = dataService.getEventCount(experimentId, baselineGroupId, "VIEW");
-        long baselineConverts = dataService.getEventCount(experimentId, baselineGroupId, "CONVERT");
+        long variantConverts = resolveMetricNumerator(significanceMetricDefinition, variantGroupStats,
+                experimentId, variantGroupId);
+        long baselineConverts = resolveMetricNumerator(significanceMetricDefinition, baselineGroupStats,
+                experimentId, baselineGroupId);
+        long variantViews = resolveMetricDenominator(significanceMetricDefinition, variantGroupStats,
+                experimentId, variantGroupId);
+        long baselineViews = resolveMetricDenominator(significanceMetricDefinition, baselineGroupStats,
+                experimentId, baselineGroupId);
         
         // 计算转化率
         double variantRate = variantViews > 0 ? (double) variantConverts / variantViews : 0.0;
@@ -369,18 +714,29 @@ public class AnalysisServiceImpl implements AnalysisService {
         result.put("experimentId", experimentId);
         result.put("variantGroupId", variantGroupId);
         result.put("baselineGroupId", baselineGroupId);
+        result.put("primaryMetricKey", primaryMetricDefinition != null ? primaryMetricDefinition.getKey() : null);
+        result.put("metricKeyUsed", significanceMetricDefinition.getKey());
+        if (primaryMetricDefinition != null
+                && !significanceMetricDefinition.getKey().equals(primaryMetricDefinition.getKey())) {
+            result.put("metricAlignmentWarning",
+                    "当前显著性检验只支持比例型主指标，已回退到 conversion_rate 口径");
+        }
         
         // 样本数据
         Map<String, Object> variantData = new HashMap<>();
         variantData.put("views", variantViews);
         variantData.put("conversions", variantConverts);
         variantData.put("conversionRate", variantRate);
+        variantData.put("denominatorCount", variantViews);
+        variantData.put("numeratorCount", variantConverts);
         result.put("variantData", variantData);
         
         Map<String, Object> baselineData = new HashMap<>();
         baselineData.put("views", baselineViews);
         baselineData.put("conversions", baselineConverts);
         baselineData.put("conversionRate", baselineRate);
+        baselineData.put("denominatorCount", baselineViews);
+        baselineData.put("numeratorCount", baselineConverts);
         result.put("baselineData", baselineData);
         
         // 效果指标
@@ -395,6 +751,7 @@ public class AnalysisServiceImpl implements AnalysisService {
         result.put("confidenceInterval", Map.of("lower", ciLower, "upper", ciUpper));
         result.put("marginOfError", marginOfError);
         result.put("isStatisticallySignificant", isSignificant);
+        attachDataQualityCheck(result, statistics);
         
         // 结论
         String conclusion;
@@ -410,7 +767,7 @@ public class AnalysisServiceImpl implements AnalysisService {
             conclusion = String.format("变体组与基准组之间的差异不显著（p=%.4f >= %.2f），建议继续收集数据", 
                     pValue, 1 - confidence);
         }
-        result.put("conclusion", conclusion);
+        result.put("conclusion", applyQualityGateToConclusion(conclusion, statistics));
         
         return result;
     }
@@ -420,8 +777,8 @@ public class AnalysisServiceImpl implements AnalysisService {
                                                    Double power, Double significance) {
         double p1 = baselineRate != null ? baselineRate : 0.10; // 默认基准转化率10%
         double mde = minimumDetectableEffect != null ? minimumDetectableEffect : 0.10; // 默认最小可检测效应10%
-        double powerLevel = power != null ? power : 0.80; // 默认功效80%
-        double alpha = significance != null ? significance : 0.05; // 默认显著性水平5%
+        double powerLevel = power != null ? power : DEFAULT_GATE_POWER; // 默认功效80%
+        double alpha = significance != null ? significance : DEFAULT_GATE_ALPHA; // 默认显著性水平5%
         
         double p2 = p1 * (1 + mde); // 期望转化率 = 基准转化率 × (1 + MDE)
 
@@ -458,45 +815,130 @@ public class AnalysisServiceImpl implements AnalysisService {
     public Map<String, Object> shouldEarlyStop(String experimentId, String variantGroupId, 
                                               String baselineGroupId, Double winRateThreshold) {
         double threshold = winRateThreshold != null ? winRateThreshold : 0.95;
-        return bayesianAnalysisService.shouldEarlyStop(experimentId, variantGroupId, 
+        Map<String, Object> result = bayesianAnalysisService.shouldEarlyStop(experimentId, variantGroupId,
                 baselineGroupId, threshold);
+        Statistics statistics = getStatistics(experimentId);
+        attachDataQualityCheck(result, statistics);
+        if (!isAnalysisReady(statistics)) {
+            result.put("canStop", false);
+            result.put("shouldStop", false);
+            result.put("decisionOverriddenByQualityGate", true);
+            result.put("recommendation", buildQualityGateRecommendation(statistics));
+        }
+        return result;
     }
     
     @Override
     public Map<String, Object> causalInference(String experimentId, String treatmentGroupId,
                                               String controlGroupId, String method,
                                               Map<String, Object> params) {
-        switch (method.toUpperCase()) {
+        Statistics statistics = getStatistics(experimentId);
+        Map<String, Object> gateResult = buildAnalysisGateResult("CAUSAL_INFERENCE", method, statistics);
+        if (gateResult != null) {
+            return gateResult;
+        }
+
+        Map<String, Object> contractResult = validateCausalInputContract(method, params);
+        if (contractResult != null) {
+            return contractResult;
+        }
+
+        Map<String, Object> result;
+        String normalizedMethod = normalizeMethod(method);
+        if (normalizedMethod == null) {
+            return buildBlockedAnalysisResult("CAUSAL_INFERENCE", null,
+                    "因果推断方法不能为空",
+                    Collections.singletonList("method 不能为空"),
+                    Collections.emptyList(),
+                    Collections.emptyMap(),
+                    null);
+        }
+        switch (normalizedMethod) {
             case "DID":
                 String beforeStart = (String) params.get("beforePeriodStart");
                 String beforeEnd = (String) params.get("beforePeriodEnd");
                 String afterStart = (String) params.get("afterPeriodStart");
                 String afterEnd = (String) params.get("afterPeriodEnd");
-                return causalInferenceService.analyzeByDID(experimentId, treatmentGroupId, controlGroupId,
+                result = causalInferenceService.analyzeByDID(experimentId, treatmentGroupId, controlGroupId,
                         beforeStart, beforeEnd, afterStart, afterEnd);
+                break;
             case "PSM":
                 @SuppressWarnings("unchecked")
                 java.util.List<String> features = (java.util.List<String>) params.get("userFeatures");
-                return causalInferenceService.analyzeByPSM(experimentId, treatmentGroupId, controlGroupId, features);
+                result = causalInferenceService.analyzeByPSM(experimentId, treatmentGroupId, controlGroupId, features);
+                break;
             case "CAUSAL_FOREST":
                 @SuppressWarnings("unchecked")
                 java.util.List<String> features2 = (java.util.List<String>) params.get("userFeatures");
-                return causalInferenceService.analyzeByCausalForest(experimentId, treatmentGroupId, controlGroupId, features2);
+                result = causalInferenceService.analyzeByCausalForest(experimentId, treatmentGroupId, controlGroupId, features2);
+                break;
             default:
                 throw new IllegalArgumentException("不支持的因果推断方法: " + method);
         }
+        if (!isBlockedResult(result)) {
+            attachDataQualityCheck(result, statistics);
+        }
+        return result;
     }
-    
+
     @Override
     public Map<String, Object> analyzeHTE(String experimentId, String treatmentGroupId,
                                            String controlGroupId, java.util.List<String> userFeatures) {
-        return hteAnalysisService.analyzeHTE(experimentId, treatmentGroupId, controlGroupId, userFeatures);
+        Statistics statistics = getStatistics(experimentId);
+        Map<String, Object> gateResult = buildAnalysisGateResult("HTE", "HTE", statistics);
+        if (gateResult != null) {
+            return gateResult;
+        }
+        Map<String, Object> contractResult = validateFeatureContract("HTE", userFeatures);
+        if (contractResult != null) {
+            return contractResult;
+        }
+        Map<String, Object> result = hteAnalysisService.analyzeHTE(experimentId, treatmentGroupId, controlGroupId, userFeatures);
+        if (!isBlockedResult(result)) {
+            attachDataQualityCheck(result, statistics);
+        }
+        return result;
     }
     
     @Override
     public Map<String, Object> identifySensitiveGroups(String experimentId, String treatmentGroupId,
                                                        String controlGroupId, java.util.List<String> userFeatures) {
-        return hteAnalysisService.identifySensitiveGroups(experimentId, treatmentGroupId, controlGroupId, userFeatures);
+        Statistics statistics = getStatistics(experimentId);
+        Map<String, Object> gateResult = buildAnalysisGateResult("HTE", "IDENTIFY_SENSITIVE_GROUPS", statistics);
+        if (gateResult != null) {
+            return gateResult;
+        }
+        Map<String, Object> contractResult = validateFeatureContract("IDENTIFY_SENSITIVE_GROUPS", userFeatures);
+        if (contractResult != null) {
+            return contractResult;
+        }
+        Map<String, Object> result = hteAnalysisService.identifySensitiveGroups(experimentId, treatmentGroupId, controlGroupId, userFeatures);
+        if (!isBlockedResult(result)) {
+            attachDataQualityCheck(result, statistics);
+        }
+        return result;
+    }
+
+    private Map<String, Object> buildAnalysisGateResult(String analysisType, String method, Statistics statistics) {
+        if (statistics == null) {
+            return buildBlockedAnalysisResult(analysisType, method,
+                    "实验不存在或没有统计数据",
+                    Collections.singletonList("未找到实验统计信息"),
+                    Collections.emptyList(),
+                    Collections.emptyMap(),
+                    null);
+        }
+
+        Statistics.DataQualityCheck dataQualityCheck = statistics.getDataQualityCheck();
+        if (dataQualityCheck == null || Boolean.TRUE.equals(dataQualityCheck.getAnalysisReady())) {
+            return null;
+        }
+        return buildBlockedAnalysisResult(analysisType, method,
+                "统计门禁未通过，无法执行因果分析",
+                dataQualityCheck.getBlockingIssues(),
+                dataQualityCheck.getWarnings(),
+                Collections.emptyMap(),
+                dataQualityCheck);
     }
     
     @Override
@@ -544,6 +986,14 @@ public class AnalysisServiceImpl implements AnalysisService {
         // 组间对比
         Map<String, Object> comparison = compareGroups(experimentId);
         report.put("groupComparison", comparison);
+
+        Map<String, Object> dataSummary = generateDataSummary(statistics, bayesianAnalysis);
+        report.put("dataSummary", dataSummary);
+
+        List<Map<String, Object>> actionableRecommendations = generateActionableRecommendations(
+                metadata, statistics, bayesianAnalysis);
+        report.put("recommendations", actionableRecommendations);
+        report.put("decisionContext", buildDecisionContext(statistics, bayesianAnalysis));
         
         // 生成结论和建议
         Map<String, Object> conclusions = generateConclusions(experimentId, statistics, bayesianAnalysis);
@@ -551,9 +1001,48 @@ public class AnalysisServiceImpl implements AnalysisService {
         
         // 报告元数据
         report.put("reportGeneratedAt", java.time.LocalDateTime.now());
-        report.put("reportVersion", "1.0");
+        report.put("reportVersion", "1.1");
         
         return report;
+    }
+
+    @Override
+    public ExperimentReportSnapshot createReportSnapshot(String experimentId, String generatedBy) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata == null) {
+            throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
+        }
+
+        Map<String, Object> report = exportExperimentReport(experimentId);
+        Statistics statistics = getStatistics(experimentId);
+        Map<String, Object> decisionContext = readDecisionContext(report);
+        ExperimentMetadata.ConclusionStatus conclusionStatus = resolveConclusionStatus(metadata, statistics, decisionContext);
+
+        ExperimentReportSnapshot snapshot = new ExperimentReportSnapshot();
+        snapshot.setExperimentId(experimentId);
+        snapshot.setSnapshotVersion(experimentReportSnapshotRepository.getNextVersion(experimentId));
+        snapshot.setConclusionStatus(conclusionStatus);
+        snapshot.setPrimaryMetricKey(readString(decisionContext, "primaryMetricKey"));
+        snapshot.setBestPerformingGroup(readString(decisionContext, "bestPerformingGroup"));
+        snapshot.setWinningVariant(readString(decisionContext, "winningVariant"));
+        snapshot.setAnalysisReady(readBoolean(decisionContext, "analysisReady"));
+        snapshot.setHasSrm(readHasSrm(statistics));
+        snapshot.setBreachedGuardrails(readBreachedGuardrails(decisionContext));
+        snapshot.setDecisionContext(decisionContext);
+        snapshot.setReport(report);
+        snapshot.setGeneratedBy(StringUtils.hasText(generatedBy) ? generatedBy : "system");
+        snapshot.setGeneratedAt(LocalDateTime.now());
+
+        return experimentReportSnapshotRepository.save(snapshot);
+    }
+
+    @Override
+    public List<ExperimentReportSnapshot> listReportSnapshots(String experimentId) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata == null) {
+            throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
+        }
+        return experimentReportSnapshotRepository.listByExperimentId(experimentId);
     }
     
     /**
@@ -573,16 +1062,11 @@ public class AnalysisServiceImpl implements AnalysisService {
         
         // 样本量评估
         Long totalVisitors = summary.getTotalVisitors();
-        String sampleSizeStatus;
-        if (totalVisitors == null || totalVisitors < 100) {
-            sampleSizeStatus = "样本量不足（< 100），结果可能不可靠";
-        } else if (totalVisitors < 1000) {
-            sampleSizeStatus = "样本量较小（100-1000），建议继续收集数据";
-        } else {
-            sampleSizeStatus = "样本量充足（> 1000），结果较为可靠";
-        }
+        String sampleSizeStatus = buildSampleSizeStatus(statistics);
         conclusions.put("sampleSizeStatus", sampleSizeStatus);
         conclusions.put("totalVisitors", totalVisitors);
+        conclusions.put("dataQualityCheck", statistics.getDataQualityCheck());
+        conclusions.put("breachedGuardrails", summary.getBreachedGuardrails());
         
         // 最佳表现组
         conclusions.put("bestPerformingGroup", summary.getBestPerformingGroup());
@@ -619,9 +1103,12 @@ public class AnalysisServiceImpl implements AnalysisService {
             } else {
                 recommendation = "继续实验：目前尚无变体表现出明显优势，建议继续收集数据";
             }
-            conclusions.put("recommendation", recommendation);
+            if (summary.getBreachedGuardrails() != null && !summary.getBreachedGuardrails().isEmpty()) {
+                recommendation = "检测到护栏指标异常，当前不建议直接按主指标结果推进上线";
+            }
+            conclusions.put("recommendation", applyQualityGateToConclusion(recommendation, statistics));
         } else {
-            conclusions.put("recommendation", "需要收集更多数据才能给出可靠建议");
+            conclusions.put("recommendation", applyQualityGateToConclusion("需要收集更多数据才能给出可靠建议", statistics));
         }
         
         return conclusions;
@@ -968,9 +1455,14 @@ public class AnalysisServiceImpl implements AnalysisService {
             Statistics.ExperimentSummary expSummary = statistics.getSummary();
             summary.put("totalVisitors", expSummary.getTotalVisitors());
             summary.put("totalEvents", expSummary.getTotalEvents());
+            summary.put("totalAssignments", expSummary.getTotalAssignments());
+            summary.put("totalExposures", expSummary.getTotalExposures());
             summary.put("overallConversionRate", expSummary.getOverallConversionRate());
             summary.put("bestPerformingGroup", expSummary.getBestPerformingGroup());
             summary.put("bestConversionRate", expSummary.getBestConversionRate());
+            summary.put("primaryMetricKey", expSummary.getPrimaryMetricKey());
+            summary.put("bestPrimaryMetricValue", expSummary.getBestPrimaryMetricValue());
+            summary.put("breachedGuardrails", expSummary.getBreachedGuardrails());
         }
         
         if (bayesianAnalysis != null) {
@@ -1024,6 +1516,16 @@ public class AnalysisServiceImpl implements AnalysisService {
         summary.put("healthScore", healthScore);
         summary.put("healthIssues", healthIssues);
         summary.put("healthStatus", healthScore >= 80 ? "优秀" : healthScore >= 50 ? "良好" : healthScore >= 30 ? "一般" : "需改进");
+        if (statistics != null && statistics.getDataQualityCheck() != null) {
+            summary.put("dataQualityCheck", statistics.getDataQualityCheck());
+            if (statistics.getDataQualityCheck().getBlockingIssues() != null) {
+                healthIssues.addAll(statistics.getDataQualityCheck().getBlockingIssues());
+            }
+        }
+        if (statistics != null && statistics.getSummary() != null
+                && statistics.getSummary().getBreachedGuardrails() != null) {
+            healthIssues.addAll(statistics.getSummary().getBreachedGuardrails());
+        }
         
         return summary;
     }
@@ -1035,6 +1537,29 @@ public class AnalysisServiceImpl implements AnalysisService {
                                                                           Statistics statistics,
                                                                           Map<String, Object> bayesianAnalysis) {
         List<Map<String, Object>> recommendations = new ArrayList<>();
+
+        if (!isAnalysisReady(statistics)) {
+            Map<String, Object> rec = new HashMap<>();
+            rec.put("type", "FIX_DATA_QUALITY");
+            rec.put("priority", "HIGH");
+            rec.put("title", "先修复数据质量问题");
+            rec.put("description", buildQualityGateRecommendation(statistics));
+            rec.put("action", "优先处理 SRM、样本量或 assignment/exposure 缺失问题");
+            rec.put("expectedImpact", "恢复实验结论可信度");
+            recommendations.add(rec);
+            return recommendations;
+        }
+
+        if (hasBreachedGuardrails(statistics)) {
+            Map<String, Object> rec = new HashMap<>();
+            rec.put("type", "PROTECT_GUARDRAIL");
+            rec.put("priority", "HIGH");
+            rec.put("title", "护栏指标异常，暂停推进");
+            rec.put("description", String.join("；", getBreachedGuardrails(statistics)));
+            rec.put("action", "先分析负向影响来源，再决定是否继续实验或回滚");
+            rec.put("expectedImpact", "避免因局部优化导致整体业务受损");
+            recommendations.add(rec);
+        }
         
         long totalVisitors = statistics != null && statistics.getSummary() != null && 
                 statistics.getSummary().getTotalVisitors() != null ? 
@@ -1107,7 +1632,7 @@ public class AnalysisServiceImpl implements AnalysisService {
         monitorRec.put("type", "MONITOR");
         monitorRec.put("priority", "LOW");
         monitorRec.put("title", "持续监控指标");
-        monitorRec.put("description", "定期查看转化率趋势和用户行为数据");
+        monitorRec.put("description", "定期查看主指标、护栏指标趋势和用户行为数据");
         monitorRec.put("action", "每日检查一次实验数据");
         monitorRec.put("expectedImpact", "及时发现异常");
         recommendations.add(monitorRec);
@@ -1561,6 +2086,7 @@ public class AnalysisServiceImpl implements AnalysisService {
             
             // 评估是否可以毕业
             GraduationDecision decision = evaluateGraduationReadiness(metadata, statistics, bayesianAnalysis);
+            result.put("dataQualityCheck", statistics != null ? statistics.getDataQualityCheck() : null);
             
             result.put("canGraduate", decision.canGraduate);
             result.put("recommendedVariant", decision.recommendedVariant);
@@ -1616,6 +2142,28 @@ public class AnalysisServiceImpl implements AnalysisService {
                                                             Statistics statistics,
                                                             Map<String, Object> bayesianAnalysis) {
         GraduationDecision decision = new GraduationDecision();
+        Statistics.DataQualityCheck dataQualityCheck = statistics != null ? statistics.getDataQualityCheck() : null;
+        if (dataQualityCheck != null && Boolean.FALSE.equals(dataQualityCheck.getAnalysisReady())) {
+            decision.canGraduate = false;
+            decision.riskLevel = "HIGH";
+            if (dataQualityCheck.getBlockingIssues() != null) {
+                decision.reasons.addAll(dataQualityCheck.getBlockingIssues());
+            }
+            if (dataQualityCheck.getWarnings() != null) {
+                decision.warnings.addAll(dataQualityCheck.getWarnings());
+            }
+            decision.reasons.add("数据质量门禁未通过，当前不允许自动毕业");
+            return decision;
+        }
+        if (statistics != null && statistics.getSummary() != null
+                && statistics.getSummary().getBreachedGuardrails() != null
+                && !statistics.getSummary().getBreachedGuardrails().isEmpty()) {
+            decision.canGraduate = false;
+            decision.riskLevel = "HIGH";
+            decision.reasons.addAll(statistics.getSummary().getBreachedGuardrails());
+            decision.reasons.add("护栏指标未通过，当前不允许自动毕业");
+            return decision;
+        }
         
         // 检查样本量
         long totalVisitors = 0;
@@ -1769,6 +2317,25 @@ public class AnalysisServiceImpl implements AnalysisService {
             
             Statistics statistics = getStatistics(experimentId);
             Map<String, Object> bayesianAnalysis = getBayesianAnalysis(experimentId);
+            result.put("decisionContext", buildDecisionContext(statistics, bayesianAnalysis));
+            attachDataQualityCheck(result, statistics);
+            if (!isAnalysisReady(statistics)) {
+                result.put("status", "BLOCKED_BY_QUALITY_GATE");
+                result.put("message", buildQualityGateRecommendation(statistics));
+                result.put("estimatedDaysRemaining", -1);
+                result.put("accelerationTips", List.of("先修复数据质量问题，再重新评估实验完成时间"));
+                result.put("success", true);
+                return result;
+            }
+            if (hasBreachedGuardrails(statistics)) {
+                result.put("status", "BLOCKED_BY_GUARDRAIL");
+                result.put("message", "护栏指标异常，当前不建议仅依据主指标预测完成时间");
+                result.put("estimatedDaysRemaining", -1);
+                result.put("accelerationTips", List.of("先分析并修复护栏指标下降问题"));
+                result.put("breachedGuardrails", getBreachedGuardrails(statistics));
+                result.put("success", true);
+                return result;
+            }
             
             // 计算当前进度
             double currentConfidence = 0.0;
@@ -1788,6 +2355,8 @@ public class AnalysisServiceImpl implements AnalysisService {
             result.put("currentProgress", progress);
             result.put("currentConfidence", currentConfidence);
             result.put("targetConfidence", targetConfidence);
+            result.put("primaryMetricKey", statistics != null && statistics.getSummary() != null
+                    ? statistics.getSummary().getPrimaryMetricKey() : null);
             
             // 计算当前样本收集速度
             long totalVisitors = 0;
@@ -1868,10 +2437,17 @@ public class AnalysisServiceImpl implements AnalysisService {
 
         for (int i = 0; i < groupIds.size(); i++) {
             String gid = groupIds.get(i);
-            observed[i] = dataService.getVisitorCount(experimentId, gid);
+            observed[i] = dataService.getAssignmentCount(experimentId, gid);
             com.pisces.common.model.ExperimentGroup g = metadata.getGroups().get(gid);
             expectedRatios[i] = g != null && g.getTrafficRatio() != null
                     ? g.getTrafficRatio() : 1.0 / groupIds.size();
+        }
+
+        boolean hasAssignmentFacts = Arrays.stream(observed).anyMatch(count -> count > 0);
+        if (!hasAssignmentFacts) {
+            for (int i = 0; i < groupIds.size(); i++) {
+                observed[i] = dataService.getVisitorCount(experimentId, groupIds.get(i));
+            }
         }
 
         Map<String, Object> result = StatisticalUtils.detectSRM(observed, expectedRatios);
@@ -1892,14 +2468,23 @@ public class AnalysisServiceImpl implements AnalysisService {
     public Map<String, Object> sequentialTest(String experimentId, String variantGroupId,
                                                String baselineGroupId, Double mde,
                                                Double alpha, Double beta) {
-        double effectSize = mde   != null ? mde   : 0.05;
-        double alphaVal   = alpha != null ? alpha : 0.05;
+        double effectSize = mde   != null ? mde   : DEFAULT_GATE_MDE;
+        double alphaVal   = alpha != null ? alpha : DEFAULT_GATE_ALPHA;
         double betaVal    = beta  != null ? beta  : 0.20;
+        Statistics statistics = getStatistics(experimentId);
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        MetricDefinition primaryMetricDefinition = metadata != null
+                ? resolvePrimaryMetric(resolveMetricDefinitions(metadata)) : null;
+        MetricDefinition inferenceMetricDefinition = resolveRateMetricForInference(primaryMetricDefinition);
+        Statistics.GroupStatistics variantGroupStats = statistics != null
+                ? statistics.getGroupStatistics().get(variantGroupId) : null;
+        Statistics.GroupStatistics baselineGroupStats = statistics != null
+                ? statistics.getGroupStatistics().get(baselineGroupId) : null;
 
-        long n1 = dataService.getVisitorCount(experimentId, variantGroupId);
-        long x1 = dataService.getEventCount(experimentId, variantGroupId, "CONVERT");
-        long n2 = dataService.getVisitorCount(experimentId, baselineGroupId);
-        long x2 = dataService.getEventCount(experimentId, baselineGroupId, "CONVERT");
+        long n1 = resolveMetricDenominator(inferenceMetricDefinition, variantGroupStats, experimentId, variantGroupId);
+        long x1 = resolveMetricNumerator(inferenceMetricDefinition, variantGroupStats, experimentId, variantGroupId);
+        long n2 = resolveMetricDenominator(inferenceMetricDefinition, baselineGroupStats, experimentId, baselineGroupId);
+        long x2 = resolveMetricNumerator(inferenceMetricDefinition, baselineGroupStats, experimentId, baselineGroupId);
 
         double p0 = n2 > 0 ? (double) x2 / n2 : 0.05;
 
@@ -1909,6 +2494,271 @@ public class AnalysisServiceImpl implements AnalysisService {
         result.put("baselineGroupId", baselineGroupId);
         result.put("variantSampleSize", n1);
         result.put("baselineSampleSize", n2);
+        result.put("metricKeyUsed", inferenceMetricDefinition.getKey());
+        if (primaryMetricDefinition != null
+                && !inferenceMetricDefinition.getKey().equals(primaryMetricDefinition.getKey())) {
+            result.put("metricAlignmentWarning",
+                    "当前序贯检验只支持比例型主指标，已回退到 conversion_rate 口径");
+        }
+        attachDataQualityCheck(result, statistics);
+        if (!isAnalysisReady(statistics)) {
+            result.put("decision", "CONTINUE");
+            result.put("canStop", false);
+            result.put("qualityGateBlocked", true);
+            result.put("interpretation", applyQualityGateToConclusion(
+                    String.valueOf(result.get("interpretation")), statistics));
+        }
         return result;
+    }
+
+    private void attachDataQualityCheck(Map<String, Object> result, Statistics statistics) {
+        Statistics.DataQualityCheck dataQualityCheck = statistics != null ? statistics.getDataQualityCheck() : null;
+        result.put("dataQualityCheck", dataQualityCheck);
+        result.put("analysisReady", dataQualityCheck == null || Boolean.TRUE.equals(dataQualityCheck.getAnalysisReady()));
+    }
+
+    private Map<String, Object> validateCausalInputContract(String method, Map<String, Object> params) {
+        String normalizedMethod = normalizeMethod(method);
+        Map<String, Object> safeParams = params != null ? params : Collections.emptyMap();
+        if ("DID".equals(normalizedMethod)) {
+            List<String> requiredFields = Arrays.asList("beforePeriodStart", "beforePeriodEnd",
+                    "afterPeriodStart", "afterPeriodEnd");
+            List<String> missingFields = new ArrayList<>();
+            for (String field : requiredFields) {
+                Object value = safeParams.get(field);
+                if (value == null || !StringUtils.hasText(String.valueOf(value))) {
+                    missingFields.add(field);
+                }
+            }
+            if (!missingFields.isEmpty()) {
+                Map<String, Object> contract = new LinkedHashMap<>();
+                contract.put("requiredInputs", requiredFields);
+                contract.put("providedInputs", safeParams.keySet());
+                contract.put("missingInputs", missingFields);
+                return buildBlockedAnalysisResult("CAUSAL_INFERENCE", method,
+                        "DID 需要完整的 pre/post 时间窗参数",
+                        missingFields,
+                        Collections.emptyList(),
+                        contract,
+                        null);
+            }
+        } else if ("PSM".equals(normalizedMethod) || "CAUSAL_FOREST".equals(normalizedMethod)) {
+            Object userFeaturesObject = safeParams.get("userFeatures");
+            if (!(userFeaturesObject instanceof List)) {
+                Map<String, Object> contract = new LinkedHashMap<>();
+                contract.put("requiredInputs", Collections.singletonList("userFeatures"));
+                contract.put("supportedCovariates", Arrays.asList("viewCount", "clickCount", "eventCount", "rank"));
+                contract.put("providedInputs", safeParams.keySet());
+                return buildBlockedAnalysisResult("CAUSAL_INFERENCE", method,
+                        "PSM / 因果森林需要显式协变量输入，当前请求无效",
+                        Collections.singletonList("userFeatures 必须是非空列表"),
+                        Collections.emptyList(),
+                        contract,
+                        null);
+            }
+            @SuppressWarnings("unchecked")
+            List<Object> rawUserFeatures = (List<Object>) userFeaturesObject;
+            List<String> userFeatures = new ArrayList<>();
+            for (Object feature : rawUserFeatures) {
+                if (feature != null && StringUtils.hasText(String.valueOf(feature))) {
+                    userFeatures.add(String.valueOf(feature).trim());
+                }
+            }
+            if (userFeatures.isEmpty()) {
+                Map<String, Object> contract = new LinkedHashMap<>();
+                contract.put("requiredInputs", Collections.singletonList("userFeatures"));
+                contract.put("supportedCovariates", Arrays.asList("viewCount", "clickCount", "eventCount", "rank"));
+                contract.put("providedInputs", safeParams.keySet());
+                return buildBlockedAnalysisResult("CAUSAL_INFERENCE", method,
+                        "PSM / 因果森林需要显式协变量输入，当前请求无效",
+                        Collections.singletonList("userFeatures 必须是非空列表"),
+                        Collections.emptyList(),
+                        contract,
+                        null);
+            }
+        }
+        return null;
+    }
+
+    private Map<String, Object> validateFeatureContract(String analysisType, List<String> userFeatures) {
+        if (userFeatures == null || userFeatures.isEmpty()) {
+            Map<String, Object> contract = new LinkedHashMap<>();
+            contract.put("requiredInputs", Collections.singletonList("userFeatures"));
+            contract.put("supportedCovariates", Arrays.asList("viewCount", "clickCount", "eventCount", "rank"));
+            return buildBlockedAnalysisResult(analysisType, analysisType,
+                    "当前分析接口需要显式协变量输入",
+                    Collections.singletonList("userFeatures 不能为空"),
+                    Collections.emptyList(),
+                    contract,
+                    null);
+        }
+        return null;
+    }
+
+    private Map<String, Object> buildBlockedAnalysisResult(String analysisType, String method,
+                                                           String reason, List<String> blockingIssues,
+                                                           List<String> warnings, Map<String, Object> contract,
+                                                           Statistics.DataQualityCheck dataQualityCheck) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("analysisType", analysisType);
+        result.put("method", normalizeMethod(method));
+        result.put("status", "BLOCKED");
+        result.put("blocked", true);
+        result.put("analysisReady", false);
+        result.put("reason", reason);
+        result.put("blockingIssues", blockingIssues != null ? blockingIssues : Collections.emptyList());
+        result.put("warnings", warnings != null ? warnings : Collections.emptyList());
+        if (contract != null && !contract.isEmpty()) {
+            result.put("inputContract", contract);
+        }
+        if (dataQualityCheck != null) {
+            result.put("dataQualityCheck", dataQualityCheck);
+        }
+        return result;
+    }
+
+    private boolean isBlockedResult(Map<String, Object> result) {
+        return result != null && Boolean.TRUE.equals(result.get("blocked"));
+    }
+
+    private String normalizeMethod(String method) {
+        return method == null ? null : method.trim().toUpperCase();
+    }
+
+    private boolean isAnalysisReady(Statistics statistics) {
+        if (statistics == null || statistics.getDataQualityCheck() == null) {
+            return true;
+        }
+        return Boolean.TRUE.equals(statistics.getDataQualityCheck().getAnalysisReady());
+    }
+
+    private String applyQualityGateToConclusion(String originalConclusion, Statistics statistics) {
+        if (isAnalysisReady(statistics)) {
+            return originalConclusion;
+        }
+        return buildQualityGateRecommendation(statistics) + "；" + originalConclusion;
+    }
+
+    private String buildQualityGateRecommendation(Statistics statistics) {
+        if (statistics == null || statistics.getDataQualityCheck() == null
+                || statistics.getDataQualityCheck().getBlockingIssues() == null
+                || statistics.getDataQualityCheck().getBlockingIssues().isEmpty()) {
+            return "数据质量门禁未通过";
+        }
+        return "数据质量门禁未通过：" + String.join("；", statistics.getDataQualityCheck().getBlockingIssues());
+    }
+
+    private String buildSampleSizeStatus(Statistics statistics) {
+        Statistics.ExperimentSummary summary = statistics.getSummary();
+        Long totalVisitors = summary.getTotalVisitors();
+        Statistics.DataQualityCheck dataQualityCheck = statistics.getDataQualityCheck();
+        if (dataQualityCheck != null && dataQualityCheck.getRequiredSampleSizePerGroup() != null) {
+            if (Boolean.TRUE.equals(dataQualityCheck.getSampleSizeReached())) {
+                return String.format("样本量达到建议阈值（每组至少 %d）", dataQualityCheck.getRequiredSampleSizePerGroup());
+            }
+            return String.format("样本量未达到建议阈值（每组建议至少 %d）",
+                    dataQualityCheck.getRequiredSampleSizePerGroup());
+        }
+        if (totalVisitors == null || totalVisitors < 100) {
+            return "样本量不足（< 100），结果可能不可靠";
+        }
+        if (totalVisitors < 1000) {
+            return "样本量较小（100-1000），建议继续收集数据";
+        }
+        return "样本量充足（> 1000），结果较为可靠";
+    }
+
+    private boolean hasBreachedGuardrails(Statistics statistics) {
+        return statistics != null && statistics.getSummary() != null
+                && statistics.getSummary().getBreachedGuardrails() != null
+                && !statistics.getSummary().getBreachedGuardrails().isEmpty();
+    }
+
+    private List<String> getBreachedGuardrails(Statistics statistics) {
+        if (!hasBreachedGuardrails(statistics)) {
+            return new ArrayList<>();
+        }
+        return statistics.getSummary().getBreachedGuardrails();
+    }
+
+    private ExperimentMetadata.ConclusionStatus resolveConclusionStatus(ExperimentMetadata metadata,
+                                                                       Statistics statistics,
+                                                                       Map<String, Object> decisionContext) {
+        if (metadata != null && metadata.getConclusionStatus() != null
+                && Set.of(ExperimentMetadata.ConclusionStatus.GRADUATED,
+                ExperimentMetadata.ConclusionStatus.REJECTED).contains(metadata.getConclusionStatus())) {
+            return metadata.getConclusionStatus();
+        }
+        if (!isAnalysisReady(statistics)) {
+            return ExperimentMetadata.ConclusionStatus.NOT_READY;
+        }
+        if (!StringUtils.hasText(readString(decisionContext, "bestPerformingGroup"))
+                && !StringUtils.hasText(readString(decisionContext, "winningVariant"))) {
+            return ExperimentMetadata.ConclusionStatus.RUNNING;
+        }
+        return ExperimentMetadata.ConclusionStatus.READY_FOR_REVIEW;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> readDecisionContext(Map<String, Object> report) {
+        if (report == null || !(report.get("decisionContext") instanceof Map<?, ?> rawDecisionContext)) {
+            return new LinkedHashMap<>();
+        }
+        return (Map<String, Object>) rawDecisionContext;
+    }
+
+    private String readString(Map<String, Object> source, String key) {
+        Object value = source.get(key);
+        return value instanceof String stringValue ? stringValue : null;
+    }
+
+    private Boolean readBoolean(Map<String, Object> source, String key) {
+        Object value = source.get(key);
+        return value instanceof Boolean booleanValue ? booleanValue : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> readBreachedGuardrails(Map<String, Object> decisionContext) {
+        Object value = decisionContext.get("breachedGuardrails");
+        if (value instanceof List<?> listValue) {
+            return (List<String>) listValue;
+        }
+        return new ArrayList<>();
+    }
+
+    private Boolean readHasSrm(Statistics statistics) {
+        if (statistics == null || statistics.getDataQualityCheck() == null) {
+            return Boolean.FALSE;
+        }
+        return Boolean.TRUE.equals(statistics.getDataQualityCheck().getHasSrm());
+    }
+
+    private Map<String, Object> buildDecisionContext(Statistics statistics, Map<String, Object> bayesianAnalysis) {
+        Map<String, Object> decisionContext = new HashMap<>();
+        if (statistics != null && statistics.getSummary() != null) {
+            decisionContext.put("primaryMetricKey", statistics.getSummary().getPrimaryMetricKey());
+            decisionContext.put("bestPerformingGroup", statistics.getSummary().getBestPerformingGroup());
+            decisionContext.put("bestPrimaryMetricValue", statistics.getSummary().getBestPrimaryMetricValue());
+            decisionContext.put("breachedGuardrails", statistics.getSummary().getBreachedGuardrails());
+        }
+        if (statistics != null) {
+            decisionContext.put("analysisReady", isAnalysisReady(statistics));
+            decisionContext.put("dataQualityCheck", statistics.getDataQualityCheck());
+        }
+        if (bayesianAnalysis != null && bayesianAnalysis.containsKey("winRates")) {
+            @SuppressWarnings("unchecked")
+            Map<String, Double> winRates = (Map<String, Double>) bayesianAnalysis.get("winRates");
+            String winningVariant = null;
+            double maxWinRate = 0.0;
+            for (Map.Entry<String, Double> entry : winRates.entrySet()) {
+                if (entry.getValue() > maxWinRate) {
+                    maxWinRate = entry.getValue();
+                    winningVariant = entry.getKey();
+                }
+            }
+            decisionContext.put("winningVariant", winningVariant);
+            decisionContext.put("maxWinRate", maxWinRate);
+        }
+        return decisionContext;
     }
 }

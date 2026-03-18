@@ -8,6 +8,11 @@ spring:
     name: pisces
   profiles:
     active: dev
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/pisces?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:xar19990313}
+    driver-class-name: com.mysql.cj.jdbc.Driver
   data:
     redis:
       host: localhost
@@ -22,6 +27,10 @@ spring:
           min-idle: 0  # 连接池最小空闲连接数
           max-wait: -1  # 连接池最大阻塞等待时间（-1表示没有限制）
 
+mybatis:
+  mapper-locations: classpath*:mapper/**/*.xml
+  type-aliases-package: com.pisces.service.entity
+
 # Zookeeper配置
 zookeeper:
   connectString: localhost:2181
@@ -32,7 +41,7 @@ zookeeper:
 
 # 阿里通义千问API配置
 tongyi:
-  apiKey: ${apiKey} # 必须配置真实通义 API Key，否则 AI 流程直接失败
+  apiKey: ${apiKey:sk-e2240756f78145fd879fcbb4f2767bf8} # 必须配置真实通义 API Key，否则 AI 流程直接失败
   model: qwen-plus  # 模型名称：qwen-turbo, qwen-plus, qwen-max等
   timeout: 30000  # 请求超时时间（毫秒）
   enabled: true  # 是否启用通义API；关闭后 AI 流程将直接失败

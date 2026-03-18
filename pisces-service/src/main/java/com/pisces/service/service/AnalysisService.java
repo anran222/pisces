@@ -1,7 +1,9 @@
 package com.pisces.service.service;
 
+import com.pisces.common.model.ExperimentReportSnapshot;
 import com.pisces.common.model.Statistics;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -77,6 +79,23 @@ public interface AnalysisService {
      * @return 完整的实验报告，包含统计数据、分析结果、结论建议等
      */
     Map<String, Object> exportExperimentReport(String experimentId);
+
+    /**
+     * 生成实验报告快照
+     *
+     * @param experimentId 实验ID
+     * @param generatedBy 生成人
+     * @return 报告快照
+     */
+    ExperimentReportSnapshot createReportSnapshot(String experimentId, String generatedBy);
+
+    /**
+     * 查询实验报告快照列表
+     *
+     * @param experimentId 实验ID
+     * @return 报告快照列表
+     */
+    List<ExperimentReportSnapshot> listReportSnapshots(String experimentId);
     
     /**
      * 获取实验时间线数据
@@ -149,4 +168,3 @@ public interface AnalysisService {
                                        String baselineGroupId, Double mde,
                                        Double alpha, Double beta);
 }
-

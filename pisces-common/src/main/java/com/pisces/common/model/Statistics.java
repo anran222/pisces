@@ -1,8 +1,10 @@
 package com.pisces.common.model;
 
 import lombok.Data;
+
 import java.io.Serializable;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -46,6 +48,11 @@ public class Statistics implements Serializable {
      * 实验总览
      */
     private ExperimentSummary summary;
+
+    /**
+     * 数据质量校验
+     */
+    private DataQualityCheck dataQualityCheck;
     
     /**
      * 实验总览统计
@@ -63,6 +70,16 @@ public class Statistics implements Serializable {
          * 总事件数
          */
         private Long totalEvents;
+
+        /**
+         * 总分流数
+         */
+        private Long totalAssignments;
+
+        /**
+         * 总曝光数
+         */
+        private Long totalExposures;
         
         /**
          * 总体转化率
@@ -78,11 +95,69 @@ public class Statistics implements Serializable {
          * 最佳表现组ID
          */
         private String bestPerformingGroup;
+
+        /**
+         * 主指标编码
+         */
+        private String primaryMetricKey;
+
+        /**
+         * 最佳表现组主指标值
+         */
+        private Double bestPrimaryMetricValue;
         
         /**
          * 最佳表现组转化率
          */
         private Double bestConversionRate;
+
+        /**
+         * 护栏指标异常列表
+         */
+        private List<String> breachedGuardrails;
+    }
+
+    /**
+     * 数据质量校验结果
+     */
+    @Data
+    public static class DataQualityCheck implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * 当前分析是否可直接用于结论判断
+         */
+        private Boolean analysisReady;
+
+        /**
+         * 是否存在 SRM
+         */
+        private Boolean hasSrm;
+
+        /**
+         * SRM p 值
+         */
+        private Double srmPValue;
+
+        /**
+         * 每组建议样本量
+         */
+        private Long requiredSampleSizePerGroup;
+
+        /**
+         * 是否达到建议样本量
+         */
+        private Boolean sampleSizeReached;
+
+        /**
+         * 阻断问题
+         */
+        private List<String> blockingIssues;
+
+        /**
+         * 警告信息
+         */
+        private List<String> warnings;
     }
     
     /**
@@ -151,6 +226,10 @@ public class Statistics implements Serializable {
          * 是否为基准组
          */
         private Boolean isBaseline;
+
+        /**
+         * 指标值
+         */
+        private Map<String, Double> metricValues;
     }
 }
-

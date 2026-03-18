@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.ExperimentReportSnapshotMapper">
+
+    <resultMap id="experimentReportSnapshotEntityResultMap" type="com.pisces.service.entity.ExperimentReportSnapshotEntity">
+        <id column="id" property="id"/>
+        <result column="experiment_id" property="experimentId"/>
+        <result column="snapshot_version" property="snapshotVersion"/>
+        <result column="conclusion_status" property="conclusionStatus"/>
+        <result column="primary_metric_key" property="primaryMetricKey"/>
+        <result column="best_performing_group" property="bestPerformingGroup"/>
+        <result column="winning_variant" property="winningVariant"/>
+        <result column="analysis_ready" property="analysisReady"/>
+        <result column="has_srm" property="hasSrm"/>
+        <result column="breached_guardrails_json" property="breachedGuardrailsJson"/>
+        <result column="decision_context_json" property="decisionContextJson"/>
+        <result column="report_json" property="reportJson"/>
+        <result column="generated_by" property="generatedBy"/>
+        <result column="generated_at" property="generatedAt"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.pisces.service.entity.ExperimentReportSnapshotEntity" useGeneratedKeys="true" keyProperty="entity.id">
+        INSERT INTO pisces_experiment_report_snapshot
+            (experiment_id, snapshot_version, conclusion_status, primary_metric_key,
+             best_performing_group, winning_variant, analysis_ready, has_srm,
+             breached_guardrails_json, decision_context_json, report_json,
+             generated_by, generated_at)
+        VALUES
+            (#{entity.experimentId}, #{entity.snapshotVersion}, #{entity.conclusionStatus}, #{entity.primaryMetricKey},
+             #{entity.bestPerformingGroup}, #{entity.winningVariant}, #{entity.analysisReady}, #{entity.hasSrm},
+             #{entity.breachedGuardrailsJson}, #{entity.decisionContextJson}, #{entity.reportJson},
+             #{entity.generatedBy}, #{entity.generatedAt})
+    </insert>
+
+    <select id="selectByExperimentId" resultMap="experimentReportSnapshotEntityResultMap">
+        SELECT id, experiment_id, snapshot_version, conclusion_status, primary_metric_key,
+               best_performing_group, winning_variant, analysis_ready, has_srm,
+               breached_guardrails_json, decision_context_json, report_json,
+               generated_by, generated_at, created_at
+        FROM pisces_experiment_report_snapshot
+        WHERE experiment_id = #{experimentId}
+        ORDER BY snapshot_version DESC
+    </select>
+
+    <select id="selectNextVersion" resultType="java.lang.Integer">
+        SELECT COALESCE(MAX(snapshot_version), 0) + 1
+        FROM pisces_experiment_report_snapshot
+        WHERE experiment_id = #{experimentId}
+    </select>
+</mapper>

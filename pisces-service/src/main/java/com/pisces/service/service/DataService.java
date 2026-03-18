@@ -1,5 +1,7 @@
 package com.pisces.service.service;
 
+import com.pisces.common.model.ExperimentExposure;
+
 import java.util.Map;
 
 /**
@@ -17,6 +19,15 @@ public interface DataService {
      */
     void reportEvent(String experimentId, String visitorId, String eventType, 
                     String eventName, Map<String, Object> properties);
+
+    /**
+     * 上报实验曝光
+     *
+     * @param experimentId 实验ID
+     * @param visitorId 访客ID
+     * @param properties 曝光属性
+     */
+    void reportExposure(String experimentId, String visitorId, Map<String, Object> properties);
     
     /**
      * 获取事件计数
@@ -27,6 +38,24 @@ public interface DataService {
      * 获取实验组的访客数（去重后的访客ID数量）
      */
     long getVisitorCount(String experimentId, String groupId);
+
+    /**
+     * 获取实验组的分流访客数
+     *
+     * @param experimentId 实验ID
+     * @param groupId 实验组ID
+     * @return 已分流访客数
+     */
+    long getAssignmentCount(String experimentId, String groupId);
+
+    /**
+     * 获取实验组的曝光访客数
+     *
+     * @param experimentId 实验ID
+     * @param groupId 实验组ID
+     * @return 已曝光访客数
+     */
+    long getExposureCount(String experimentId, String groupId);
     
     /**
      * 获取指定时间范围内的事件计数
@@ -66,5 +95,13 @@ public interface DataService {
      * @return 包含总访客数、总事件数等统计信息
      */
     java.util.Map<String, Object> getExperimentSummary(String experimentId);
-}
 
+    /**
+     * 获取实验组的曝光事实
+     *
+     * @param experimentId 实验ID
+     * @param groupId 实验组ID
+     * @return 曝光事实列表
+     */
+    java.util.List<ExperimentExposure> getExposures(String experimentId, String groupId);
+}
