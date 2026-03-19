@@ -1,4 +1,4 @@
-package com.pisces.api.logging;
+package com.pisces.service.config;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;

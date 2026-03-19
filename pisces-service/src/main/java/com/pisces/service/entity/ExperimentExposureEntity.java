@@ -1,20 +1,22 @@
-package com.pisces.common.model;
+package com.pisces.service.entity;
 
 import lombok.Data;
 
-import java.io.Serializable;
 import java.time.LocalDateTime;
-import java.util.Map;
 
 /**
- * 实验曝光事实
+ * 实验曝光事实实体
  */
 @Data
-public class ExperimentExposure implements Serializable {
-    private static final long serialVersionUID = 1L;
+public class ExperimentExposureEntity {
 
     /**
-     * 曝光ID
+     * 主键ID
+     */
+    private Long id;
+
+    /**
+     * 曝光事实ID
      */
     private String exposureId;
 
@@ -39,6 +41,11 @@ public class ExperimentExposure implements Serializable {
     private String scene;
 
     /**
+     * 曝光属性JSON
+     */
+    private String propertiesJson;
+
+    /**
      * 幂等键
      */
     private String idempotencyKey;
@@ -49,7 +56,7 @@ public class ExperimentExposure implements Serializable {
     private LocalDateTime exposedAt;
 
     /**
-     * 曝光属性
+     * 创建时间
      */
-    private Map<String, Object> properties;
+    private LocalDateTime createdAt;
 }

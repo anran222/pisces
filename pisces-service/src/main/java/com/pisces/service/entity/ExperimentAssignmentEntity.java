@@ -1,17 +1,19 @@
-package com.pisces.common.model;
+package com.pisces.service.entity;
 
 import lombok.Data;
 
-import java.io.Serializable;
 import java.time.LocalDateTime;
-import java.util.Map;
 
 /**
- * 实验分流事实
+ * 实验分流事实实体
  */
 @Data
-public class ExperimentAssignment implements Serializable {
-    private static final long serialVersionUID = 1L;
+public class ExperimentAssignmentEntity {
+
+    /**
+     * 主键ID
+     */
+    private Long id;
 
     /**
      * 分流事实ID
@@ -49,9 +51,9 @@ public class ExperimentAssignment implements Serializable {
     private Long configVersion;
 
     /**
-     * 分流属性
+     * 分流属性JSON
      */
-    private Map<String, Object> attributes;
+    private String attributesJson;
 
     /**
      * 幂等键
@@ -62,4 +64,14 @@ public class ExperimentAssignment implements Serializable {
      * 分流时间
      */
     private LocalDateTime assignedAt;
+
+    /**
+     * 创建时间
+     */
+    private LocalDateTime createdAt;
+
+    /**
+     * 更新时间
+     */
+    private LocalDateTime updatedAt;
 }

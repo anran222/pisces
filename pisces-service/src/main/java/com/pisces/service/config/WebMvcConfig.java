@@ -1,4 +1,4 @@
-package com.pisces.api.security;
+package com.pisces.service.config;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Configuration;

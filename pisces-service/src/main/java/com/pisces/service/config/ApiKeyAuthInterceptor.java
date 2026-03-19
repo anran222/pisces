@@ -1,8 +1,7 @@
-package com.pisces.api.security;
+package com.pisces.service.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pisces.service.annotation.NoTokenRequired;
-import com.pisces.service.config.ApiKeyProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;

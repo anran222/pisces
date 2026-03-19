@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.ExperimentExposureMapper">
+
+    <resultMap id="experimentExposureEntityResultMap" type="com.pisces.service.entity.ExperimentExposureEntity">
+        <id column="id" property="id"/>
+        <result column="exposure_id" property="exposureId"/>
+        <result column="experiment_id" property="experimentId"/>
+        <result column="visitor_id" property="visitorId"/>
+        <result column="group_id" property="groupId"/>
+        <result column="scene" property="scene"/>
+        <result column="properties_json" property="propertiesJson"/>
+        <result column="idempotency_key" property="idempotencyKey"/>
+        <result column="exposed_at" property="exposedAt"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.pisces.service.entity.ExperimentExposureEntity">
+        INSERT INTO pisces_experiment_exposure
+            (exposure_id, experiment_id, visitor_id, group_id, scene, properties_json, idempotency_key, exposed_at)
+        VALUES
+            (#{entity.exposureId}, #{entity.experimentId}, #{entity.visitorId}, #{entity.groupId}, #{entity.scene},
+             #{entity.propertiesJson}, #{entity.idempotencyKey}, #{entity.exposedAt})
+    </insert>
+
+    <select id="countByExperimentIdAndGroupId" resultType="long">
+        SELECT COUNT(DISTINCT visitor_id)
+        FROM pisces_experiment_exposure
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+    </select>
+
+    <select id="selectByExperimentIdAndGroupId" resultMap="experimentExposureEntityResultMap">
+        SELECT id, exposure_id, experiment_id, visitor_id, group_id, scene, properties_json, idempotency_key,
+               exposed_at, created_at
+        FROM pisces_experiment_exposure
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+        ORDER BY exposed_at ASC, id ASC
+    </select>
+
+    <select id="selectByExperimentIdAndGroupIdInTimeRange" resultMap="experimentExposureEntityResultMap">
+        SELECT id, exposure_id, experiment_id, visitor_id, group_id, scene, properties_json, idempotency_key,
+               exposed_at, created_at
+        FROM pisces_experiment_exposure
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+          AND exposed_at <![CDATA[>=]]> #{startTime}
+          AND exposed_at <![CDATA[<=]]> #{endTime}
+        ORDER BY exposed_at ASC, id ASC
+    </select>
+</mapper>

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.ExperimentAssignmentMapper">
+
+    <resultMap id="experimentAssignmentEntityResultMap" type="com.pisces.service.entity.ExperimentAssignmentEntity">
+        <id column="id" property="id"/>
+        <result column="assignment_id" property="assignmentId"/>
+        <result column="experiment_id" property="experimentId"/>
+        <result column="visitor_id" property="visitorId"/>
+        <result column="group_id" property="groupId"/>
+        <result column="strategy" property="strategy"/>
+        <result column="hash_key" property="hashKey"/>
+        <result column="config_version" property="configVersion"/>
+        <result column="attributes_json" property="attributesJson"/>
+        <result column="idempotency_key" property="idempotencyKey"/>
+        <result column="assigned_at" property="assignedAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <insert id="upsert" parameterType="com.pisces.service.entity.ExperimentAssignmentEntity">
+        INSERT INTO pisces_experiment_assignment
+            (assignment_id, experiment_id, visitor_id, group_id, strategy, hash_key, config_version,
+             attributes_json, idempotency_key, assigned_at)
+        VALUES
+            (#{entity.assignmentId}, #{entity.experimentId}, #{entity.visitorId}, #{entity.groupId}, #{entity.strategy},
+             #{entity.hashKey}, #{entity.configVersion}, #{entity.attributesJson}, #{entity.idempotencyKey},
+             #{entity.assignedAt})
+        ON DUPLICATE KEY UPDATE
+            group_id = VALUES(group_id),
+            strategy = VALUES(strategy),
+            hash_key = VALUES(hash_key),
+            config_version = VALUES(config_version),
+            attributes_json = VALUES(attributes_json),
+            assigned_at = VALUES(assigned_at),
+            updated_at = CURRENT_TIMESTAMP
+    </insert>
+
+    <select id="selectByExperimentIdAndVisitorId" resultMap="experimentAssignmentEntityResultMap">
+        SELECT id, assignment_id, experiment_id, visitor_id, group_id, strategy, hash_key, config_version,
+               attributes_json, idempotency_key, assigned_at, created_at, updated_at
+        FROM pisces_experiment_assignment
+        WHERE experiment_id = #{experimentId}
+          AND visitor_id = #{visitorId}
+    </select>
+
+    <select id="countByExperimentIdAndGroupId" resultType="long">
+        SELECT COUNT(1)
+        FROM pisces_experiment_assignment
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+    </select>
+
+    <select id="selectByVisitorId" resultMap="experimentAssignmentEntityResultMap">
+        SELECT id, assignment_id, experiment_id, visitor_id, group_id, strategy, hash_key, config_version,
+               attributes_json, idempotency_key, assigned_at, created_at, updated_at
+        FROM pisces_experiment_assignment
+        WHERE visitor_id = #{visitorId}
+        ORDER BY assigned_at DESC, id DESC
+    </select>
+</mapper>

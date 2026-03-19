@@ -1,7 +1,12 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.Event;
+import com.pisces.common.model.ExperimentEventFact;
 import com.pisces.common.model.ExperimentExposure;
+import com.pisces.service.repository.ExperimentAssignmentRepository;
+import com.pisces.service.repository.ExperimentEventRepository;
+import com.pisces.service.repository.ExperimentExposureRepository;
+import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.DataService;
 import com.pisces.service.service.IdentityService;
 import com.pisces.service.service.MultiArmedBanditService;
@@ -11,20 +16,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
-import org.springframework.data.redis.core.ScanOptions;
-
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 数据收集服务实现（基于Redis存储）
+ * 数据收集服务实现
  */
 @Slf4j
 @Service
@@ -38,6 +38,18 @@ public class DataServiceImpl implements DataService {
 
     @Autowired(required = false)
     private IdentityService identityService;
+
+    @Autowired
+    private ConfigService configService;
+
+    @Autowired
+    private ExperimentAssignmentRepository experimentAssignmentRepository;
+
+    @Autowired
+    private ExperimentExposureRepository experimentExposureRepository;
+
+    @Autowired
+    private ExperimentEventRepository experimentEventRepository;
     
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
@@ -48,12 +60,7 @@ public class DataServiceImpl implements DataService {
     private static final String VISITOR_SET_PREFIX = "pisces:visitor:set:";  // 访客集合
     private static final String EXPOSURE_STORE_PREFIX = "pisces:exposure:store:";
     private static final String EXPOSURE_SET_PREFIX = "pisces:exposure:set:";
-    private static final String ASSIGNMENT_SET_PREFIX = "pisces:assignment:set:";
     
-    // 事件去重键前缀（用于客户端幂等上报）
-    private static final String EVENT_DEDUP_PREFIX = "pisces:event:dedup:";
-    // 事件去重过期时间（天）—— 与数据保留时长一致
-    private static final long DEDUP_EXPIRE_DAYS = 90;
     // 数据过期时间（天）
     private static final long DATA_EXPIRE_DAYS = 90;
     
@@ -65,51 +72,34 @@ public class DataServiceImpl implements DataService {
     public void reportEvent(String experimentId, String visitorId, String eventType,
                            String eventName, Map<String, Object> properties) {
         String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
-
-        // 客户端幂等去重：若调用方携带了 clientEventId，则以此作为去重键（原子 SetIfAbsent）
-        if (properties != null && properties.containsKey("clientEventId")) {
-            String clientEventId = String.valueOf(properties.get("clientEventId"));
-            String dedupKey = EVENT_DEDUP_PREFIX + experimentId + ":" + clientEventId;
-            Boolean added = redisTemplate.opsForValue().setIfAbsent(dedupKey, "1", DEDUP_EXPIRE_DAYS, TimeUnit.DAYS);
-            if (Boolean.FALSE.equals(added)) {
-                log.debug("重复事件已丢弃: clientEventId={}, experimentId={}", clientEventId, experimentId);
-                return;
-            }
-        }
-
-        // 获取访客所在组
         String groupId = trafficService.getUserGroup(experimentId, canonicalVisitorId);
         if (groupId == null) {
             log.warn("访客 {} 不在实验 {} 中", canonicalVisitorId, experimentId);
             return;
         }
 
-        // 创建事件
         Event event = new Event();
         event.setEventId("evt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8));
         event.setExperimentId(experimentId);
-        event.setUserId(canonicalVisitorId);  // 使用visitorId（兼容原有字段名）
+        event.setUserId(canonicalVisitorId);
         event.setGroupId(groupId);
         event.setEventType(Event.EventType.valueOf(eventType));
         event.setEventName(eventName);
         event.setProperties(properties);
         event.setTimestamp(resolveEventTimestamp(properties));
-        
-        // 存储事件到Redis（使用List存储）
+
+        experimentEventRepository.save(buildExperimentEventFact(event, properties));
+
         String eventStoreKey = EVENT_STORE_PREFIX + experimentId + ":" + groupId;
         redisTemplate.opsForList().rightPush(eventStoreKey, event);
         redisTemplate.expire(eventStoreKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
-        
-        // 更新计数器（使用Hash存储）
+
         updateEventCounter(experimentId, groupId, eventType);
-        
-        // 更新访客集合（使用Set存储，自动去重）
+
         String visitorSetKey = VISITOR_SET_PREFIX + experimentId + ":" + groupId;
         redisTemplate.opsForSet().add(visitorSetKey, canonicalVisitorId);
         redisTemplate.expire(visitorSetKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
-        
-        // 更新MAB算法奖励
-        // 转化事件默认视为成功，业务方可通过 properties.mabSuccess=false 覆盖
+
         if (mabService != null && Event.EventType.CONVERT.name().equals(eventType)) {
             try {
                 boolean success = true;
@@ -148,6 +138,10 @@ public class DataServiceImpl implements DataService {
         exposure.setGroupId(groupId);
         exposure.setProperties(properties);
         exposure.setExposedAt(resolveEventTimestamp(properties));
+        exposure.setScene(resolveExposureScene(properties));
+        exposure.setIdempotencyKey(buildExposureIdempotencyKey(experimentId, canonicalVisitorId, groupId));
+
+        experimentExposureRepository.save(exposure);
 
         String exposureStoreKey = EXPOSURE_STORE_PREFIX + experimentId + ":" + groupId;
         redisTemplate.opsForList().rightPush(exposureStoreKey, exposure);
@@ -197,12 +191,7 @@ public class DataServiceImpl implements DataService {
      */
     @Override
     public long getEventCount(String experimentId, String groupId, String eventType) {
-        String counterKey = EVENT_COUNTER_PREFIX + experimentId + ":" + groupId;
-        Object count = redisTemplate.opsForHash().get(counterKey, eventType);
-        if (count == null) {
-            return 0;
-        }
-        return count instanceof Number ? ((Number) count).longValue() : Long.parseLong(count.toString());
+        return experimentEventRepository.countByExperimentIdAndGroupIdAndEventType(experimentId, groupId, eventType);
     }
     
     /**
@@ -210,23 +199,17 @@ public class DataServiceImpl implements DataService {
      */
     @Override
     public long getVisitorCount(String experimentId, String groupId) {
-        String visitorSetKey = VISITOR_SET_PREFIX + experimentId + ":" + groupId;
-        Long size = redisTemplate.opsForSet().size(visitorSetKey);
-        return size != null ? size : 0;
+        return experimentEventRepository.countDistinctVisitorByExperimentIdAndGroupId(experimentId, groupId);
     }
 
     @Override
     public long getAssignmentCount(String experimentId, String groupId) {
-        String assignmentSetKey = ASSIGNMENT_SET_PREFIX + experimentId + ":" + groupId;
-        Long size = redisTemplate.opsForSet().size(assignmentSetKey);
-        return size != null ? size : 0;
+        return experimentAssignmentRepository.countByExperimentIdAndGroupId(experimentId, groupId);
     }
 
     @Override
     public long getExposureCount(String experimentId, String groupId) {
-        String exposureSetKey = EXPOSURE_SET_PREFIX + experimentId + ":" + groupId;
-        Long size = redisTemplate.opsForSet().size(exposureSetKey);
-        return size != null ? size : 0;
+        return experimentExposureRepository.countByExperimentIdAndGroupId(experimentId, groupId);
     }
     
     /**
@@ -246,24 +229,9 @@ public class DataServiceImpl implements DataService {
      */
     @Override
     public List<Event> getEvents(String experimentId, String groupId) {
-        String eventStoreKey = EVENT_STORE_PREFIX + experimentId + ":" + groupId;
-        List<Object> eventObjects = redisTemplate.opsForList().range(eventStoreKey, 0, -1);
-        
-        List<Event> events = new ArrayList<>();
-        if (eventObjects != null) {
-            for (Object obj : eventObjects) {
-                if (obj instanceof Event) {
-                    events.add((Event) obj);
-                } else if (obj instanceof Map) {
-                    // 如果Redis序列化为Map，需要手动转换
-                    Event event = convertMapToEvent((Map<String, Object>) obj);
-                    if (event != null) {
-                        events.add(event);
-                    }
-                }
-            }
-        }
-        return events;
+        return experimentEventRepository.listByExperimentIdAndGroupId(experimentId, groupId).stream()
+                .map(this::buildEvent)
+                .toList();
     }
     
     /**
@@ -272,18 +240,10 @@ public class DataServiceImpl implements DataService {
     @Override
     public List<Event> getEventsInTimeRange(String experimentId, String groupId,
                                             LocalDateTime startTime, LocalDateTime endTime) {
-        List<Event> allEvents = getEvents(experimentId, groupId);
-        
-        return allEvents.stream()
-                .filter(event -> {
-                    LocalDateTime timestamp = event.getTimestamp();
-                    if (timestamp == null) return false;
-                    
-                    boolean afterStart = startTime == null || !timestamp.isBefore(startTime);
-                    boolean beforeEnd = endTime == null || !timestamp.isAfter(endTime);
-                    return afterStart && beforeEnd;
-                })
-                .collect(java.util.stream.Collectors.toList());
+        return experimentEventRepository.listByExperimentIdAndGroupIdInTimeRange(experimentId, groupId, startTime, endTime)
+                .stream()
+                .map(this::buildEvent)
+                .toList();
     }
     
     /**
@@ -291,167 +251,89 @@ public class DataServiceImpl implements DataService {
      */
     @Override
     public Map<String, Object> getExperimentSummary(String experimentId) {
-        Map<String, Object> summary = new java.util.HashMap<>();
-        
-        // 获取实验配置以获取所有组
-        try {
-            // 统计所有组的数据
-            long totalVisitors = 0;
-            long totalAssignments = 0;
-            long totalExposures = 0;
-            long totalViews = 0;
-            long totalClicks = 0;
-            long totalConversions = 0;
-            
-            // 使用 SCAN 游标遍历键，避免 KEYS 命令在大数据量时阻塞 Redis
-            String pattern = VISITOR_SET_PREFIX + experimentId + ":*";
-            Set<String> visitorKeys = scanKeys(pattern);
-            
-            if (visitorKeys != null) {
-                for (String key : visitorKeys) {
-                    String groupId = key.substring(key.lastIndexOf(":") + 1);
-                    totalVisitors += getVisitorCount(experimentId, groupId);
-                    totalAssignments += getAssignmentCount(experimentId, groupId);
-                    totalExposures += getExposureCount(experimentId, groupId);
-                    totalViews += getEventCount(experimentId, groupId, "VIEW");
-                    totalClicks += getEventCount(experimentId, groupId, "CLICK");
-                    totalConversions += getEventCount(experimentId, groupId, "CONVERT");
-                }
-            }
-            
-            summary.put("experimentId", experimentId);
-            summary.put("totalVisitors", totalVisitors);
-            summary.put("totalAssignments", totalAssignments);
-            summary.put("totalExposures", totalExposures);
-            summary.put("totalViews", totalViews);
-            summary.put("totalClicks", totalClicks);
-            summary.put("totalConversions", totalConversions);
-            summary.put("overallClickRate", totalViews > 0 ? (double) totalClicks / totalViews : 0.0);
-            summary.put("overallConversionRate", totalViews > 0 ? (double) totalConversions / totalViews : 0.0);
-            
-        } catch (Exception e) {
-            log.error("获取实验摘要失败: {}", experimentId, e);
-        }
-        
-        return summary;
-    }
-    
-    /**
-     * 使用 SCAN 游标安全扫描 Redis 键，替代阻塞式 KEYS 命令
-     */
-    private Set<String> scanKeys(String pattern) {
-        Set<String> keys = new HashSet<>();
-        ScanOptions options = ScanOptions.scanOptions().match(pattern).count(200).build();
-        try (var cursor = redisTemplate.execute(
-                (org.springframework.data.redis.core.RedisCallback<org.springframework.data.redis.core.Cursor<byte[]>>) connection ->
-                        connection.keyCommands().scan(options))) {
-            if (cursor != null) {
-                cursor.forEachRemaining(key -> keys.add(new String(key, StandardCharsets.UTF_8)));
-            }
-        } catch (Exception e) {
-            log.error("扫描 Redis 键失败: pattern={}", pattern, e);
-        }
-        return keys;
-    }
+        Map<String, Object> summary = new HashMap<>();
+        long totalVisitors = 0;
+        long totalAssignments = 0;
+        long totalExposures = 0;
+        long totalViews = 0;
+        long totalClicks = 0;
+        long totalConversions = 0;
 
-    /**
-     * 将Map转换为Event对象
-     */
-    @SuppressWarnings("unchecked")
-    private Event convertMapToEvent(Map<String, Object> map) {
-        try {
-            Event event = new Event();
-            event.setEventId((String) map.get("eventId"));
-            event.setExperimentId((String) map.get("experimentId"));
-            event.setUserId((String) map.get("userId"));
-            event.setGroupId((String) map.get("groupId"));
-            
-            Object eventTypeObj = map.get("eventType");
-            if (eventTypeObj instanceof String) {
-                event.setEventType(Event.EventType.valueOf((String) eventTypeObj));
-            } else if (eventTypeObj instanceof Event.EventType) {
-                event.setEventType((Event.EventType) eventTypeObj);
+        var metadata = configService.getExperimentConfig(experimentId);
+        if (metadata != null && metadata.getGroups() != null) {
+            for (String groupId : metadata.getGroups().keySet()) {
+                totalVisitors += getVisitorCount(experimentId, groupId);
+                totalAssignments += getAssignmentCount(experimentId, groupId);
+                totalExposures += getExposureCount(experimentId, groupId);
+                totalViews += getEventCount(experimentId, groupId, "VIEW");
+                totalClicks += getEventCount(experimentId, groupId, "CLICK");
+                totalConversions += getEventCount(experimentId, groupId, "CONVERT");
             }
-            
-            event.setEventName((String) map.get("eventName"));
-            event.setProperties((Map<String, Object>) map.get("properties"));
-            
-            // 处理时间戳
-            Object timestampObj = map.get("timestamp");
-            if (timestampObj instanceof LocalDateTime) {
-                event.setTimestamp((LocalDateTime) timestampObj);
-            } else if (timestampObj instanceof String) {
-                event.setTimestamp(LocalDateTime.parse((String) timestampObj));
-            }
-            
-            return event;
-        } catch (Exception e) {
-            log.warn("转换事件对象失败: {}", e.getMessage());
-            return null;
         }
+
+        summary.put("experimentId", experimentId);
+        summary.put("totalVisitors", totalVisitors);
+        summary.put("totalAssignments", totalAssignments);
+        summary.put("totalExposures", totalExposures);
+        summary.put("totalViews", totalViews);
+        summary.put("totalClicks", totalClicks);
+        summary.put("totalConversions", totalConversions);
+        summary.put("overallClickRate", totalViews > 0 ? (double) totalClicks / totalViews : 0.0);
+        summary.put("overallConversionRate", totalViews > 0 ? (double) totalConversions / totalViews : 0.0);
+        return summary;
     }
 
     @Override
     public List<ExperimentExposure> getExposures(String experimentId, String groupId) {
-        String exposureStoreKey = EXPOSURE_STORE_PREFIX + experimentId + ":" + groupId;
-        List<Object> exposureObjects = redisTemplate.opsForList().range(exposureStoreKey, 0, -1);
-
-        List<ExperimentExposure> exposures = new ArrayList<>();
-        if (exposureObjects == null) {
-            return exposures;
-        }
-
-        for (Object exposureObject : exposureObjects) {
-            if (exposureObject instanceof ExperimentExposure experimentExposure) {
-                exposures.add(experimentExposure);
-                continue;
-            }
-            if (exposureObject instanceof Map<?, ?> exposureMap) {
-                ExperimentExposure exposure = convertMapToExposure(castMap(exposureMap));
-                if (exposure != null) {
-                    exposures.add(exposure);
-                }
-            }
-        }
-        return exposures;
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> castMap(Map<?, ?> map) {
-        return (Map<String, Object>) map;
-    }
-
-    private ExperimentExposure convertMapToExposure(Map<String, Object> map) {
-        try {
-            ExperimentExposure exposure = new ExperimentExposure();
-            exposure.setExposureId((String) map.get("exposureId"));
-            exposure.setExperimentId((String) map.get("experimentId"));
-            exposure.setVisitorId((String) map.get("visitorId"));
-            exposure.setGroupId((String) map.get("groupId"));
-            exposure.setProperties(castProperties(map.get("properties")));
-
-            Object exposedAtObject = map.get("exposedAt");
-            if (exposedAtObject instanceof LocalDateTime localDateTime) {
-                exposure.setExposedAt(localDateTime);
-            } else if (exposedAtObject instanceof String exposedAtText) {
-                exposure.setExposedAt(LocalDateTime.parse(exposedAtText));
-            }
-            return exposure;
-        } catch (Exception e) {
-            log.warn("转换曝光对象失败: {}", e.getMessage());
-            return null;
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> castProperties(Object propertiesObject) {
-        if (propertiesObject instanceof Map<?, ?> propertyMap) {
-            return (Map<String, Object>) propertyMap;
-        }
-        return null;
+        return experimentExposureRepository.listByExperimentIdAndGroupId(experimentId, groupId);
     }
 
     private String resolveCanonicalVisitorId(String visitorId) {
         return identityService != null ? identityService.resolveCanonicalId(visitorId) : visitorId;
+    }
+
+    private ExperimentEventFact buildExperimentEventFact(Event event, Map<String, Object> properties) {
+        ExperimentEventFact eventFact = new ExperimentEventFact();
+        eventFact.setEventId(event.getEventId());
+        eventFact.setExperimentId(event.getExperimentId());
+        eventFact.setVisitorId(event.getUserId());
+        eventFact.setGroupId(event.getGroupId());
+        eventFact.setEventType(event.getEventType().name());
+        eventFact.setEventName(event.getEventName());
+        eventFact.setClientEventId(resolveClientEventId(properties));
+        eventFact.setProperties(properties);
+        eventFact.setEventTime(event.getTimestamp());
+        return eventFact;
+    }
+
+    private Event buildEvent(ExperimentEventFact eventFact) {
+        Event event = new Event();
+        event.setEventId(eventFact.getEventId());
+        event.setExperimentId(eventFact.getExperimentId());
+        event.setUserId(eventFact.getVisitorId());
+        event.setGroupId(eventFact.getGroupId());
+        event.setEventType(Event.EventType.valueOf(eventFact.getEventType()));
+        event.setEventName(eventFact.getEventName());
+        event.setProperties(eventFact.getProperties());
+        event.setTimestamp(eventFact.getEventTime());
+        return event;
+    }
+
+    private String resolveClientEventId(Map<String, Object> properties) {
+        if (properties == null || !properties.containsKey("clientEventId")) {
+            return null;
+        }
+        return String.valueOf(properties.get("clientEventId"));
+    }
+
+    private String resolveExposureScene(Map<String, Object> properties) {
+        if (properties == null || !properties.containsKey("scene")) {
+            return null;
+        }
+        return String.valueOf(properties.get("scene"));
+    }
+
+    private String buildExposureIdempotencyKey(String experimentId, String visitorId, String groupId) {
+        return experimentId + ":" + visitorId + ":" + groupId;
     }
 }

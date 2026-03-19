@@ -5,6 +5,7 @@ import com.pisces.common.enums.ResponseCode;
 import com.pisces.common.model.ExperimentLayer;
 import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.common.model.TrafficConfig;
+import com.pisces.service.repository.ExperimentAssignmentRepository;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.IdentityService;
 import com.pisces.service.service.MultiArmedBanditService;
@@ -24,6 +25,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -44,6 +47,9 @@ public class TrafficServiceImpl implements TrafficService {
 
     @Autowired
     private TrafficRuleEvaluator trafficRuleEvaluator;
+
+    @Autowired
+    private ExperimentAssignmentRepository experimentAssignmentRepository;
     
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
@@ -90,7 +96,6 @@ public class TrafficServiceImpl implements TrafficService {
             try {
                 long cachedVer = Long.parseLong(cachedVersion.toString());
                 if (cachedVer == metadata.getConfigVersion()) {
-                    ensureAssignmentRecorded(experimentId, canonicalVisitorId, cachedGroupId.toString(), metadata);
                     return cachedGroupId.toString(); // 版本匹配，缓存有效
                 }
                 // 配置已更新，删除旧缓存字段，重新分配
@@ -112,7 +117,7 @@ public class TrafficServiceImpl implements TrafficService {
             if (metadata.getGroups() != null && !metadata.getGroups().isEmpty()) {
                 String groupId = metadata.getGroups().keySet().iterator().next();
                 cacheUserGroup(canonicalVisitorId, experimentId, groupId, metadata.getConfigVersion());
-                recordAssignment(experimentId, canonicalVisitorId, groupId, metadata);
+                recordAssignment(experimentId, canonicalVisitorId, groupId, metadata, Collections.emptyMap());
                 return groupId;
             }
         }
@@ -153,7 +158,7 @@ public class TrafficServiceImpl implements TrafficService {
         String groupId = allocateGroup(trafficConfig, canonicalVisitorId, experimentId, ruleContext);
         if (groupId != null) {
             cacheUserGroup(canonicalVisitorId, experimentId, groupId, metadata.getConfigVersion());
-            recordAssignment(experimentId, canonicalVisitorId, groupId, metadata);
+            recordAssignment(experimentId, canonicalVisitorId, groupId, metadata, attributes);
             recordLayerAssignment(metadata.getLayerId(), experimentId, canonicalVisitorId);
             return groupId;
         }
@@ -189,17 +194,8 @@ public class TrafficServiceImpl implements TrafficService {
     @Override
     public ExperimentAssignment getAssignment(String experimentId, String visitorId) {
         String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
-        Object assignmentObject = redisTemplate.opsForValue().get(buildAssignmentKey(experimentId, canonicalVisitorId));
-        if (assignmentObject instanceof ExperimentAssignment experimentAssignment) {
-            return experimentAssignment;
-        }
-        if (!canonicalVisitorId.equals(visitorId)) {
-            Object legacyAssignmentObject = redisTemplate.opsForValue().get(buildAssignmentKey(experimentId, visitorId));
-            if (legacyAssignmentObject instanceof ExperimentAssignment experimentAssignment) {
-                return experimentAssignment;
-            }
-        }
-        return null;
+        return experimentAssignmentRepository.findByExperimentIdAndVisitorId(experimentId, canonicalVisitorId)
+                .orElse(null);
     }
     
     /**
@@ -376,39 +372,24 @@ public class TrafficServiceImpl implements TrafficService {
      */
     @Override
     public Map<String, String> getUserExperiments(String visitorId) {
-        String cacheKey = USER_GROUP_CACHE_PREFIX + visitorId;
-        Map<Object, Object> hash = redisTemplate.opsForHash().entries(cacheKey);
+        String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
+        List<ExperimentAssignment> assignments = experimentAssignmentRepository.listByVisitorId(canonicalVisitorId);
         Map<String, String> result = new HashMap<>();
-        if (hash != null) {
-            for (Map.Entry<Object, Object> entry : hash.entrySet()) {
-                result.put(entry.getKey().toString(), entry.getValue().toString());
-            }
+        for (ExperimentAssignment assignment : assignments) {
+            result.put(assignment.getExperimentId(), assignment.getGroupId());
         }
         return result;
     }
 
-    private void ensureAssignmentRecorded(String experimentId, String visitorId, String groupId,
-                                          ExperimentMetadata metadata) {
-        if (getAssignment(experimentId, visitorId) != null) {
-            return;
-        }
-        recordAssignment(experimentId, visitorId, groupId, metadata);
-    }
+    private void recordAssignment(String experimentId, String visitorId, String groupId, ExperimentMetadata metadata,
+                                  Map<String, Object> attributes) {
+        Optional<ExperimentAssignment> previousAssignmentOptional = experimentAssignmentRepository
+                .findByExperimentIdAndVisitorId(experimentId, visitorId);
+        ExperimentAssignment previousAssignment = previousAssignmentOptional.orElse(null);
 
-    private void recordAssignment(String experimentId, String visitorId, String groupId, ExperimentMetadata metadata) {
-        ExperimentAssignment previousAssignment = getAssignment(experimentId, visitorId);
-
-        ExperimentAssignment assignment = new ExperimentAssignment();
-        assignment.setExperimentId(experimentId);
-        assignment.setVisitorId(visitorId);
-        assignment.setGroupId(groupId);
-        assignment.setAssignedAt(java.time.LocalDateTime.now());
-        assignment.setConfigVersion(metadata.getConfigVersion());
-        assignment.setStrategy(metadata.getTraffic() != null && metadata.getTraffic().getStrategy() != null
-                ? metadata.getTraffic().getStrategy().name() : null);
-
-        redisTemplate.opsForValue().set(buildAssignmentKey(experimentId, visitorId), assignment,
-                CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
+        ExperimentAssignment assignment = buildAssignment(experimentId, visitorId, groupId, metadata, attributes, previousAssignment);
+        experimentAssignmentRepository.save(assignment);
+        cacheAssignmentProjection(assignment);
 
         if (previousAssignment != null && previousAssignment.getGroupId() != null
                 && !previousAssignment.getGroupId().equals(groupId)) {
@@ -421,12 +402,44 @@ public class TrafficServiceImpl implements TrafficService {
         redisTemplate.expire(assignmentSetKey, CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
     }
 
+    private ExperimentAssignment buildAssignment(String experimentId, String visitorId, String groupId,
+                                                 ExperimentMetadata metadata, Map<String, Object> attributes,
+                                                 ExperimentAssignment previousAssignment) {
+        ExperimentAssignment assignment = new ExperimentAssignment();
+        assignment.setAssignmentId(previousAssignment != null ? previousAssignment.getAssignmentId()
+                : buildAssignmentId());
+        assignment.setExperimentId(experimentId);
+        assignment.setVisitorId(visitorId);
+        assignment.setGroupId(groupId);
+        assignment.setAssignedAt(java.time.LocalDateTime.now());
+        assignment.setConfigVersion(metadata.getConfigVersion());
+        assignment.setStrategy(metadata.getTraffic() != null && metadata.getTraffic().getStrategy() != null
+                ? metadata.getTraffic().getStrategy().name() : null);
+        assignment.setHashKey(metadata.getTraffic() != null ? metadata.getTraffic().getHashKey() : null);
+        assignment.setAttributes(attributes != null ? new HashMap<>(attributes) : Collections.emptyMap());
+        assignment.setIdempotencyKey(buildAssignmentIdempotencyKey(experimentId, visitorId));
+        return assignment;
+    }
+
+    private void cacheAssignmentProjection(ExperimentAssignment assignment) {
+        redisTemplate.opsForValue().set(buildAssignmentKey(assignment.getExperimentId(), assignment.getVisitorId()), assignment,
+                CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
+    }
+
     private String buildAssignmentKey(String experimentId, String visitorId) {
         return ASSIGNMENT_PREFIX + experimentId + ":" + visitorId;
     }
 
     private String buildAssignmentSetKey(String experimentId, String groupId) {
         return ASSIGNMENT_SET_PREFIX + experimentId + ":" + groupId;
+    }
+
+    private String buildAssignmentId() {
+        return "asn_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+    }
+
+    private String buildAssignmentIdempotencyKey(String experimentId, String visitorId) {
+        return experimentId + ":" + visitorId;
     }
 
     private Map<String, Object> buildRuleContext(String experimentId, String visitorId, Map<String, Object> attributes) {
@@ -465,6 +478,7 @@ public class TrafficServiceImpl implements TrafficService {
         }
 
         cacheUserGroup(canonicalVisitorId, experimentId, legacyGroupId.toString(), configVersion);
-        ensureAssignmentRecorded(experimentId, canonicalVisitorId, legacyGroupId.toString(), metadata);
+        recordAssignment(experimentId, canonicalVisitorId, legacyGroupId.toString(), metadata,
+                Collections.emptyMap());
     }
 }

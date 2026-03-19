@@ -38,14 +38,13 @@ flowchart TD
 
 ## 4. 存储职责拆分
 
-### 4.1 Zookeeper / 本地缓存
+### 4.1 Zookeeper / 配置管理
 
 由 `ConfigServiceImpl` 管理：
 
 - 实验元数据 `ExperimentMetadata`
 - 分层配置 `ExperimentLayer`
-- 配置监听与本地缓存失效
-- 可切换的 MySQL 实验配置仓库
+- 配置监听与缓存失效
 
 仓库规则：
 
@@ -56,10 +55,13 @@ flowchart TD
 
 ### 4.2 MySQL
 
-当前 MySQL 主要承担两类持久化职责：
+当前 MySQL 主要承担五类持久化职责：
 
 - `pisces_experiment_config`：实验配置持久化
 - `pisces_experiment_report_snapshot`：实验报告快照归档
+- `pisces_experiment_assignment`：分流事实
+- `pisces_experiment_exposure`：曝光事实
+- `pisces_experiment_event`：事件事实
 
 代码结构已收口为：
 
@@ -72,22 +74,33 @@ flowchart TD
 
 - `ExperimentConfigRepository` -> `DatabaseExperimentConfigRepository` -> `ExperimentConfigMapper` -> `ExperimentConfigMapper.xml`
 - `ExperimentReportSnapshotRepository` -> `DatabaseExperimentReportSnapshotRepository` -> `ExperimentReportSnapshotMapper` -> `ExperimentReportSnapshotMapper.xml`
+- `ExperimentAssignmentRepository` -> `ExperimentAssignmentMapper` -> `ExperimentAssignmentMapper.xml`
+- `ExperimentExposureRepository` -> `ExperimentExposureMapper` -> `ExperimentExposureMapper.xml`
+- `ExperimentEventRepository` -> `ExperimentEventMapper` -> `ExperimentEventMapper.xml`
 
 ### 4.3 Redis
 
 由 `TrafficServiceImpl`、`DataServiceImpl`、`MultiArmedBanditServiceImpl`、`IdentityServiceImpl` 共同使用。
 
+当前职责已收口为：
+
+- 分组缓存
+- 在线计数与热点查询投影
+- Layer 互斥标记
+- MAB 状态
+- 身份绑定
+
 主要 Key 约定：
 
 - `pisces:traffic:group:{visitorId}`：访客分组缓存
-- `pisces:assignment:{experimentId}:{visitorId}`：分流事实
-- `pisces:assignment:set:{experimentId}:{groupId}`：实验组 assignment 去重集合
+- `pisces:assignment:{experimentId}:{visitorId}`：分流缓存投影
+- `pisces:assignment:set:{experimentId}:{groupId}`：实验组 assignment 投影集合
 - `pisces:layer:assign:{layerId}:{visitorId}`：Layer 互斥标记
-- `pisces:event:store:{experimentId}:{groupId}`：事件列表
-- `pisces:event:counter:{experimentId}:{groupId}`：事件计数
-- `pisces:visitor:set:{experimentId}:{groupId}`：访客去重集合
-- `pisces:exposure:{experimentId}:{visitorId}`：曝光事实
-- `pisces:exposure:set:{experimentId}:{groupId}`：实验组 exposure 去重集合
+- `pisces:event:store:{experimentId}:{groupId}`：事件投影列表
+- `pisces:event:counter:{experimentId}:{groupId}`：事件计数投影
+- `pisces:visitor:set:{experimentId}:{groupId}`：访客去重投影集合
+- `pisces:exposure:{experimentId}:{visitorId}`：曝光缓存投影
+- `pisces:exposure:set:{experimentId}:{groupId}`：实验组 exposure 投影集合
 - `pisces:mab:beta:{experimentId}`：Thompson Sampling 参数
 - `pisces:mab:ucb:{experimentId}`：UCB 统计
 - `pisces:mab:trials:{experimentId}`：UCB 总尝试次数
@@ -143,34 +156,39 @@ sequenceDiagram
     participant TS as TrafficServiceImpl
     participant D as DataController
     participant DS as DataServiceImpl
+    participant DB as MySQL
     participant R as Redis
 
     C->>T: POST /traffic/assign
     T->>TS: assignGroup(experimentId, visitorId, attributes)
-    TS->>R: 读写分组缓存
+    TS->>DB: 写 assignment 事实
+    TS->>R: 刷新分组缓存投影
     TS-->>C: groupId
 
     C->>D: POST /data/exposure
     D->>DS: reportExposure(...)
-    DS->>R: 写 exposure 事实
+    DS->>DB: 写 exposure 事实
+    DS->>R: 刷新 exposure 投影
 
     C->>D: POST /data/event
     D->>DS: reportEvent(...)
     DS->>TS: getUserGroup(...)
-    DS->>R: 写事件/计数/访客集合
+    DS->>DB: 写 event 事实
+    DS->>R: 刷新事件/计数/访客集合投影
 ```
 
 ## 7. 运行依赖的真实要求
 
 需要明确区分“可选”与“实际不可少”：
 
-- Zookeeper：可选，因服务有本地缓存降级
-- Redis：业务运行实际上强依赖；分流、事件、统计、MAB、身份绑定都依赖 Redis
+- Zookeeper：可选，但配置监听和分层配置仍依赖它
+- Redis：业务运行仍强依赖；分流缓存、在线投影、MAB、身份绑定都依赖 Redis
 - 通义 API：仅 AI 相关能力依赖，不影响基础实验管理
 
 ## 8. 代码级运行风险
 
 - 实验配置当前不再以内存方式持久保留，数据库是唯一持久化来源
+- `assignment / exposure / event` 当前已切换为数据库正式事实源
 - `RULE` 分流策略已是最小可用规则引擎，但暂不支持复杂布尔表达式和数值比较
 - 统计、对比、贝叶斯分析、报告、预测完成时间等分析出口，当前都统一以 `traffic.allocation` 首组作为基准组来源
 - 贝叶斯分析的胜率计算当前已跟随主指标定义的分子/分母口径，若主指标是曝光分母，则会直接使用 exposure 数据而不是 `VIEW`

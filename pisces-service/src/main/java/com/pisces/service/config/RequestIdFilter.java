@@ -1,4 +1,4 @@
-package com.pisces.api.logging;
+package com.pisces.service.config;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -42,4 +42,3 @@ public class RequestIdFilter extends OncePerRequestFilter {
         }
     }
 }
-

@@ -7,16 +7,16 @@ import java.time.LocalDateTime;
 import java.util.Map;
 
 /**
- * 实验曝光事实
+ * 实验事件事实
  */
 @Data
-public class ExperimentExposure implements Serializable {
+public class ExperimentEventFact implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * 曝光ID
+     * 事件事实ID
      */
-    private String exposureId;
+    private String eventId;
 
     /**
      * 实验ID
@@ -34,22 +34,27 @@ public class ExperimentExposure implements Serializable {
     private String groupId;
 
     /**
-     * 曝光场景
+     * 事件类型
      */
-    private String scene;
+    private String eventType;
 
     /**
-     * 幂等键
+     * 事件名称
      */
-    private String idempotencyKey;
+    private String eventName;
 
     /**
-     * 曝光时间
+     * 客户端幂等事件ID
      */
-    private LocalDateTime exposedAt;
+    private String clientEventId;
 
     /**
-     * 曝光属性
+     * 事件属性
      */
     private Map<String, Object> properties;
+
+    /**
+     * 事件时间
+     */
+    private LocalDateTime eventTime;
 }

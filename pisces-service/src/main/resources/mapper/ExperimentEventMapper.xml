@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.ExperimentEventMapper">
+
+    <resultMap id="experimentEventEntityResultMap" type="com.pisces.service.entity.ExperimentEventEntity">
+        <id column="id" property="id"/>
+        <result column="event_id" property="eventId"/>
+        <result column="experiment_id" property="experimentId"/>
+        <result column="visitor_id" property="visitorId"/>
+        <result column="group_id" property="groupId"/>
+        <result column="event_type" property="eventType"/>
+        <result column="event_name" property="eventName"/>
+        <result column="client_event_id" property="clientEventId"/>
+        <result column="properties_json" property="propertiesJson"/>
+        <result column="event_time" property="eventTime"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.pisces.service.entity.ExperimentEventEntity">
+        INSERT INTO pisces_experiment_event
+            (event_id, experiment_id, visitor_id, group_id, event_type, event_name, client_event_id, properties_json, event_time)
+        VALUES
+            (#{entity.eventId}, #{entity.experimentId}, #{entity.visitorId}, #{entity.groupId}, #{entity.eventType},
+             #{entity.eventName}, #{entity.clientEventId}, #{entity.propertiesJson}, #{entity.eventTime})
+    </insert>
+
+    <select id="countByExperimentIdAndGroupIdAndEventType" resultType="long">
+        SELECT COUNT(1)
+        FROM pisces_experiment_event
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+          AND event_type = #{eventType}
+    </select>
+
+    <select id="countDistinctVisitorByExperimentIdAndGroupId" resultType="long">
+        SELECT COUNT(DISTINCT visitor_id)
+        FROM pisces_experiment_event
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+    </select>
+
+    <select id="selectByExperimentIdAndGroupId" resultMap="experimentEventEntityResultMap">
+        SELECT id, event_id, experiment_id, visitor_id, group_id, event_type, event_name, client_event_id,
+               properties_json, event_time, created_at
+        FROM pisces_experiment_event
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+        ORDER BY event_time ASC, id ASC
+    </select>
+
+    <select id="selectByExperimentIdAndGroupIdInTimeRange" resultMap="experimentEventEntityResultMap">
+        SELECT id, event_id, experiment_id, visitor_id, group_id, event_type, event_name, client_event_id,
+               properties_json, event_time, created_at
+        FROM pisces_experiment_event
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+          AND event_time <![CDATA[>=]]> #{startTime}
+          AND event_time <![CDATA[<=]]> #{endTime}
+        ORDER BY event_time ASC, id ASC
+    </select>
+</mapper>

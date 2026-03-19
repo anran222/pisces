@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS pisces_experiment_assignment (
+    id BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    assignment_id VARCHAR(64) NOT NULL COMMENT '分流事实ID',
+    experiment_id VARCHAR(64) NOT NULL COMMENT '实验ID',
+    visitor_id VARCHAR(128) NOT NULL COMMENT '访客ID',
+    group_id VARCHAR(64) NOT NULL COMMENT '实验组ID',
+    strategy VARCHAR(64) DEFAULT NULL COMMENT '分流策略',
+    hash_key VARCHAR(64) DEFAULT NULL COMMENT '哈希字段',
+    config_version BIGINT NOT NULL DEFAULT 1 COMMENT '配置版本',
+    attributes_json LONGTEXT DEFAULT NULL COMMENT '分流属性JSON',
+    idempotency_key VARCHAR(255) NOT NULL COMMENT '幂等键',
+    assigned_at DATETIME NOT NULL COMMENT '分流时间',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_assignment_id (assignment_id),
+    UNIQUE KEY uk_assignment_idempotency (idempotency_key),
+    KEY idx_assignment_exp_group (experiment_id, group_id),
+    KEY idx_assignment_exp_visitor (experiment_id, visitor_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pisces实验分流事实表';
