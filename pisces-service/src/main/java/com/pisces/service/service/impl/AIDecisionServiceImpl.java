@@ -5,6 +5,7 @@ import com.pisces.common.response.AIDesignResponse;
 import com.pisces.common.response.AIDiagnosisResponse;
 import com.pisces.common.response.AIGraduationDecisionResponse;
 import com.pisces.service.ai.DecisionType;
+import com.pisces.service.ai.ExperimentDecisionContextBuilder;
 import com.pisces.service.ai.GuardrailStatus;
 import com.pisces.service.service.AIDecisionService;
 import org.springframework.stereotype.Service;
@@ -21,6 +22,12 @@ import java.util.Collections;
 public class AIDecisionServiceImpl implements AIDecisionService {
 
     private static final String SUMMARY_PREFIX = "AI";
+
+    private final ExperimentDecisionContextBuilder experimentDecisionContextBuilder;
+
+    public AIDecisionServiceImpl(ExperimentDecisionContextBuilder experimentDecisionContextBuilder) {
+        this.experimentDecisionContextBuilder = experimentDecisionContextBuilder;
+    }
 
     @Override
     public AIDesignResponse designExperiment(AIDesignRequest request) {
