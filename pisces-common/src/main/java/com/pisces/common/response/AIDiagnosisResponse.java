@@ -41,5 +41,24 @@ public class AIDiagnosisResponse {
     /**
      * 推荐动作
      */
-    private List<String> recommendedActions;
+    private List<RecommendedAction> recommendedActions;
+
+    @Data
+    public static class RecommendedAction {
+
+        /**
+         * 动作标题
+         */
+        private String title;
+
+        /**
+         * 动作说明
+         */
+        private String action;
+
+        /**
+         * 执行模式
+         */
+        private String executionMode;
+    }
 }

@@ -47,6 +47,11 @@ public class AIDecisionServiceImpl implements AIDecisionService {
     private static final double DEFAULT_TRAFFIC_RATIO = 0.5D;
     private static final double DEFAULT_TOTAL_TRAFFIC = 1.0D;
     private static final String DESIGN_NAME_SUFFIX = "实验";
+    private static final String ACTION_EXECUTION_MODE_MANUAL_ONLY = "MANUAL_ONLY";
+    private static final String BLOCKED_ACTION_TITLE = "先修复数据质量问题";
+    private static final String BLOCKED_ACTION_DESCRIPTION = "优先处理 SRM、样本量或其他阻断问题，再重新评估实验";
+    private static final String PASS_ACTION_TITLE = "继续观察实验";
+    private static final String PASS_ACTION_DESCRIPTION = "保持当前实验运行，结合业务节奏复核关键指标变化";
 
     private final ExperimentDecisionContextBuilder experimentDecisionContextBuilder;
     private final PromptTemplateBuilder promptTemplateBuilder;
@@ -88,7 +93,7 @@ public class AIDecisionServiceImpl implements AIDecisionService {
         payload.put("confidence", DEFAULT_CONFIDENCE);
         payload.put("riskFlags", decisionGuardrailEvaluator.collectRiskFlags(context));
         payload.put("guardrailStatus", guardrailStatus.getCode());
-        payload.put("recommendedActions", List.of());
+        payload.put("recommendedActions", createDiagnosisActions(guardrailStatus));
         return aiDecisionJsonParser.parseDiagnosis(jsonUtil.toJson(payload));
     }
 
@@ -152,5 +157,18 @@ public class AIDecisionServiceImpl implements AIDecisionService {
         allocation.setGroup(groupId);
         allocation.setRatio(ratio);
         return allocation;
+    }
+
+    private List<AIDiagnosisResponse.RecommendedAction> createDiagnosisActions(GuardrailStatus guardrailStatus) {
+        AIDiagnosisResponse.RecommendedAction action = new AIDiagnosisResponse.RecommendedAction();
+        action.setExecutionMode(ACTION_EXECUTION_MODE_MANUAL_ONLY);
+        if (GuardrailStatus.BLOCKED.equals(guardrailStatus)) {
+            action.setTitle(BLOCKED_ACTION_TITLE);
+            action.setAction(BLOCKED_ACTION_DESCRIPTION);
+            return List.of(action);
+        }
+        action.setTitle(PASS_ACTION_TITLE);
+        action.setAction(PASS_ACTION_DESCRIPTION);
+        return List.of(action);
     }
 }
