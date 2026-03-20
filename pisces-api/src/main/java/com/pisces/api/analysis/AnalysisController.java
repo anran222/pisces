@@ -2,10 +2,13 @@ package com.pisces.api.analysis;
 
 import com.pisces.common.model.ExperimentReportSnapshot;
 import com.pisces.common.model.Statistics;
+import com.pisces.common.request.AIDesignRequest;
+import com.pisces.common.response.AIDesignResponse;
 import com.pisces.common.response.BaseResponse;
 import com.pisces.service.annotation.NoTokenRequired;
+import com.pisces.service.service.AIDecisionService;
 import com.pisces.service.service.AnalysisService;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -17,10 +20,11 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/analysis")
+@RequiredArgsConstructor
 public class AnalysisController {
-    
-    @Autowired
-    private AnalysisService analysisService;
+
+    private final AnalysisService analysisService;
+    private final AIDecisionService aiDecisionService;
     
     /**
      * 获取实验统计数据
@@ -246,6 +250,19 @@ public class AnalysisController {
         Map<String, Object> design = analysisService.getAIExperimentDesign(
                 businessScenario, targetMetric, constraints);
         return BaseResponse.of(design);
+    }
+
+    /**
+     * AI实验设计建议 V2
+     * AI赋能：返回结构化实验设计结论，供后续实验草案映射使用
+     *
+     * @param request AI实验设计结构化请求
+     * @return AI结构化实验设计结果
+     */
+    @PostMapping("/experiment/ai-design/v2")
+    @NoTokenRequired
+    public BaseResponse<AIDesignResponse> getAIExperimentDesignV2(@RequestBody AIDesignRequest request) {
+        return BaseResponse.of(aiDecisionService.designExperiment(request));
     }
     
     /**
