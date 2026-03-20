@@ -77,6 +77,11 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
     private JsonUtil jsonUtil;
     
     private final Random random = new Random();
+
+    private enum VariantType {
+        TEXT,
+        IMAGE
+    }
     
     @Override
     public List<String> generateTextVariants(String prompt, int count) {
@@ -423,8 +428,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
         return urls;
     }
     
-    @Override
-    public List<String> generateImageVariantsFromImage(String imageBase64, String prompt, int count) {
+    private List<String> generateImageVariantsFromImage(String imageBase64, String prompt, int count) {
         log.info("基于上传图片生成变体: prompt={}, count={}", prompt, count);
         ensureTongYiAvailable();
         
@@ -465,8 +469,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
         }
     }
     
-    @Override
-    public String editImage(String imageBase64, String maskBase64, String prompt) {
+    private String editImage(String imageBase64, String maskBase64, String prompt) {
         log.info("图片局部编辑: prompt={}", prompt);
         ensureTongYiAvailable();
         
@@ -511,8 +514,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
         throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义图片编辑未返回结果");
     }
     
-    @Override
-    public String transferImageStyle(String imageBase64, String style) {
+    private String transferImageStyle(String imageBase64, String style) {
         log.info("图片风格转换: style={}", style);
         ensureTongYiAvailable();
 
@@ -896,8 +898,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
     private record PreparedImageInput(String input, Path tempFile) {
     }
     
-    @Override
-    public List<String> filterVariants(List<String> variants, VariantType variantType) {
+    private List<String> filterVariants(List<String> variants, VariantType variantType) {
         log.info("筛选变体: variantType={}, count={}", variantType, variants.size());
         
         // 一级筛选：规则过滤（合规规则、业务规则、技术规则）
@@ -911,8 +912,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
         return filteredByAlgorithm;
     }
     
-    @Override
-    public Map<String, Object> evaluateVariant(String variant, VariantType variantType) {
+    private Map<String, Object> evaluateVariant(String variant, VariantType variantType) {
         log.debug("评估变体质量: variantType={}, variant={}", variantType, variant);
         
         Map<String, Object> result = new HashMap<>();
@@ -1118,8 +1118,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
         return true;
     }
     
-    @Override
-    public Map<String, Object> generateCompleteTextExperiment(String prompt, int generateCount, int finalCount) {
+    private Map<String, Object> generateCompleteTextExperiment(String prompt, int generateCount, int finalCount) {
         log.info("开始生成完整文本实验体: prompt={}, generateCount={}, finalCount={}", prompt, generateCount, finalCount);
         
         Map<String, Object> result = new HashMap<>();
@@ -1224,8 +1223,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
         return result;
     }
     
-    @Override
-    public Map<String, Object> generateCompleteExperimentFlow(String prompt, int generateCount, int finalCount,
+    private Map<String, Object> generateCompleteExperimentFlow(String prompt, int generateCount, int finalCount,
                                                                int visitorCount, int daysAgo) {
         log.info("开始完整实验流程演示: prompt={}, generateCount={}, finalCount={}, visitorCount={}, daysAgo={}",
                 prompt, generateCount, finalCount, visitorCount, daysAgo);

@@ -1,7 +1,6 @@
 package com.pisces.service.service;
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * 变体生成服务接口
@@ -24,76 +23,4 @@ public interface VariantGenerationService {
      * @return 生成的图像URL列表
      */
     List<String> generateImageVariants(String prompt, int count);
-    
-    /**
-     * 智能筛选变体（二级筛选机制）
-     * @param variants 待筛选的变体列表
-     * @param variantType 变体类型（TEXT/IMAGE）
-     * @return 筛选后的高潜力变体列表
-     */
-    List<String> filterVariants(List<String> variants, VariantType variantType);
-    
-    /**
-     * 评估变体质量（效果预评估）
-     * @param variant 变体内容
-     * @param variantType 变体类型
-     * @return 质量评分（0.0-1.0）和评估详情
-     */
-    Map<String, Object> evaluateVariant(String variant, VariantType variantType);
-    
-    /**
-     * 完整文本实验体生成演示（生成+筛选+评估）
-     * @param prompt 生成提示词
-     * @param generateCount 初始生成数量
-     * @param finalCount 最终保留数量
-     * @return 完整的实验体结果，包含变体列表、评估结果等
-     */
-    Map<String, Object> generateCompleteTextExperiment(String prompt, int generateCount, int finalCount);
-    
-    /**
-     * 完整实验流程演示（生成变体+创建实验+生成数据+分析）
-     * 以二手手机价格为例，完整演示从变体生成到实验分析的整个流程
-     * @param prompt 生成提示词（如：为二手手机价格优化写文案）
-     * @param generateCount 初始生成变体数量
-     * @param finalCount 最终保留变体数量（作为实验组）
-     * @param visitorCount 每个实验组的访客数量
-     * @param daysAgo 实验开始时间（几天前）
-     * @return 完整的实验流程结果，包含实验ID、变体信息、分析结果等
-     */
-    Map<String, Object> generateCompleteExperimentFlow(String prompt, int generateCount, int finalCount, 
-                                                        int visitorCount, int daysAgo);
-    
-    /**
-     * 基于上传图片生成变体（图生图）
-     * @param imageBase64 原始图片的Base64编码
-     * @param prompt 修改提示词（描述想要的变化）
-     * @param count 生成数量
-     * @return 生成的图像URL列表
-     */
-    List<String> generateImageVariantsFromImage(String imageBase64, String prompt, int count);
-    
-    /**
-     * 基于上传图片进行局部编辑
-     * @param imageBase64 原始图片的Base64编码
-     * @param maskBase64 遮罩图片的Base64编码（白色区域为要编辑的部分，可选）
-     * @param prompt 编辑提示词
-     * @return 编辑后的图像URL
-     */
-    String editImage(String imageBase64, String maskBase64, String prompt);
-    
-    /**
-     * 图片风格转换
-     * @param imageBase64 原始图片的Base64编码
-     * @param style 目标风格（如：cartoon, oil-painting, sketch, anime等）
-     * @return 转换后的图像URL
-     */
-    String transferImageStyle(String imageBase64, String style);
-    
-    /**
-     * 变体类型枚举
-     */
-    enum VariantType {
-        TEXT,   // 文本类变体
-        IMAGE   // 图像类变体
-    }
 }
