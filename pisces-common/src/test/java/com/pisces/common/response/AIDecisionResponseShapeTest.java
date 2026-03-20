@@ -49,19 +49,32 @@ public class AIDecisionResponseShapeTest {
     @Test
     void shouldExposeAIDiagnosisResponseFields() {
         AIDiagnosisResponse response = new AIDiagnosisResponse();
+        AIDiagnosisResponse.RecommendedAction firstAction = new AIDiagnosisResponse.RecommendedAction();
+        firstAction.setTitle("继续观察");
+        firstAction.setAction("继续观察实验核心指标变化");
+        firstAction.setExecutionMode("MANUAL_ONLY");
+        AIDiagnosisResponse.RecommendedAction secondAction = new AIDiagnosisResponse.RecommendedAction();
+        secondAction.setTitle("补充数据");
+        secondAction.setAction("补充样本后重新判断");
+        secondAction.setExecutionMode("MANUAL_ONLY");
         response.setDecisionType("DIAGNOSIS");
         response.setSummary("当前实验整体健康");
         response.setConfidence(0.88);
         response.setRiskFlags(List.of("曝光数据延迟"));
         response.setGuardrailStatus("PASS");
-        response.setRecommendedActions(List.of("继续观察", "补充数据"));
+        response.setRecommendedActions(List.of(firstAction, secondAction));
 
         assertThat(response.getDecisionType()).isEqualTo("DIAGNOSIS");
         assertThat(response.getSummary()).isEqualTo("当前实验整体健康");
         assertThat(response.getConfidence()).isEqualTo(0.88);
         assertThat(response.getRiskFlags()).containsExactly("曝光数据延迟");
         assertThat(response.getGuardrailStatus()).isEqualTo("PASS");
-        assertThat(response.getRecommendedActions()).containsExactly("继续观察", "补充数据");
+        assertThat(response.getRecommendedActions())
+                .extracting(AIDiagnosisResponse.RecommendedAction::getTitle)
+                .containsExactly("继续观察", "补充数据");
+        assertThat(response.getRecommendedActions())
+                .extracting(AIDiagnosisResponse.RecommendedAction::getExecutionMode)
+                .containsExactly("MANUAL_ONLY", "MANUAL_ONLY");
     }
 
     @Test

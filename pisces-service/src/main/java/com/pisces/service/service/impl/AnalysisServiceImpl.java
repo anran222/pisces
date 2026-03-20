@@ -10,10 +10,12 @@ import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.common.model.ExperimentReportSnapshot;
 import com.pisces.common.model.MetricDefinition;
 import com.pisces.common.model.Statistics;
+import com.pisces.common.response.AIGraduationDecisionResponse;
 import com.pisces.common.enums.ResponseCode;
 import com.pisces.service.config.TongYiConfig;
 import com.pisces.service.exception.BusinessException;
 import com.pisces.service.repository.ExperimentReportSnapshotRepository;
+import com.pisces.service.service.AIDecisionService;
 import com.pisces.service.service.AnalysisService;
 import com.pisces.service.util.StatisticalUtils;
 import com.pisces.service.service.BayesianAnalysisService;
@@ -22,6 +24,7 @@ import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.DataService;
 import com.pisces.service.service.HTEAnalysisService;
 import lombok.extern.slf4j.Slf4j;
+import jakarta.annotation.Resource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -70,6 +73,9 @@ public class AnalysisServiceImpl implements AnalysisService {
 
     @Autowired
     private ExperimentReportSnapshotRepository experimentReportSnapshotRepository;
+
+    @Resource
+    private AIDecisionService aiDecisionService;
     
     /**
      * 获取实验统计数据
@@ -2070,237 +2076,22 @@ public class AnalysisServiceImpl implements AnalysisService {
     
     @Override
     public Map<String, Object> autoGraduateDecision(String experimentId) {
+        AIGraduationDecisionResponse response = aiDecisionService.decideGraduation(experimentId);
+        return buildAutoGraduateBridgeResult(experimentId, response);
+    }
+
+    private Map<String, Object> buildAutoGraduateBridgeResult(String experimentId,
+                                                              AIGraduationDecisionResponse response) {
         Map<String, Object> result = new HashMap<>();
         result.put("experimentId", experimentId);
-        
-        try {
-            ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
-            if (metadata == null) {
-                result.put("error", "实验不存在");
-                result.put("canGraduate", false);
-                return result;
-            }
-            
-            Statistics statistics = getStatistics(experimentId);
-            Map<String, Object> bayesianAnalysis = getBayesianAnalysis(experimentId);
-            
-            // 评估是否可以毕业
-            GraduationDecision decision = evaluateGraduationReadiness(metadata, statistics, bayesianAnalysis);
-            result.put("dataQualityCheck", statistics != null ? statistics.getDataQualityCheck() : null);
-            
-            result.put("canGraduate", decision.canGraduate);
-            result.put("recommendedVariant", decision.recommendedVariant);
-            result.put("confidence", decision.confidence);
-            result.put("riskLevel", decision.riskLevel);
-            result.put("reasons", decision.reasons);
-            result.put("warnings", decision.warnings);
-            
-            // 如果可以毕业，生成毕业计划
-            if (decision.canGraduate) {
-                Map<String, Object> graduationPlan = generateGraduationPlan(decision);
-                result.put("graduationPlan", graduationPlan);
-            } else {
-                // 生成继续实验的建议
-                Map<String, Object> continueAdvice = generateContinueAdvice(decision);
-                result.put("continueAdvice", continueAdvice);
-            }
-            
-            result.put("evaluatedAt", LocalDateTime.now());
-            result.put("success", true);
-            
-        } catch (Exception e) {
-            log.error("自动毕业决策失败", e);
-            result.put("error", "决策失败: " + e.getMessage());
-            result.put("canGraduate", false);
-            result.put("success", false);
-        }
-        
+        result.put("decisionType", response.getDecisionType());
+        result.put("guardrailStatus", response.getGuardrailStatus());
+        result.put("decision", response.getDecision());
+        result.put("confidence", response.getConfidence());
+        result.put("riskFlags", response.getRiskFlags());
+        result.put("summary", response.getSummary());
+        result.put("success", true);
         return result;
-    }
-    
-    /**
-     * 毕业决策结果
-     */
-    private static class GraduationDecision {
-        boolean canGraduate;
-        String recommendedVariant;
-        double confidence;
-        String riskLevel; // LOW, MEDIUM, HIGH
-        List<String> reasons;
-        List<String> warnings;
-        
-        GraduationDecision() {
-            this.reasons = new ArrayList<>();
-            this.warnings = new ArrayList<>();
-        }
-    }
-    
-    /**
-     * 评估是否可以毕业
-     */
-    private GraduationDecision evaluateGraduationReadiness(ExperimentMetadata metadata,
-                                                            Statistics statistics,
-                                                            Map<String, Object> bayesianAnalysis) {
-        GraduationDecision decision = new GraduationDecision();
-        Statistics.DataQualityCheck dataQualityCheck = statistics != null ? statistics.getDataQualityCheck() : null;
-        if (dataQualityCheck != null && Boolean.FALSE.equals(dataQualityCheck.getAnalysisReady())) {
-            decision.canGraduate = false;
-            decision.riskLevel = "HIGH";
-            if (dataQualityCheck.getBlockingIssues() != null) {
-                decision.reasons.addAll(dataQualityCheck.getBlockingIssues());
-            }
-            if (dataQualityCheck.getWarnings() != null) {
-                decision.warnings.addAll(dataQualityCheck.getWarnings());
-            }
-            decision.reasons.add("数据质量门禁未通过，当前不允许自动毕业");
-            return decision;
-        }
-        if (statistics != null && statistics.getSummary() != null
-                && statistics.getSummary().getBreachedGuardrails() != null
-                && !statistics.getSummary().getBreachedGuardrails().isEmpty()) {
-            decision.canGraduate = false;
-            decision.riskLevel = "HIGH";
-            decision.reasons.addAll(statistics.getSummary().getBreachedGuardrails());
-            decision.reasons.add("护栏指标未通过，当前不允许自动毕业");
-            return decision;
-        }
-        
-        // 检查样本量
-        long totalVisitors = 0;
-        if (statistics != null && statistics.getSummary() != null) {
-            Long visitors = statistics.getSummary().getTotalVisitors();
-            totalVisitors = visitors != null ? visitors : 0;
-        }
-        
-        if (totalVisitors < 100) {
-            decision.canGraduate = false;
-            decision.riskLevel = "HIGH";
-            decision.reasons.add("样本量严重不足（< 100），无法做出可靠决策");
-            return decision;
-        }
-        
-        if (totalVisitors < 1000) {
-            decision.warnings.add("样本量较小（< 1000），结果可能不够稳定");
-        }
-        
-        // 检查贝叶斯胜率
-        String bestVariant = null;
-        double bestWinRate = 0.0;
-        
-        if (bayesianAnalysis != null && bayesianAnalysis.containsKey("winRates")) {
-            @SuppressWarnings("unchecked")
-            Map<String, Double> winRates = (Map<String, Double>) bayesianAnalysis.get("winRates");
-            for (Map.Entry<String, Double> entry : winRates.entrySet()) {
-                if (entry.getValue() > bestWinRate) {
-                    bestWinRate = entry.getValue();
-                    bestVariant = entry.getKey();
-                }
-            }
-        }
-        
-        decision.recommendedVariant = bestVariant;
-        decision.confidence = bestWinRate;
-        
-        // 基于胜率做决策
-        if (bestWinRate >= 0.95) {
-            decision.canGraduate = true;
-            decision.riskLevel = "LOW";
-            decision.reasons.add("胜率达到95%，统计显著性充分");
-            decision.reasons.add("变体 " + bestVariant + " 表现显著优于其他组");
-        } else if (bestWinRate >= 0.90) {
-            decision.canGraduate = true;
-            decision.riskLevel = "MEDIUM";
-            decision.reasons.add("胜率达到90%，接近显著性阈值");
-            decision.warnings.add("建议灰度发布，观察一周后全量");
-        } else if (bestWinRate >= 0.80) {
-            decision.canGraduate = false;
-            decision.riskLevel = "MEDIUM";
-            decision.reasons.add("胜率为" + String.format("%.1f%%", bestWinRate * 100) + "，尚未达到显著性阈值");
-            decision.reasons.add("建议继续收集数据");
-        } else {
-            decision.canGraduate = false;
-            decision.riskLevel = "HIGH";
-            decision.reasons.add("各变体之间差异不明显，需要更多数据");
-        }
-        
-        // 检查实验运行时间
-        LocalDateTime startTime = metadata.getExperiment().getStartTime();
-        if (startTime != null) {
-            long daysSinceStart = ChronoUnit.DAYS.between(startTime, LocalDateTime.now());
-            if (daysSinceStart < 7) {
-                decision.warnings.add("实验运行不足7天，可能存在周期性偏差");
-            }
-        }
-        
-        return decision;
-    }
-    
-    /**
-     * 生成毕业计划
-     */
-    private Map<String, Object> generateGraduationPlan(GraduationDecision decision) {
-        Map<String, Object> plan = new HashMap<>();
-        
-        plan.put("recommendedVariant", decision.recommendedVariant);
-        plan.put("confidence", decision.confidence);
-        
-        List<Map<String, Object>> steps = new ArrayList<>();
-        
-        if ("LOW".equals(decision.riskLevel)) {
-            Map<String, Object> step1 = new HashMap<>();
-            step1.put("step", 1);
-            step1.put("action", "直接全量发布");
-            step1.put("description", "将变体 " + decision.recommendedVariant + " 设置为100%流量");
-            steps.add(step1);
-        } else {
-            Map<String, Object> step1 = new HashMap<>();
-            step1.put("step", 1);
-            step1.put("action", "灰度发布50%");
-            step1.put("description", "先将变体 " + decision.recommendedVariant + " 流量提升至50%");
-            steps.add(step1);
-            
-            Map<String, Object> step2 = new HashMap<>();
-            step2.put("step", 2);
-            step2.put("action", "观察3天");
-            step2.put("description", "监控关键指标是否稳定");
-            steps.add(step2);
-            
-            Map<String, Object> step3 = new HashMap<>();
-            step3.put("step", 3);
-            step3.put("action", "全量发布100%");
-            step3.put("description", "确认无异常后全量发布");
-            steps.add(step3);
-        }
-        
-        plan.put("steps", steps);
-        plan.put("estimatedImpact", "预计转化率提升 " + 
-                String.format("%.1f%%", (decision.confidence - 0.5) * 20));
-        
-        return plan;
-    }
-    
-    /**
-     * 生成继续实验的建议
-     */
-    private Map<String, Object> generateContinueAdvice(GraduationDecision decision) {
-        Map<String, Object> advice = new HashMap<>();
-        
-        advice.put("currentBestVariant", decision.recommendedVariant);
-        advice.put("currentConfidence", decision.confidence);
-        
-        List<String> recommendations = new ArrayList<>();
-        recommendations.add("继续收集数据，目标样本量≥1000/组");
-        recommendations.add("确保实验运行至少覆盖完整业务周期（7天以上）");
-        
-        if (decision.confidence >= 0.70) {
-            recommendations.add("考虑增加领先变体的流量比例以加速实验");
-        }
-        
-        advice.put("recommendations", recommendations);
-        advice.put("estimatedTimeToDecision", "预计还需 " + 
-                Math.max(3, (int)((0.95 - decision.confidence) * 30)) + " 天");
-        
-        return advice;
     }
     
     @Override

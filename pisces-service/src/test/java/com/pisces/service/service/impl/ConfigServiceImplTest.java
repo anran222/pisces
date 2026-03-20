@@ -1,8 +1,10 @@
 package com.pisces.service.service.impl;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pisces.common.model.Experiment;
 import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.service.repository.ExperimentConfigRepository;
+import com.pisces.service.util.JsonUtil;
 import com.pisces.service.zookeeper.ZookeeperClient;
 import com.pisces.service.zookeeper.ZookeeperConfig;
 import org.junit.jupiter.api.Test;
@@ -76,6 +78,7 @@ class ConfigServiceImplTest {
         private final boolean connected;
 
         private StubZookeeperClient(boolean connected) {
+            super(new ZookeeperConfig(), new JsonUtil(new ObjectMapper()));
             this.connected = connected;
         }
 
