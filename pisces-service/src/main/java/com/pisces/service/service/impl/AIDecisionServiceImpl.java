@@ -5,6 +5,7 @@ import com.pisces.common.model.ExperimentDecisionContext;
 import com.pisces.common.response.AIDesignResponse;
 import com.pisces.common.response.AIDiagnosisResponse;
 import com.pisces.common.response.AIGraduationDecisionResponse;
+import com.pisces.common.request.ExperimentCreateRequest;
 import com.pisces.service.ai.AIDecisionJsonParser;
 import com.pisces.service.ai.DecisionGuardrailEvaluator;
 import com.pisces.service.ai.DecisionType;
@@ -38,6 +39,14 @@ public class AIDecisionServiceImpl implements AIDecisionService {
     private static final String DESIGN_SUMMARY_PREFIX = "AI实验设计草案: ";
     private static final String DIAGNOSIS_SUMMARY_PREFIX = "AI实验诊断草案: ";
     private static final String GRADUATION_SUMMARY_PREFIX = "AI毕业决策草案: ";
+    private static final String DEFAULT_BASELINE_GROUP_ID = "control";
+    private static final String DEFAULT_BASELINE_GROUP_NAME = "对照组";
+    private static final String DEFAULT_VARIANT_GROUP_ID = "variant_a";
+    private static final String DEFAULT_VARIANT_GROUP_NAME = "实验组A";
+    private static final String DEFAULT_TRAFFIC_STRATEGY = "HASH";
+    private static final double DEFAULT_TRAFFIC_RATIO = 0.5D;
+    private static final double DEFAULT_TOTAL_TRAFFIC = 1.0D;
+    private static final String DESIGN_NAME_SUFFIX = "实验";
 
     private final ExperimentDecisionContextBuilder experimentDecisionContextBuilder;
     private final PromptTemplateBuilder promptTemplateBuilder;
@@ -52,12 +61,14 @@ public class AIDecisionServiceImpl implements AIDecisionService {
             throw new IllegalStateException("AI设计Prompt不能为空");
         }
         String businessScenario = request == null ? null : request.getBusinessScenario();
+        ExperimentCreateRequest experimentDraft = createExperimentDraft(request);
         String payload = jsonUtil.toJson(Map.of(
                 "decisionType", DecisionType.DESIGN.getCode(),
                 "summary", DESIGN_SUMMARY_PREFIX + defaultValue(businessScenario, DEFAULT_DESIGN_SCENARIO),
                 "confidence", DEFAULT_CONFIDENCE,
                 "riskFlags", List.of(),
-                "guardrailStatus", GuardrailStatus.PASS.getCode()));
+                "guardrailStatus", GuardrailStatus.PASS.getCode(),
+                "experimentDraft", experimentDraft));
         return aiDecisionJsonParser.parseDesign(payload);
     }
 
@@ -103,5 +114,43 @@ public class AIDecisionServiceImpl implements AIDecisionService {
 
     private String defaultValue(String value, String defaultValue) {
         return StringUtils.hasText(value) ? value.trim() : defaultValue;
+    }
+
+    private ExperimentCreateRequest createExperimentDraft(AIDesignRequest request) {
+        ExperimentCreateRequest draft = new ExperimentCreateRequest();
+        String businessScenario = request == null ? null : request.getBusinessScenario();
+        String targetMetric = request == null ? null : request.getTargetMetric();
+        draft.setName(defaultValue(businessScenario, DEFAULT_DESIGN_SCENARIO) + DESIGN_NAME_SUFFIX);
+        draft.setDescription("目标指标: " + defaultValue(targetMetric, "待补充"));
+        draft.setGroups(List.of(
+                createGroup(DEFAULT_BASELINE_GROUP_ID, DEFAULT_BASELINE_GROUP_NAME, DEFAULT_TRAFFIC_RATIO),
+                createGroup(DEFAULT_VARIANT_GROUP_ID, DEFAULT_VARIANT_GROUP_NAME, DEFAULT_TRAFFIC_RATIO)));
+        draft.setTraffic(createTrafficConfig());
+        return draft;
+    }
+
+    private ExperimentCreateRequest.GroupConfig createGroup(String id, String name, double trafficRatio) {
+        ExperimentCreateRequest.GroupConfig groupConfig = new ExperimentCreateRequest.GroupConfig();
+        groupConfig.setId(id);
+        groupConfig.setName(name);
+        groupConfig.setTrafficRatio(trafficRatio);
+        return groupConfig;
+    }
+
+    private ExperimentCreateRequest.TrafficConfigRequest createTrafficConfig() {
+        ExperimentCreateRequest.TrafficConfigRequest traffic = new ExperimentCreateRequest.TrafficConfigRequest();
+        traffic.setTotalTraffic(DEFAULT_TOTAL_TRAFFIC);
+        traffic.setStrategy(DEFAULT_TRAFFIC_STRATEGY);
+        traffic.setAllocation(List.of(
+                createAllocation(DEFAULT_BASELINE_GROUP_ID, DEFAULT_TRAFFIC_RATIO),
+                createAllocation(DEFAULT_VARIANT_GROUP_ID, DEFAULT_TRAFFIC_RATIO)));
+        return traffic;
+    }
+
+    private ExperimentCreateRequest.GroupAllocationRequest createAllocation(String groupId, double ratio) {
+        ExperimentCreateRequest.GroupAllocationRequest allocation = new ExperimentCreateRequest.GroupAllocationRequest();
+        allocation.setGroup(groupId);
+        allocation.setRatio(ratio);
+        return allocation;
     }
 }

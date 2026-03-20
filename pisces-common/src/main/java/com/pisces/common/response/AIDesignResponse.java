@@ -1,5 +1,6 @@
 package com.pisces.common.response;
 
+import com.pisces.common.request.ExperimentCreateRequest;
 import lombok.Data;
 
 import java.util.List;
@@ -37,4 +38,9 @@ public class AIDesignResponse {
      * 护栏状态
      */
     private String guardrailStatus;
+
+    /**
+     * 实验草案骨架
+     */
+    private ExperimentCreateRequest experimentDraft;
 }
