@@ -41,5 +41,5 @@ docs/
 
 ### claude code ###
 .claude/
-
+.worktrees/
 
