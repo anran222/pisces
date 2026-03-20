@@ -3,6 +3,7 @@ package com.pisces.api.analysis;
 import com.pisces.common.model.ExperimentReportSnapshot;
 import com.pisces.common.model.Statistics;
 import com.pisces.common.response.AIDiagnosisResponse;
+import com.pisces.common.response.AIGraduationDecisionResponse;
 import com.pisces.common.request.AIDesignRequest;
 import com.pisces.common.response.AIDesignResponse;
 import com.pisces.common.response.BaseResponse;
@@ -244,6 +245,19 @@ public class AnalysisController {
     @NoTokenRequired
     public BaseResponse<AIDiagnosisResponse> getAIDiagnosis(@PathVariable String id) {
         return BaseResponse.of(aiDecisionService.diagnoseExperiment(id));
+    }
+
+    /**
+     * AI毕业决策
+     * AI赋能：基于实验统计与数据质量事实返回结构化毕业决策结果
+     *
+     * @param id 实验ID
+     * @return AI结构化毕业决策结果
+     */
+    @GetMapping("/experiment/{id}/ai-graduation-decision")
+    @NoTokenRequired
+    public BaseResponse<AIGraduationDecisionResponse> getAIGraduationDecision(@PathVariable String id) {
+        return BaseResponse.of(aiDecisionService.decideGraduation(id));
     }
     
     /**
