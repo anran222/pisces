@@ -47,6 +47,13 @@ Pisces是一个企业级A/B测试实验系统，通过AI技术赋能，实现从
 - **智能筛选机制**：二级筛选（规则过滤+算法预评估）确保变体质量
 - **效果预评估**：使用预测模型评估变体的优化潜力
 
+#### 6. 结构化AI决策引擎
+- **实验前设计**：输出结构化实验设计建议和 `experimentDraft` 草案骨架
+- **实验中诊断**：输出结构化诊断结果和人工执行建议
+- **实验后毕业决策**：输出结构化毕业建议与护栏状态
+- **统一门禁**：SRM、样本量不足、数据质量阻断问题会统一降级为 `BLOCKED`
+- **执行边界**：当前只提供建议，不直接自动改流量、不直接自动毕业
+
 ## 🏗️ 项目结构
 
 本项目采用多模块Maven项目结构，分为三层架构：
@@ -177,7 +184,7 @@ mvn spring-boot:run
 mvn spring-boot:run -pl pisces-service
 ```
 
-项目启动后，访问地址：`http://localhost:8080/api`
+项目启动后，默认访问地址：`http://localhost:9990/api`
 
 ## 📖 快速使用
 
@@ -186,7 +193,7 @@ mvn spring-boot:run -pl pisces-service
 **JavaScript SDK**：
 ```javascript
 const pisces = new PiscesSDK({
-  apiBaseUrl: 'http://localhost:8080/api',
+  apiBaseUrl: 'http://localhost:9990/api',
   experimentId: 'exp_price_001',
   visitorId: getVisitorId()
 });
@@ -202,7 +209,7 @@ await pisces.reportTransaction({
 
 **Java SDK**：
 ```java
-PiscesClient client = new PiscesClient("http://localhost:8080/api");
+PiscesClient client = new PiscesClient("http://localhost:9990/api");
 String groupId = client.assignGroup("exp_price_001", visitorId);
 client.reportTransaction("exp_price_001", visitorId, transactionData);
 ```
@@ -240,6 +247,9 @@ Content-Type: application/json
 ```bash
 GET /api/analysis/experiment/exp_price_001/statistics
 GET /api/analysis/experiment/exp_price_001/bayesian
+POST /api/analysis/experiment/ai-design/v2
+GET /api/analysis/experiment/exp_price_001/ai-diagnosis
+GET /api/analysis/experiment/exp_price_001/ai-graduation-decision
 ```
 
 

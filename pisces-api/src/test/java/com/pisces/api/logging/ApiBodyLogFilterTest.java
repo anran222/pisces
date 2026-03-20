@@ -1,5 +1,6 @@
 package com.pisces.api.logging;
 
+import com.pisces.service.config.ApiBodyLogFilter;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 

@@ -106,6 +106,25 @@ flowchart TD
 - `pisces:mab:trials:{experimentId}`：UCB 总尝试次数
 - `pisces:identity:bind:{deviceId}`：deviceId -> userId
 
+### 4.4 AI 决策引擎
+
+当前 AI 决策主链已经从 `AnalysisServiceImpl` 的散落式 AI 能力中抽离，统一收口到 `AIDecisionService`。
+
+核心组件：
+
+- `AIDecisionService`：统一暴露实验设计、实验诊断、毕业决策 3 个入口
+- `ExperimentDecisionContextBuilder`：从 `AnalysisService` 聚合实验统计和数据质量事实
+- `PromptTemplateBuilder`：约束大模型必须返回结构化 JSON
+- `AIDecisionJsonParser`：解析并校验 AI JSON 载荷
+- `DecisionGuardrailEvaluator`：基于 `Statistics.DataQualityCheck` 判断 `PASS / BLOCKED`
+
+当前执行边界：
+
+- AI 不直接执行实验状态变更
+- AI 不直接改流量配置
+- 诊断动作统一要求人工执行
+- 旧 `autoGraduateDecision` 已桥接到新引擎，兼容旧接口返回 `Map<String, Object>` 的调用方
+
 ## 5. 请求处理横切逻辑
 
 ### 5.1 鉴权
@@ -193,3 +212,4 @@ sequenceDiagram
 - 统计、对比、贝叶斯分析、报告、预测完成时间等分析出口，当前都统一以 `traffic.allocation` 首组作为基准组来源
 - 贝叶斯分析的胜率计算当前已跟随主指标定义的分子/分母口径，若主指标是曝光分母，则会直接使用 exposure 数据而不是 `VIEW`
 - 部分 README/SDK 文档仍使用 `http://localhost:8080/api`，与当前 `application.yml` 的 `9990` 不一致
+- 结构化 AI 决策接口当前仍以建议模式运行，尚未进入自动执行闭环

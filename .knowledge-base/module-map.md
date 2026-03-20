@@ -14,9 +14,15 @@
 - `pisces-common/src/main/java/com/pisces/common/model/ExperimentMetadata.java`
 - `pisces-common/src/main/java/com/pisces/common/model/Event.java`
 - `pisces-common/src/main/java/com/pisces/common/model/Statistics.java`
+- `pisces-common/src/main/java/com/pisces/common/model/ExperimentDecisionContext.java`
 - `pisces-common/src/main/java/com/pisces/common/request/ExperimentCreateRequest.java`
+- `pisces-common/src/main/java/com/pisces/common/request/AIDesignRequest.java`
+- `pisces-common/src/main/java/com/pisces/common/request/VariantCandidateGenerateRequest.java`
 - `pisces-common/src/main/java/com/pisces/common/request/EventReportRequest.java`
 - `pisces-common/src/main/java/com/pisces/common/response/BaseResponse.java`
+- `pisces-common/src/main/java/com/pisces/common/response/AIDesignResponse.java`
+- `pisces-common/src/main/java/com/pisces/common/response/AIDiagnosisResponse.java`
+- `pisces-common/src/main/java/com/pisces/common/response/AIGraduationDecisionResponse.java`
 
 ## 2. `pisces-service`
 
@@ -43,6 +49,7 @@
 | `TrafficService` | `TrafficServiceImpl` | 分流、缓存、Layer 互斥 |
 | `DataService` | `DataServiceImpl` | 事件写入、计数、访客去重 |
 | `AnalysisService` | `AnalysisServiceImpl` | 统计、报表、AI 分析聚合 |
+| `AIDecisionService` | `AIDecisionServiceImpl` | 结构化 AI 决策引擎 |
 | `ConfigService` | `ConfigServiceImpl` | 配置持久化与缓存 |
 | `IdentityService` | `IdentityServiceImpl` | 匿名 ID 与登录 ID 绑定 |
 | `ExperimentDataGeneratorService` | `ExperimentDataGeneratorServiceImpl` | 演示数据生成 |
@@ -55,7 +62,17 @@
 | `BayesianAnalysisService` | `BayesianAnalysisServiceImpl` | 胜率与早停 |
 | `CausalInferenceService` | `CausalInferenceServiceImpl` | DID / PSM / Causal Forest |
 | `HTEAnalysisService` | `HTEAnalysisServiceImpl` | HTE / ITE / 敏感群体 |
+| `AIDecisionService` | `AIDecisionServiceImpl` | 设计 / 诊断 / 毕业决策统一入口 |
 | `VariantGenerationService` | `VariantGenerationServiceImpl` | 文本/图像变体与完整实验演示 |
+
+AI 决策辅助组件：
+
+- `service/ai/ExperimentDecisionContextBuilder.java`
+- `service/ai/PromptTemplateBuilder.java`
+- `service/ai/AIDecisionJsonParser.java`
+- `service/ai/DecisionGuardrailEvaluator.java`
+- `service/ai/DecisionType.java`
+- `service/ai/GuardrailStatus.java`
 
 ## 3. `pisces-api`
 
@@ -109,5 +126,5 @@
 4. `ExperimentServiceImpl` / `TrafficServiceImpl` / `DataServiceImpl`
 5. `AnalysisServiceImpl`
 6. `VariantGenerationServiceImpl`
-7. `ConfigServiceImpl` 与 `ZookeeperClient`
-
+7. `AIDecisionServiceImpl` 与 `service/ai/*`
+8. `ConfigServiceImpl` 与 `ZookeeperClient`

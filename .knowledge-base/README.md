@@ -9,6 +9,7 @@ Pisces 是一个基于 Spring Boot 3.2 / Java 21 的 A/B 测试实验系统，�
 - 事件采集与统计分析
 - 贝叶斯分析、样本量计算、SRM、序贯检验
 - 接入阿里通义的文本/图像变体生成与 AI 解读
+- 结构化 AI 决策引擎，覆盖实验前设计、实验中诊断、实验后毕业决策
 
 项目当前是单仓多模块 Maven 工程，主服务运行入口在 `pisces-service`，对外 HTTP API 在 `pisces-api`。
 
@@ -84,8 +85,24 @@ flowchart LR
 5. 贝叶斯分析走 `BayesianAnalysisServiceImpl`
 6. 因果推断走 `CausalInferenceServiceImpl`
 7. HTE 走 `HTEAnalysisServiceImpl`
-8. AI 解读、AI 实验设计、变体生成走通义 DashScope
-9. 导出报告、推荐列表、完成时间预测已统一读取同一套决策上下文
+8. `AIDecisionService` 统一承接 AI 结构化决策，输出 `DESIGN / DIAGNOSIS / GRADUATION` 三类建议
+9. `PromptTemplateBuilder + AIDecisionJsonParser + DecisionGuardrailEvaluator` 共同负责 prompt 约束、JSON 解析和门禁校验
+10. AI 解读、AI 实验设计、变体生成仍走通义 DashScope，但 AI 决策接口当前先输出建议，不直接修改实验状态或流量
+11. 导出报告、推荐列表、完成时间预测已统一读取同一套决策上下文
+
+## 4.5 结构化 AI 决策入口
+
+当前对外新增的结构化 AI 接口为：
+
+- `POST /api/analysis/experiment/ai-design/v2`
+- `GET /api/analysis/experiment/{id}/ai-diagnosis`
+- `GET /api/analysis/experiment/{id}/ai-graduation-decision`
+
+关键边界：
+
+- AI 当前只输出结构化建议，不自动执行流量调整、实验毕业或回滚
+- 诊断建议统一标记为 `MANUAL_ONLY`
+- 毕业与诊断结果会读取 `Statistics.DataQualityCheck`，当存在 `SRM`、样本量不足、`analysisReady=false` 或阻断问题时，`guardrailStatus` 会降为 `BLOCKED`
 
 ## 5. 文档索引
 
