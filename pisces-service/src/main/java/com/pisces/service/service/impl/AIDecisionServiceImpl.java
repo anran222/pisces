@@ -6,6 +6,7 @@ import com.pisces.common.response.AIDesignResponse;
 import com.pisces.common.response.AIDiagnosisResponse;
 import com.pisces.common.response.AIGraduationDecisionResponse;
 import com.pisces.service.ai.AIDecisionJsonParser;
+import com.pisces.service.ai.DecisionGuardrailEvaluator;
 import com.pisces.service.ai.DecisionType;
 import com.pisces.service.ai.ExperimentDecisionContextBuilder;
 import com.pisces.service.ai.GuardrailStatus;
@@ -41,6 +42,7 @@ public class AIDecisionServiceImpl implements AIDecisionService {
     private final ExperimentDecisionContextBuilder experimentDecisionContextBuilder;
     private final PromptTemplateBuilder promptTemplateBuilder;
     private final AIDecisionJsonParser aiDecisionJsonParser;
+    private final DecisionGuardrailEvaluator decisionGuardrailEvaluator;
     private final JsonUtil jsonUtil;
 
     @Override
@@ -66,14 +68,15 @@ public class AIDecisionServiceImpl implements AIDecisionService {
         if (!StringUtils.hasText(prompt)) {
             throw new IllegalStateException("AI诊断Prompt不能为空");
         }
+        GuardrailStatus guardrailStatus = decisionGuardrailEvaluator.evaluateDiagnosis(context);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("decisionType", DecisionType.DIAGNOSIS.getCode());
         payload.put("summary", DIAGNOSIS_SUMMARY_PREFIX + defaultValue(
                 context == null ? null : context.getExperimentName(),
                 DEFAULT_EXPERIMENT_NAME));
         payload.put("confidence", DEFAULT_CONFIDENCE);
-        payload.put("riskFlags", List.of());
-        payload.put("guardrailStatus", GuardrailStatus.PASS.getCode());
+        payload.put("riskFlags", decisionGuardrailEvaluator.collectRiskFlags(context));
+        payload.put("guardrailStatus", guardrailStatus.getCode());
         payload.put("recommendedActions", List.of());
         return aiDecisionJsonParser.parseDiagnosis(jsonUtil.toJson(payload));
     }
@@ -85,14 +88,15 @@ public class AIDecisionServiceImpl implements AIDecisionService {
         if (!StringUtils.hasText(prompt)) {
             throw new IllegalStateException("AI毕业决策Prompt不能为空");
         }
+        GuardrailStatus guardrailStatus = decisionGuardrailEvaluator.evaluateGraduation(context);
         String payload = jsonUtil.toJson(Map.of(
                 "decisionType", DecisionType.GRADUATION.getCode(),
                 "summary", GRADUATION_SUMMARY_PREFIX + defaultValue(
                         context == null ? null : context.getExperimentName(),
                         DEFAULT_EXPERIMENT_NAME),
                 "confidence", DEFAULT_CONFIDENCE,
-                "riskFlags", List.of(),
-                "guardrailStatus", GuardrailStatus.PASS.getCode(),
+                "riskFlags", decisionGuardrailEvaluator.collectRiskFlags(context),
+                "guardrailStatus", guardrailStatus.getCode(),
                 "decision", DEFAULT_GRADUATION_DECISION));
         return aiDecisionJsonParser.parseGraduation(payload);
     }

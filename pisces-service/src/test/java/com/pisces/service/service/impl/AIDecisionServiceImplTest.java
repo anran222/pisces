@@ -6,6 +6,7 @@ import com.pisces.common.response.AIDesignResponse;
 import com.pisces.common.response.AIDiagnosisResponse;
 import com.pisces.common.response.AIGraduationDecisionResponse;
 import com.pisces.service.ai.AIDecisionJsonParser;
+import com.pisces.service.ai.DecisionGuardrailEvaluator;
 import com.pisces.service.ai.DecisionType;
 import com.pisces.service.ai.ExperimentDecisionContextBuilder;
 import com.pisces.service.ai.GuardrailStatus;
@@ -40,6 +41,8 @@ class AIDecisionServiceImplTest {
     @Mock
     private AIDecisionJsonParser aiDecisionJsonParser;
     @Mock
+    private DecisionGuardrailEvaluator decisionGuardrailEvaluator;
+    @Mock
     private JsonUtil jsonUtil;
 
     @Test
@@ -48,6 +51,7 @@ class AIDecisionServiceImplTest {
                 experimentDecisionContextBuilder,
                 promptTemplateBuilder,
                 aiDecisionJsonParser,
+                decisionGuardrailEvaluator,
                 jsonUtil);
         AIDesignRequest request = new AIDesignRequest();
         request.setBusinessScenario("checkout");
@@ -75,6 +79,7 @@ class AIDecisionServiceImplTest {
                 experimentDecisionContextBuilder,
                 promptTemplateBuilder,
                 aiDecisionJsonParser,
+                decisionGuardrailEvaluator,
                 jsonUtil);
         ExperimentDecisionContext context = new ExperimentDecisionContext();
         context.setExperimentId("exp_001");
@@ -85,6 +90,8 @@ class AIDecisionServiceImplTest {
 
         when(experimentDecisionContextBuilder.buildForExperiment("exp_001")).thenReturn(context);
         when(promptTemplateBuilder.buildDiagnosisPrompt(context)).thenReturn("diagnosis-prompt");
+        when(decisionGuardrailEvaluator.evaluateDiagnosis(context)).thenReturn(GuardrailStatus.BLOCKED);
+        when(decisionGuardrailEvaluator.collectRiskFlags(context)).thenReturn(List.of("SRM"));
         when(jsonUtil.toJson(any())).thenReturn("{\"decisionType\":\"DIAGNOSIS\"}");
         when(aiDecisionJsonParser.parseDiagnosis(org.mockito.ArgumentMatchers.anyString())).thenReturn(expected);
 
@@ -93,6 +100,8 @@ class AIDecisionServiceImplTest {
         assertSame(expected, response);
         verify(experimentDecisionContextBuilder).buildForExperiment("exp_001");
         verify(promptTemplateBuilder).buildDiagnosisPrompt(context);
+        verify(decisionGuardrailEvaluator).evaluateDiagnosis(context);
+        verify(decisionGuardrailEvaluator).collectRiskFlags(context);
         verify(jsonUtil).toJson(any());
         verify(aiDecisionJsonParser).parseDiagnosis(org.mockito.ArgumentMatchers.anyString());
     }
@@ -103,6 +112,7 @@ class AIDecisionServiceImplTest {
                 experimentDecisionContextBuilder,
                 promptTemplateBuilder,
                 aiDecisionJsonParser,
+                decisionGuardrailEvaluator,
                 jsonUtil);
         ExperimentDecisionContext context = new ExperimentDecisionContext();
         context.setExperimentId("exp_001");
@@ -114,6 +124,8 @@ class AIDecisionServiceImplTest {
 
         when(experimentDecisionContextBuilder.buildForExperiment("exp_001")).thenReturn(context);
         when(promptTemplateBuilder.buildGraduationPrompt(context)).thenReturn("graduation-prompt");
+        when(decisionGuardrailEvaluator.evaluateGraduation(context)).thenReturn(GuardrailStatus.BLOCKED);
+        when(decisionGuardrailEvaluator.collectRiskFlags(context)).thenReturn(List.of("SRM"));
         when(jsonUtil.toJson(any())).thenReturn("{\"decisionType\":\"GRADUATION\"}");
         when(aiDecisionJsonParser.parseGraduation(org.mockito.ArgumentMatchers.anyString())).thenReturn(expected);
 
@@ -122,6 +134,8 @@ class AIDecisionServiceImplTest {
         assertSame(expected, response);
         verify(experimentDecisionContextBuilder).buildForExperiment("exp_001");
         verify(promptTemplateBuilder).buildGraduationPrompt(context);
+        verify(decisionGuardrailEvaluator).evaluateGraduation(context);
+        verify(decisionGuardrailEvaluator).collectRiskFlags(context);
         verify(jsonUtil).toJson(any());
         verify(aiDecisionJsonParser).parseGraduation(org.mockito.ArgumentMatchers.anyString());
     }
