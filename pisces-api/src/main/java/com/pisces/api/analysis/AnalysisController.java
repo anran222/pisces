@@ -2,6 +2,7 @@ package com.pisces.api.analysis;
 
 import com.pisces.common.model.ExperimentReportSnapshot;
 import com.pisces.common.model.Statistics;
+import com.pisces.common.response.AIDiagnosisResponse;
 import com.pisces.common.request.AIDesignRequest;
 import com.pisces.common.response.AIDesignResponse;
 import com.pisces.common.response.BaseResponse;
@@ -230,6 +231,19 @@ public class AnalysisController {
     public BaseResponse<Map<String, Object>> getAIInsights(@PathVariable String id) {
         Map<String, Object> insights = analysisService.getAIInsights(id);
         return BaseResponse.of(insights);
+    }
+
+    /**
+     * AI实验诊断
+     * AI赋能：基于实验统计与数据质量事实返回结构化诊断结果
+     *
+     * @param id 实验ID
+     * @return AI结构化诊断结果
+     */
+    @GetMapping("/experiment/{id}/ai-diagnosis")
+    @NoTokenRequired
+    public BaseResponse<AIDiagnosisResponse> getAIDiagnosis(@PathVariable String id) {
+        return BaseResponse.of(aiDecisionService.diagnoseExperiment(id));
     }
     
     /**
