@@ -3,6 +3,8 @@ package com.pisces.service.service.impl;
 import com.pisces.common.model.Event;
 import com.pisces.common.model.ExperimentEventFact;
 import com.pisces.common.model.ExperimentExposure;
+import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.common.model.MetricDefinition;
 import com.pisces.service.repository.ExperimentAssignmentRepository;
 import com.pisces.service.repository.ExperimentEventRepository;
 import com.pisces.service.repository.ExperimentExposureRepository;
@@ -20,6 +22,7 @@ import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -77,13 +80,14 @@ public class DataServiceImpl implements DataService {
             log.warn("访客 {} 不在实验 {} 中", canonicalVisitorId, experimentId);
             return;
         }
+        String normalizedEventType = normalizeEventType(eventType);
 
         Event event = new Event();
         event.setEventId("evt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8));
         event.setExperimentId(experimentId);
         event.setUserId(canonicalVisitorId);
         event.setGroupId(groupId);
-        event.setEventType(Event.EventType.valueOf(eventType));
+        event.setEventType(normalizedEventType);
         event.setEventName(eventName);
         event.setProperties(properties);
         event.setTimestamp(resolveEventTimestamp(properties));
@@ -94,13 +98,13 @@ public class DataServiceImpl implements DataService {
         redisTemplate.opsForList().rightPush(eventStoreKey, event);
         redisTemplate.expire(eventStoreKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
 
-        updateEventCounter(experimentId, groupId, eventType);
+        updateEventCounter(experimentId, groupId, normalizedEventType);
 
         String visitorSetKey = VISITOR_SET_PREFIX + experimentId + ":" + groupId;
         redisTemplate.opsForSet().add(visitorSetKey, canonicalVisitorId);
         redisTemplate.expire(visitorSetKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
 
-        if (mabService != null && Event.EventType.CONVERT.name().equals(eventType)) {
+        if (mabService != null && shouldUpdateMabReward(experimentId, normalizedEventType)) {
             try {
                 boolean success = true;
                 if (properties != null && properties.containsKey("mabSuccess")) {
@@ -220,7 +224,7 @@ public class DataServiceImpl implements DataService {
                                           LocalDateTime startTime, LocalDateTime endTime) {
         List<Event> events = getEventsInTimeRange(experimentId, groupId, startTime, endTime);
         return events.stream()
-                .filter(e -> e.getEventType() != null && e.getEventType().name().equals(eventType))
+                .filter(event -> Objects.equals(event.getEventType(), eventType))
                 .count();
     }
     
@@ -265,9 +269,9 @@ public class DataServiceImpl implements DataService {
                 totalVisitors += getVisitorCount(experimentId, groupId);
                 totalAssignments += getAssignmentCount(experimentId, groupId);
                 totalExposures += getExposureCount(experimentId, groupId);
-                totalViews += getEventCount(experimentId, groupId, "VIEW");
-                totalClicks += getEventCount(experimentId, groupId, "CLICK");
-                totalConversions += getEventCount(experimentId, groupId, "CONVERT");
+                totalViews += getEventCount(experimentId, groupId, Event.EVENT_TYPE_VIEW);
+                totalClicks += getEventCount(experimentId, groupId, Event.EVENT_TYPE_CLICK);
+                totalConversions += getEventCount(experimentId, groupId, Event.EVENT_TYPE_CONVERT);
             }
         }
 
@@ -298,7 +302,7 @@ public class DataServiceImpl implements DataService {
         eventFact.setExperimentId(event.getExperimentId());
         eventFact.setVisitorId(event.getUserId());
         eventFact.setGroupId(event.getGroupId());
-        eventFact.setEventType(event.getEventType().name());
+        eventFact.setEventType(event.getEventType());
         eventFact.setEventName(event.getEventName());
         eventFact.setClientEventId(resolveClientEventId(properties));
         eventFact.setProperties(properties);
@@ -312,11 +316,35 @@ public class DataServiceImpl implements DataService {
         event.setExperimentId(eventFact.getExperimentId());
         event.setUserId(eventFact.getVisitorId());
         event.setGroupId(eventFact.getGroupId());
-        event.setEventType(Event.EventType.valueOf(eventFact.getEventType()));
+        event.setEventType(eventFact.getEventType());
         event.setEventName(eventFact.getEventName());
         event.setProperties(eventFact.getProperties());
         event.setTimestamp(eventFact.getEventTime());
         return event;
+    }
+
+    private String normalizeEventType(String eventType) {
+        return eventType == null ? null : eventType.trim().toUpperCase();
+    }
+
+    private boolean shouldUpdateMabReward(String experimentId, String eventType) {
+        if (Event.EVENT_TYPE_CONVERT.equals(eventType)) {
+            return true;
+        }
+
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata == null || metadata.getMetricDefinitions() == null) {
+            return false;
+        }
+
+        for (MetricDefinition metricDefinition : metadata.getMetricDefinitions()) {
+            if (!Boolean.TRUE.equals(metricDefinition.getPrimaryMetric())) {
+                continue;
+            }
+            return Objects.equals(metricDefinition.getNumeratorEventType(), eventType);
+        }
+
+        return false;
     }
 
     private String resolveClientEventId(Map<String, Object> properties) {

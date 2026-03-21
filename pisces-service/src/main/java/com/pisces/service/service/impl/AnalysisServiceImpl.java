@@ -6,6 +6,7 @@ import com.alibaba.dashscope.aigc.generation.GenerationResult;
 import com.alibaba.dashscope.common.Message;
 import com.alibaba.dashscope.common.Role;
 import com.pisces.common.model.Event;
+import com.pisces.common.model.EventDefinition;
 import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.common.model.ExperimentReportSnapshot;
 import com.pisces.common.model.MetricDefinition;
@@ -26,6 +27,7 @@ import com.pisces.service.service.HTEAnalysisService;
 import lombok.extern.slf4j.Slf4j;
 import jakarta.annotation.Resource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -75,7 +77,7 @@ public class AnalysisServiceImpl implements AnalysisService {
     private ExperimentReportSnapshotRepository experimentReportSnapshotRepository;
 
     @Resource
-    private AIDecisionService aiDecisionService;
+    private ObjectProvider<AIDecisionService> aiDecisionServiceProvider;
     
     /**
      * 获取实验统计数据
@@ -118,7 +120,7 @@ public class AnalysisServiceImpl implements AnalysisService {
                 com.pisces.common.model.ExperimentGroup group = entry.getValue();
                 
                 Statistics.GroupStatistics groupStats = calculateGroupStatistics(
-                        experimentId, groupId, group, baselineGroupId, metricDefinitions);
+                        experimentId, groupId, group, baselineGroupId, metadata.getEventDefinitions(), metricDefinitions);
                 groupStatsMap.put(groupId, groupStats);
                 
                 // 累计总访客和事件
@@ -205,6 +207,7 @@ public class AnalysisServiceImpl implements AnalysisService {
     private Statistics.GroupStatistics calculateGroupStatistics(String experimentId, String groupId,
                                                                   com.pisces.common.model.ExperimentGroup group,
                                                                   String baselineGroupId,
+                                                                  List<EventDefinition> eventDefinitions,
                                                                   List<MetricDefinition> metricDefinitions) {
         Statistics.GroupStatistics groupStats = new Statistics.GroupStatistics();
         groupStats.setGroupId(groupId);
@@ -217,9 +220,9 @@ public class AnalysisServiceImpl implements AnalysisService {
         
         // 计算事件统计
         Map<String, Long> eventCounts = new HashMap<>();
-        String viewType = Event.EventType.VIEW.name();
-        String clickType = Event.EventType.CLICK.name();
-        String convertType = Event.EventType.CONVERT.name();
+        String viewType = Event.EVENT_TYPE_VIEW;
+        String clickType = Event.EVENT_TYPE_CLICK;
+        String convertType = Event.EVENT_TYPE_CONVERT;
         
         long viewCount = dataService.getEventCount(experimentId, groupId, viewType);
         long clickCount = dataService.getEventCount(experimentId, groupId, clickType);
@@ -228,6 +231,15 @@ public class AnalysisServiceImpl implements AnalysisService {
         eventCounts.put(viewType, viewCount);
         eventCounts.put(clickType, clickCount);
         eventCounts.put(convertType, convertCount);
+        if (eventDefinitions != null) {
+            for (EventDefinition eventDefinition : eventDefinitions) {
+                if (eventDefinition == null || !StringUtils.hasText(eventDefinition.getKey())) {
+                    continue;
+                }
+                eventCounts.computeIfAbsent(eventDefinition.getKey(),
+                        key -> dataService.getEventCount(experimentId, groupId, key));
+            }
+        }
         
         groupStats.setEventCounts(eventCounts);
         groupStats.setViewCount(viewCount);
@@ -1147,6 +1159,7 @@ public class AnalysisServiceImpl implements AnalysisService {
         }
 
         ChronoUnit bucketUnit = resolveBucketUnit(granularity);
+        MetricDefinition timelineMetricDefinition = resolveTimelineMetricDefinition(metadata, metricType);
         LocalDateTime bucketStart = truncateToUnit(start, bucketUnit);
         LocalDateTime bucketEnd = truncateToUnit(end, bucketUnit);
 
@@ -1161,7 +1174,8 @@ public class AnalysisServiceImpl implements AnalysisService {
             if (metadata.getGroups() != null) {
                 for (String groupId : metadata.getGroups().keySet().stream().sorted().toList()) {
                     List<Event> events = dataService.getEvents(experimentId, groupId);
-                    groupValues.put(groupId, calculateTimelineMetric(events, cursor, bucketUnit, metricType));
+                    groupValues.put(groupId, calculateTimelineMetric(events, cursor, bucketUnit, metricType,
+                            timelineMetricDefinition));
                 }
             }
             point.put("values", groupValues);
@@ -1207,7 +1221,8 @@ public class AnalysisServiceImpl implements AnalysisService {
     private double calculateTimelineMetric(List<Event> events,
                                            LocalDateTime bucketStart,
                                            ChronoUnit bucketUnit,
-                                           String metricType) {
+                                           String metricType,
+                                           MetricDefinition metricDefinition) {
         if (events == null || events.isEmpty()) {
             return 0.0;
         }
@@ -1222,9 +1237,13 @@ public class AnalysisServiceImpl implements AnalysisService {
             return 0.0;
         }
 
-        long views = bucketEvents.stream().filter(event -> event.getEventType() == Event.EventType.VIEW).count();
-        long clicks = bucketEvents.stream().filter(event -> event.getEventType() == Event.EventType.CLICK).count();
-        long conversions = bucketEvents.stream().filter(event -> event.getEventType() == Event.EventType.CONVERT).count();
+        if (metricDefinition != null) {
+            return calculateTimelineMetricValue(bucketEvents, metricDefinition);
+        }
+
+        long views = countEventsByType(bucketEvents, Event.EVENT_TYPE_VIEW);
+        long clicks = countEventsByType(bucketEvents, Event.EVENT_TYPE_CLICK);
+        long conversions = countEventsByType(bucketEvents, Event.EVENT_TYPE_CONVERT);
 
         if ("CLICK_RATE".equalsIgnoreCase(metricType)) {
             return views > 0 ? (double) clicks / views : 0.0;
@@ -1237,6 +1256,49 @@ public class AnalysisServiceImpl implements AnalysisService {
                     .count();
         }
         return views > 0 ? (double) conversions / views : 0.0;
+    }
+
+    private MetricDefinition resolveTimelineMetricDefinition(ExperimentMetadata metadata, String metricType) {
+        if (metadata == null || metadata.getMetricDefinitions() == null || metricType == null) {
+            return null;
+        }
+        for (MetricDefinition metricDefinition : metadata.getMetricDefinitions()) {
+            if (metricDefinition != null && metricType.equalsIgnoreCase(metricDefinition.getKey())) {
+                return metricDefinition;
+            }
+        }
+        return null;
+    }
+
+    private double calculateTimelineMetricValue(List<Event> bucketEvents, MetricDefinition metricDefinition) {
+        long numerator = countEventsByType(bucketEvents, metricDefinition.getNumeratorEventType());
+        if (metricDefinition.getAggregationType() == MetricDefinition.AggregationType.COUNT) {
+            return numerator;
+        }
+        long denominator = resolveTimelineDenominator(bucketEvents, metricDefinition);
+        return denominator > 0 ? (double) numerator / denominator : 0.0;
+    }
+
+    private long resolveTimelineDenominator(List<Event> bucketEvents, MetricDefinition metricDefinition) {
+        return switch (metricDefinition.getDenominatorType()) {
+            case VISITOR_COUNT -> bucketEvents.stream()
+                    .map(Event::getUserId)
+                    .filter(java.util.Objects::nonNull)
+                    .distinct()
+                    .count();
+            case EVENT_COUNT -> countEventsByType(bucketEvents, metricDefinition.getDenominatorEventType());
+            case ASSIGNMENT_COUNT, EXPOSURE_COUNT -> 0L;
+        };
+    }
+
+    private long countEventsByType(List<Event> events, String eventType) {
+        if (events == null || eventType == null || eventType.isBlank()) {
+            return 0L;
+        }
+        return events.stream()
+                .filter(event -> event.getEventType() != null)
+                .filter(event -> eventType.equalsIgnoreCase(event.getEventType()))
+                .count();
     }
     
     @Override
@@ -1285,170 +1347,6 @@ public class AnalysisServiceImpl implements AnalysisService {
         }
         
         return result;
-    }
-    
-    /**
-     * 基于实际数据生成具体的分析报告
-     */
-    private String generateDataDrivenAnalysis(ExperimentMetadata metadata, Statistics statistics,
-                                               Map<String, Object> bayesianAnalysis) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("## AI智能分析报告\n\n");
-        
-        // 1. 数据质量评估
-        sb.append("### 1. 数据质量评估\n");
-        long totalVisitors = 0;
-        if (statistics != null && statistics.getSummary() != null) {
-            Long visitors = statistics.getSummary().getTotalVisitors();
-            totalVisitors = visitors != null ? visitors : 0;
-        }
-        
-        if (totalVisitors < 100) {
-            sb.append("⚠️ **数据量严重不足**：当前仅有 ").append(totalVisitors).append(" 位访客，")
-              .append("统计结果不可靠。建议至少收集 1,000 位访客数据后再做分析。\n\n");
-        } else if (totalVisitors < 500) {
-            sb.append("⚠️ **数据量偏少**：当前有 ").append(totalVisitors).append(" 位访客，")
-              .append("结论可能不够稳定。建议继续收集数据至少达到 1,000 位访客。\n\n");
-        } else if (totalVisitors < 1000) {
-            sb.append("📊 **数据量适中**：当前有 ").append(totalVisitors).append(" 位访客，")
-              .append("初步结论具有一定参考价值。建议继续观察 2-3 天以确保结果稳定。\n\n");
-        } else {
-            sb.append("✅ **数据量充足**：当前有 ").append(totalVisitors).append(" 位访客，")
-              .append("统计结果具有较高可信度。\n\n");
-        }
-        
-        // 2. 效果分析
-        sb.append("### 2. 效果分析\n");
-        String bestGroup = null;
-        double bestRate = 0.0;
-        String baselineGroup = null;
-        double baselineRate = 0.0;
-        
-        if (statistics != null && statistics.getGroupStatistics() != null) {
-            boolean isFirst = true;
-            for (Map.Entry<String, Statistics.GroupStatistics> entry : statistics.getGroupStatistics().entrySet()) {
-                Statistics.GroupStatistics gs = entry.getValue();
-                double rate = gs.getConversionRate() != null ? gs.getConversionRate() : 0.0;
-                
-                if (isFirst || Boolean.TRUE.equals(gs.getIsBaseline())) {
-                    baselineGroup = entry.getKey();
-                    baselineRate = rate;
-                    isFirst = false;
-                }
-                
-                if (rate > bestRate) {
-                    bestRate = rate;
-                    bestGroup = entry.getKey();
-                }
-                
-                sb.append("- **").append(gs.getGroupName() != null ? gs.getGroupName() : entry.getKey()).append("**：")
-                  .append("转化率 ").append(String.format("%.2f%%", rate * 100));
-                if (gs.getLiftRate() != null && !Boolean.TRUE.equals(gs.getIsBaseline())) {
-                    double lift = gs.getLiftRate();
-                    sb.append("（相对基准").append(lift >= 0 ? "提升" : "下降")
-                      .append(" ").append(String.format("%.2f%%", Math.abs(lift) * 100)).append("）");
-                }
-                sb.append("\n");
-            }
-        }
-        sb.append("\n");
-        
-        if (bestGroup != null && !bestGroup.equals(baselineGroup)) {
-            double lift = (bestRate - baselineRate) / baselineRate;
-            sb.append("📈 **最佳表现**：**").append(bestGroup).append("** 组转化率最高，")
-              .append("达到 ").append(String.format("%.2f%%", bestRate * 100))
-              .append("，相对基准组提升 ").append(String.format("%.1f%%", lift * 100)).append("。\n\n");
-        } else if (bestGroup != null) {
-            sb.append("📊 **当前状态**：基准组 **").append(bestGroup).append("** 表现最好，")
-              .append("其他变体尚未展现出明显优势。\n\n");
-        }
-        
-        // 3. 统计可信度
-        sb.append("### 3. 统计可信度\n");
-        double maxWinRate = 0.0;
-        String leadingVariant = null;
-        
-        if (bayesianAnalysis != null && bayesianAnalysis.containsKey("winRates")) {
-            @SuppressWarnings("unchecked")
-            Map<String, Double> winRates = (Map<String, Double>) bayesianAnalysis.get("winRates");
-            for (Map.Entry<String, Double> entry : winRates.entrySet()) {
-                if (entry.getValue() > maxWinRate) {
-                    maxWinRate = entry.getValue();
-                    leadingVariant = entry.getKey();
-                }
-            }
-        }
-        
-        if (maxWinRate >= 0.95) {
-            sb.append("✅ **高置信度**：**").append(leadingVariant).append("** 的胜率达到 ")
-              .append(String.format("%.1f%%", maxWinRate * 100))
-              .append("，已超过95%显著性阈值，可以做出决策。\n\n");
-        } else if (maxWinRate >= 0.80) {
-            sb.append("🔶 **中等置信度**：领先变体 **").append(leadingVariant).append("** 的胜率为 ")
-              .append(String.format("%.1f%%", maxWinRate * 100))
-              .append("，接近但未达到95%阈值。建议继续收集数据。\n\n");
-        } else {
-            sb.append("⚠️ **置信度较低**：当前没有明显的领先变体，最高胜率仅为 ")
-              .append(String.format("%.1f%%", maxWinRate * 100))
-              .append("。需要更多数据才能得出可靠结论。\n\n");
-        }
-        
-        // 4. 风险评估
-        sb.append("### 4. 风险评估\n");
-        if (maxWinRate >= 0.95 && totalVisitors >= 1000) {
-            sb.append("🟢 **低风险**：数据量充足，统计显著，全量发布风险较低。\n\n");
-        } else if (maxWinRate >= 0.80 && totalVisitors >= 500) {
-            sb.append("🟡 **中等风险**：建议先进行50%灰度发布，观察3-5天后再决定是否全量。\n\n");
-        } else {
-            sb.append("🔴 **高风险**：当前数据不足以支持决策，贸然上线可能导致负面影响。\n\n");
-        }
-        
-        // 5. 具体建议
-        sb.append("### 5. 具体建议\n");
-        List<String> suggestions = new ArrayList<>();
-        
-        if (totalVisitors < 1000) {
-            suggestions.add("继续收集数据，目标至少达到 1,000 位访客/组");
-        }
-        
-        if (maxWinRate >= 0.95 && totalVisitors >= 1000) {
-            suggestions.add("可以将最佳变体 **" + leadingVariant + "** 全量发布");
-            suggestions.add("发布后持续监控核心指标1周");
-            suggestions.add("准备回滚方案以防意外");
-        } else if (maxWinRate >= 0.80) {
-            suggestions.add("考虑将领先变体流量比例提升至50%");
-            suggestions.add("设置更长的观察期（至少7天）");
-            suggestions.add("关注用户留存等长期指标");
-        } else {
-            suggestions.add("保持当前流量分配，继续实验");
-            suggestions.add("检查实验设计是否合理");
-            suggestions.add("考虑增加变体的差异化程度");
-        }
-        
-        suggestions.add("定期查看数据，关注异常波动");
-        
-        for (int i = 0; i < suggestions.size(); i++) {
-            sb.append(i + 1).append(". ").append(suggestions.get(i)).append("\n");
-        }
-        sb.append("\n");
-        
-        // 6. 预计影响
-        sb.append("### 6. 预计影响\n");
-        if (bestGroup != null && !bestGroup.equals(baselineGroup) && baselineRate > 0) {
-            double expectedLift = (bestRate - baselineRate) / baselineRate;
-            sb.append("如果采用最佳方案 **").append(bestGroup).append("** 全量上线：\n");
-            sb.append("- 预计转化率提升：**").append(String.format("%.1f%%", expectedLift * 100)).append("**\n");
-            sb.append("- 按当前日均 ").append(totalVisitors > 0 ? totalVisitors / Math.max(1, 
-                    ChronoUnit.DAYS.between(metadata.getExperiment().getStartTime() != null ? 
-                    metadata.getExperiment().getStartTime() : LocalDateTime.now().minusDays(1), 
-                    LocalDateTime.now())) : 100).append(" 访客计算\n");
-            sb.append("- 每月可额外带来约 ").append(String.format("%.0f", expectedLift * totalVisitors * 30 * baselineRate))
-              .append(" 次转化\n");
-        } else {
-            sb.append("当前实验尚未产生明显的正向效果，建议优化实验方案后重新测试。\n");
-        }
-        
-        return sb.toString();
     }
     
     /**
@@ -2062,20 +1960,9 @@ public class AnalysisServiceImpl implements AnalysisService {
         return config;
     }
     
-    /**
-     * 生成默认实验设计（后备方案）
-     */
-    private Map<String, Object> generateDefaultExperimentDesign(String businessScenario, String targetMetric) {
-        Map<String, Object> design = new HashMap<>();
-        design.put("hypothesis", "通过优化可以提升" + targetMetric);
-        design.put("recommendedGroups", 3);
-        design.put("recommendedDuration", "2周");
-        design.put("minimumSamplePerGroup", 1000);
-        return design;
-    }
-    
     @Override
     public Map<String, Object> autoGraduateDecision(String experimentId) {
+        AIDecisionService aiDecisionService = aiDecisionServiceProvider.getObject();
         AIGraduationDecisionResponse response = aiDecisionService.decideGraduation(experimentId);
         return buildAutoGraduateBridgeResult(experimentId, response);
     }

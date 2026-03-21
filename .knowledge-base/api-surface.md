@@ -1,110 +1,97 @@
 # API 清单
 
-基础前缀来自应用配置：
+基础前缀：`/api`
 
-- Host 由部署决定
-- Context Path：`/api`
-
-因此示例完整路径形如：`/api/experiments`
-
-## 1. 实验管理
-
-控制器：`ExperimentController`
+## 实验管理
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/experiments` | 创建实验 |
 | `PUT` | `/experiments/{id}` | 更新实验 |
 | `GET` | `/experiments/{id}` | 获取实验详情 |
-| `GET` | `/experiments` | 查询实验列表，可按状态过滤 |
-| `GET` | `/experiments/status/{status}` | 按单状态查询 |
+| `GET` | `/experiments` | 查询实验列表 |
+| `GET` | `/experiments/status/{status}` | 按状态查询 |
 | `POST` | `/experiments/{id}/start` | 启动实验 |
 | `POST` | `/experiments/{id}/stop` | 停止实验 |
 | `POST` | `/experiments/{id}/pause` | 暂停实验 |
 | `POST` | `/experiments/{id}/resume` | 恢复实验 |
+| `POST` | `/experiments/{id}/conclusion-status` | 更新人工结论状态 |
 | `DELETE` | `/experiments/{id}` | 删除实验 |
 | `POST` | `/experiments/batch/pause` | 批量暂停 |
 | `POST` | `/experiments/batch/stop` | 批量停止 |
 | `POST` | `/experiments/batch/resume` | 批量恢复 |
 | `POST` | `/experiments/batch/delete` | 批量删除 |
 
-## 2. 流量分配与 MAB
-
-控制器：`TrafficController`
+## 流量分配
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/traffic/assign` | 分配访客到实验组，支持可选 `attributes` 参与 RULE 分流 |
-| `GET` | `/traffic/experiment/{experimentId}/mab/beta` | 查询 Thompson Sampling 参数 |
-| `GET` | `/traffic/experiment/{experimentId}/mab/stats` | 查询 UCB 组统计 |
-| `GET` | `/traffic/experiment/{experimentId}/mab/probabilities` | 查询当前分配概率 |
-| `GET` | `/traffic/experiment/{experimentId}/mab/summary` | 查询 MAB 汇总 |
-| `POST` | `/traffic/experiment/{experimentId}/mab/reset` | 重置 MAB 数据 |
+| `POST` | `/traffic/assign` | 分配访客到实验组 |
+| `GET` | `/traffic/experiment/{experimentId}/mab/beta` | 查询 Thompson 参数 |
+| `GET` | `/traffic/experiment/{experimentId}/mab/stats` | 查询组统计 |
+| `GET` | `/traffic/experiment/{experimentId}/mab/probabilities` | 查询分配概率 |
+| `GET` | `/traffic/experiment/{experimentId}/mab/summary` | 查询 MAB 摘要 |
+| `POST` | `/traffic/experiment/{experimentId}/mab/reset` | 重置 MAB 状态 |
 
-## 3. 数据上报
-
-控制器：`DataController`
+## 数据上报
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/data/event` | 上报 VIEW / CLICK / CONVERT 等事件 |
-| `POST` | `/data/exposure` | 上报真实 exposure 事件 |
+| `POST` | `/data/event` | 上报实验定义事件；兼容 `VIEW` / `CLICK` / `CONVERT` 快捷事件 |
+| `POST` | `/data/exposure` | 上报曝光 |
 
-## 4. 分析能力
+## 分析
 
-控制器：`AnalysisController`
+### 当前主入口
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/analysis/experiment/{id}/statistics` | 统计总览，包含 `dataQualityCheck`、`totalAssignments`、`totalExposures` |
-| `GET` | `/analysis/experiment/{id}/compare` | 组间对比，返回 `dataQualityCheck` |
-| `GET` | `/analysis/experiment/{id}/significance` | 传统显著性检验，返回 `dataQualityCheck` 与 `analysisReady` |
+| `GET` | `/analysis/experiment/{id}/statistics` | 统计总览 |
+| `GET` | `/analysis/experiment/{id}/compare` | 组间对比 |
 | `GET` | `/analysis/sample-size` | 样本量计算 |
 | `GET` | `/analysis/experiment/{id}/bayesian` | 贝叶斯分析 |
-| `GET` | `/analysis/experiment/{id}/early-stop` | 是否可提前停实验，数据质量门禁未通过时会强制阻断 |
-| `POST` | `/analysis/experiment/{id}/causal-inference` | DID / PSM / Causal Forest |
+| `GET` | `/analysis/experiment/{id}/early-stop` | 早停判断 |
+| `GET` | `/analysis/experiment/{id}/report` | 导出报告 |
+| `POST` | `/analysis/experiment/{id}/report/snapshots` | 生成报告快照 |
+| `GET` | `/analysis/experiment/{id}/report/snapshots` | 查询报告快照 |
+| `GET` | `/analysis/experiment/{id}/timeline` | 时间线 |
+| `GET` | `/analysis/experiment/{id}/ai-diagnosis` | 结构化 AI 诊断 |
+| `GET` | `/analysis/experiment/{id}/ai-graduation-decision` | 结构化 AI 毕业决策 |
+| `POST` | `/analysis/experiment/ai-design/v2` | 结构化 AI 实验设计 |
+
+### 仍保留的兼容接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/analysis/experiment/{id}/significance` | 显著性检验 |
+| `POST` | `/analysis/experiment/{id}/causal-inference` | 因果推断 |
 | `POST` | `/analysis/experiment/{id}/hte` | HTE 分析 |
-| `POST` | `/analysis/experiment/{id}/sensitive-groups` | 敏感群体识别 |
-| `GET` | `/analysis/experiment/{id}/report` | 导出实验报告，包含 `dataSummary`、`recommendations`、`decisionContext` |
-| `GET` | `/analysis/experiment/{id}/timeline` | 时间线分析 |
-| `GET` | `/analysis/experiment/{id}/ai-insights` | AI 解读 |
-| `POST` | `/analysis/experiment/ai-design` | AI 实验设计建议 |
-| `GET` | `/analysis/experiment/{id}/auto-graduate` | AI 自动毕业决策，返回 `dataQualityCheck` |
-| `GET` | `/analysis/experiment/{id}/predict-completion` | 预测实验完成时间，质量门禁或护栏异常时会返回阻断状态 |
+| `POST` | `/analysis/experiment/{id}/sensitive-groups` | 敏感群体 |
+| `GET` | `/analysis/experiment/{id}/ai-insights` | 旧 AI 解读接口 |
+| `POST` | `/analysis/experiment/ai-design` | 旧 AI 设计接口 |
+| `GET` | `/analysis/experiment/{id}/auto-graduate` | 旧自动毕业接口 |
+| `GET` | `/analysis/experiment/{id}/predict-completion` | 完成时间预测 |
 | `GET` | `/analysis/experiment/{id}/srm` | SRM 检测 |
-| `GET` | `/analysis/experiment/{id}/sequential` | 序贯检验，数据质量门禁未通过时会回退为继续观测 |
+| `GET` | `/analysis/experiment/{id}/sequential` | 序贯检验 |
 
-## 5. 变体生成
+## 变体生成
 
-控制器：`VariantController`
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `POST` | `/variants/text/generate` | 文本变体生成 |
-| `POST` | `/variants/image/generate` | 文生图 |
-| `POST` | `/variants/image/generate-from-image` | 图生图 |
-| `POST` | `/variants/image/edit` | 局部编辑 |
-| `POST` | `/variants/image/style-transfer` | 图片风格转换 |
-| `GET` | `/variants/image/download` | 下载生成图片 |
-| `GET` | `/variants/image/styles` | 可用风格列表 |
-| `POST` | `/variants/filter` | 二级筛选 |
-| `POST` | `/variants/evaluate` | 变体质量评估 |
-| `POST` | `/variants/text/demo` | 文本变体完整演示 |
-| `POST` | `/variants/experiment/flow` | 从变体生成到实验分析的完整演示 |
-
-## 6. 演示数据生成
-
-控制器：`ExperimentDataGeneratorController`
+### 当前推荐入口
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/experiments/generator/generate` | 自定义生成完整实验数据 |
-| `POST` | `/experiments/generator/generate/default` | 默认参数生成 |
-| `POST` | `/experiments/generator/generate/quick` | 推荐参数快速生成 |
-| `POST` | `/experiments/generator/{experimentId}/simulate` | 为已有实验补充演示数据 |
+| `POST` | `/variants/generate` | 统一生成候选变体，支持 `TEXT` / `IMAGE` |
 
-## 7. 鉴权现状
+### 兼容入口
 
-当前主要业务 Controller 都通过 `@NoTokenRequired` 放行，因此这些接口默认不要求 `X-Pisces-Api-Key`。
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/variants/text/generate` | 文本候选生成 |
+| `POST` | `/variants/image/generate` | 图片候选生成 |
 
-但系统已具备鉴权基础设施，后续新增敏感接口时可以直接启用 Header 鉴权。
+## 演示与补数
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/experiments/generator/demo` | 生成固定演示实验 |
+| `POST` | `/experiments/generator/{experimentId}/simulate` | 为已有实验补充真实事件数据，事件类型会遵循实验自己的 `eventDefinitions` / `metricDefinitions` |

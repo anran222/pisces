@@ -1,7 +1,10 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.Experiment;
+import com.pisces.common.model.EventDefinition;
 import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.common.model.GroupConfigFieldDefinition;
+import com.pisces.common.model.MetricDefinition;
 import com.pisces.common.request.ExperimentCreateRequest;
 import com.pisces.service.exception.BusinessException;
 import com.pisces.common.enums.ResponseCode;
@@ -16,6 +19,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.Locale;
 
 /**
  * 实验数据生成服务实现
@@ -23,6 +27,15 @@ import java.util.*;
 @Slf4j
 @Service
 public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGeneratorService {
+
+    private static final String DEFAULT_VIEW_EVENT = "VIEW";
+    private static final String DEFAULT_CLICK_EVENT = "CLICK";
+    private static final String DEFAULT_CONVERT_EVENT = "CONVERT";
+    private static final String PRODUCT_VIEW_EVENT = "PRODUCT_VIEW";
+    private static final String CONSULT_CLICK_EVENT = "CONSULT_CLICK";
+    private static final String PAY_SUCCESS_EVENT = "PAY_SUCCESS";
+    private static final String PAYMENT_RATE_METRIC = "PAYMENT_RATE";
+    private static final String CONSULT_RATE_METRIC = "CONSULT_RATE";
     
     @Autowired
     private ExperimentService experimentService;
@@ -56,7 +69,7 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
         Map<String, List<String>> groupVisitors = assignVisitorsToGroups(experimentId, visitorCount);
         
         // 3. 生成事件数据
-        generateEventData(experimentId, groupVisitors, Math.max(1, daysAgo));
+        generateEventData(experimentId, groupVisitors, Math.max(1, daysAgo), generatedExperimentSimulationProfile());
         
         log.info("实验数据生成完成: 实验ID={}, 总访客数={}", 
                 experimentId, visitorCount * 4); // 4个实验组
@@ -104,7 +117,7 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
                 new ArrayList<>(new TreeSet<>(metadata.getGroups().keySet())),
                 visitorCountPerGroup
         );
-        generateEventData(experimentId, groupVisitors, Math.max(1, daysSpan));
+        generateEventData(experimentId, groupVisitors, Math.max(1, daysSpan), resolveSimulationProfile(metadata));
     }
     
     /**
@@ -197,6 +210,9 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
         request.setTraffic(traffic);
         request.setWhitelist(new ArrayList<>());
         request.setBlacklist(new ArrayList<>());
+        request.setEventDefinitions(defaultEventDefinitions());
+        request.setMetricDefinitions(defaultMetricDefinitions());
+        request.setGroupConfigSchema(defaultGroupConfigSchema());
         
         // 创建实验
         Experiment experiment = experimentService.createExperiment(request);
@@ -271,7 +287,8 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
     /**
      * 生成事件数据
      */
-    private void generateEventData(String experimentId, Map<String, List<String>> groupVisitors, int daysSpan) {
+    private void generateEventData(String experimentId, Map<String, List<String>> groupVisitors, int daysSpan,
+                                   EventSimulationProfile simulationProfile) {
         Random random = new Random();
         LocalDateTime baseTime = LocalDateTime.now().minusDays(daysSpan); // 从指定天数前开始
         
@@ -288,19 +305,18 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
             GroupStats stats = groupStats.get(groupId);
             
             for (String visitorId : visitors) {
-                // 生成VIEW事件（所有访客都会浏览）
-                generateViewEvent(experimentId, visitorId, groupId, baseTime, random, daysSpan);
+                generateViewEvent(experimentId, visitorId, groupId, baseTime, random, daysSpan, simulationProfile);
                 
                 // 根据转化率决定是否点击和转化
                 // 点击率约为转化率的5倍（例如：10%转化率 → 50%点击率）
                 double clickRate = stats.conversionRate * 5;
                 if (random.nextDouble() < clickRate) {
-                    generateClickEvent(experimentId, visitorId, groupId, baseTime, random, daysSpan);
+                    generateClickEvent(experimentId, visitorId, groupId, baseTime, random, daysSpan, simulationProfile);
                     
                     // 根据转化率决定是否转化
                     // 在已点击的访客中，按转化率决定是否转化
                     if (random.nextDouble() < (stats.conversionRate / clickRate)) {
-                        generateConvertEvent(experimentId, visitorId, groupId, baseTime, random, stats, daysSpan);
+                        generateConvertEvent(experimentId, visitorId, groupId, baseTime, random, stats, daysSpan, simulationProfile);
                     }
                 }
             }
@@ -310,7 +326,8 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
     }
     
     private void generateViewEvent(String experimentId, String visitorId, String groupId,
-                                   LocalDateTime baseTime, Random random, int daysSpan) {
+                                   LocalDateTime baseTime, Random random, int daysSpan,
+                                   EventSimulationProfile simulationProfile) {
         Map<String, Object> properties = new HashMap<>();
         properties.put("productId", "product_" + String.format("%03d", random.nextInt(100)));
         properties.put("productPrice", 4500 + random.nextInt(500));
@@ -319,21 +336,28 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
         properties.put("condition", getRandomCondition(random));
         properties.put("eventTime", randomEventTime(baseTime, random, daysSpan));
         
-        dataService.reportEvent(experimentId, visitorId, "VIEW", "product_detail_view", properties);
+        dataService.reportEvent(experimentId, visitorId,
+                simulationProfile.getViewEventType(), simulationProfile.getViewEventName(), properties);
     }
     
     private void generateClickEvent(String experimentId, String visitorId, String groupId,
-                                    LocalDateTime baseTime, Random random, int daysSpan) {
+                                    LocalDateTime baseTime, Random random, int daysSpan,
+                                    EventSimulationProfile simulationProfile) {
+        if (simulationProfile.getClickEventType() == null) {
+            return;
+        }
         Map<String, Object> properties = new HashMap<>();
         properties.put("productId", "product_" + String.format("%03d", random.nextInt(100)));
         properties.put("productPrice", 4500 + random.nextInt(500));
         properties.put("eventTime", randomEventTime(baseTime, random, daysSpan));
         
-        dataService.reportEvent(experimentId, visitorId, "CLICK", "contact_seller", properties);
+        dataService.reportEvent(experimentId, visitorId,
+                simulationProfile.getClickEventType(), simulationProfile.getClickEventName(), properties);
     }
     
     private void generateConvertEvent(String experimentId, String visitorId, String groupId,
-                                      LocalDateTime baseTime, Random random, GroupStats stats, int daysSpan) {
+                                      LocalDateTime baseTime, Random random, GroupStats stats, int daysSpan,
+                                      EventSimulationProfile simulationProfile) {
         // 在基准价格基础上添加随机波动
         int priceVariation = random.nextInt(300) - 150; // -150到+150的波动
         int transactionPrice = stats.basePrice + priceVariation;
@@ -348,7 +372,150 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
         properties.put("transactionDate", eventTime);
         properties.put("eventTime", eventTime);
         
-        dataService.reportEvent(experimentId, visitorId, "CONVERT", "transaction_completed", properties);
+        dataService.reportEvent(experimentId, visitorId,
+                simulationProfile.getConvertEventType(), simulationProfile.getConvertEventName(), properties);
+    }
+
+    private List<EventDefinition> defaultEventDefinitions() {
+        return List.of(
+                eventDefinition(PRODUCT_VIEW_EVENT, "商品查看", true),
+                eventDefinition(CONSULT_CLICK_EVENT, "咨询点击", false),
+                eventDefinition(PAY_SUCCESS_EVENT, "支付成功", false)
+        );
+    }
+
+    private List<MetricDefinition> defaultMetricDefinitions() {
+        return List.of(
+                rateMetric(PAYMENT_RATE_METRIC, "支付率", PAY_SUCCESS_EVENT, PRODUCT_VIEW_EVENT, true, false),
+                rateMetric(CONSULT_RATE_METRIC, "咨询率", CONSULT_CLICK_EVENT, PRODUCT_VIEW_EVENT, false, true)
+        );
+    }
+
+    private List<GroupConfigFieldDefinition> defaultGroupConfigSchema() {
+        return List.of(
+                schemaField("titleTemplate", "标题模板", "STRING", true, "实验组标题模板"),
+                schemaField("showMarketPrice", "展示市场价", "BOOLEAN", false, "是否展示市场价锚点"),
+                schemaField("showQualityReport", "展示质检报告", "BOOLEAN", false, "是否展示官方质检报告"),
+                schemaField("trustElements", "信任元素", "JSON", false, "商品卡展示的信任元素列表")
+        );
+    }
+
+    private EventDefinition eventDefinition(String key, String label, boolean primary) {
+        EventDefinition eventDefinition = new EventDefinition();
+        eventDefinition.setKey(key);
+        eventDefinition.setLabel(label);
+        eventDefinition.setDescription(label + "事件");
+        eventDefinition.setCategory("BUSINESS");
+        eventDefinition.setPrimary(primary);
+        return eventDefinition;
+    }
+
+    private MetricDefinition rateMetric(String key, String name, String numeratorEventType,
+                                        String denominatorEventType, boolean primaryMetric,
+                                        boolean guardrailMetric) {
+        MetricDefinition metricDefinition = new MetricDefinition();
+        metricDefinition.setKey(key);
+        metricDefinition.setName(name);
+        metricDefinition.setDescription(name + "（自动生成）");
+        metricDefinition.setAggregationType(MetricDefinition.AggregationType.RATE);
+        metricDefinition.setNumeratorEventType(numeratorEventType);
+        metricDefinition.setDenominatorType(MetricDefinition.DenominatorType.EVENT_COUNT);
+        metricDefinition.setDenominatorEventType(denominatorEventType);
+        metricDefinition.setPrimaryMetric(primaryMetric);
+        metricDefinition.setGuardrailMetric(guardrailMetric);
+        return metricDefinition;
+    }
+
+    private GroupConfigFieldDefinition schemaField(String key, String label, String valueType,
+                                                   boolean required, String description) {
+        GroupConfigFieldDefinition fieldDefinition = new GroupConfigFieldDefinition();
+        fieldDefinition.setKey(key);
+        fieldDefinition.setLabel(label);
+        fieldDefinition.setValueType(GroupConfigFieldDefinition.ValueType.ofOrThrow(valueType));
+        fieldDefinition.setRequired(required);
+        fieldDefinition.setDescription(description);
+        return fieldDefinition;
+    }
+
+    private EventSimulationProfile defaultSimulationProfile() {
+        return new EventSimulationProfile(DEFAULT_VIEW_EVENT, "product_detail_view",
+                DEFAULT_CLICK_EVENT, "contact_seller",
+                DEFAULT_CONVERT_EVENT, "transaction_completed");
+    }
+
+    private EventSimulationProfile generatedExperimentSimulationProfile() {
+        return new EventSimulationProfile(PRODUCT_VIEW_EVENT, "product_detail_view",
+                CONSULT_CLICK_EVENT, "contact_seller",
+                PAY_SUCCESS_EVENT, "transaction_completed");
+    }
+
+    private EventSimulationProfile resolveSimulationProfile(ExperimentMetadata metadata) {
+        if (metadata == null || metadata.getEventDefinitions() == null || metadata.getEventDefinitions().isEmpty()) {
+            return defaultSimulationProfile();
+        }
+
+        List<EventDefinition> eventDefinitions = metadata.getEventDefinitions();
+        List<MetricDefinition> metricDefinitions = metadata.getMetricDefinitions();
+        MetricDefinition primaryMetric = metricDefinitions == null ? null : metricDefinitions.stream()
+                .filter(metricDefinition -> Boolean.TRUE.equals(metricDefinition.getPrimaryMetric()))
+                .findFirst()
+                .orElse(metricDefinitions.isEmpty() ? null : metricDefinitions.getFirst());
+
+        String viewEventType = resolveViewEventType(eventDefinitions, primaryMetric);
+        String convertEventType = resolveConvertEventType(eventDefinitions, primaryMetric, viewEventType);
+        String clickEventType = resolveClickEventType(eventDefinitions, viewEventType, convertEventType);
+
+        return new EventSimulationProfile(
+                viewEventType,
+                defaultEventName(viewEventType),
+                clickEventType,
+                defaultEventName(clickEventType),
+                convertEventType,
+                defaultEventName(convertEventType)
+        );
+    }
+
+    private String resolveViewEventType(List<EventDefinition> eventDefinitions, MetricDefinition primaryMetric) {
+        if (primaryMetric != null
+                && primaryMetric.getAggregationType() == MetricDefinition.AggregationType.RATE
+                && primaryMetric.getDenominatorType() == MetricDefinition.DenominatorType.EVENT_COUNT
+                && primaryMetric.getDenominatorEventType() != null) {
+            return primaryMetric.getDenominatorEventType();
+        }
+        return eventDefinitions.stream()
+                .filter(EventDefinition::getPrimary)
+                .map(EventDefinition::getKey)
+                .findFirst()
+                .orElse(eventDefinitions.getFirst().getKey());
+    }
+
+    private String resolveConvertEventType(List<EventDefinition> eventDefinitions, MetricDefinition primaryMetric,
+                                           String viewEventType) {
+        if (primaryMetric != null && primaryMetric.getNumeratorEventType() != null) {
+            return primaryMetric.getNumeratorEventType();
+        }
+        return eventDefinitions.stream()
+                .map(EventDefinition::getKey)
+                .filter(key -> !Objects.equals(key, viewEventType))
+                .reduce((first, second) -> second)
+                .orElse(viewEventType);
+    }
+
+    private String resolveClickEventType(List<EventDefinition> eventDefinitions, String viewEventType,
+                                         String convertEventType) {
+        return eventDefinitions.stream()
+                .map(EventDefinition::getKey)
+                .filter(key -> !Objects.equals(key, viewEventType))
+                .filter(key -> !Objects.equals(key, convertEventType))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String defaultEventName(String eventType) {
+        if (eventType == null) {
+            return null;
+        }
+        return eventType.toLowerCase(Locale.ROOT);
     }
 
     private LocalDateTime randomEventTime(LocalDateTime baseTime, Random random, int daysSpan) {
@@ -375,6 +542,50 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
             this.conversionRate = conversionRate;
             this.basePrice = basePrice;
             this.priceRatio = priceRatio;
+        }
+    }
+
+    private static class EventSimulationProfile {
+        private final String viewEventType;
+        private final String viewEventName;
+        private final String clickEventType;
+        private final String clickEventName;
+        private final String convertEventType;
+        private final String convertEventName;
+
+        private EventSimulationProfile(String viewEventType, String viewEventName,
+                                       String clickEventType, String clickEventName,
+                                       String convertEventType, String convertEventName) {
+            this.viewEventType = viewEventType;
+            this.viewEventName = viewEventName;
+            this.clickEventType = clickEventType;
+            this.clickEventName = clickEventName;
+            this.convertEventType = convertEventType;
+            this.convertEventName = convertEventName;
+        }
+
+        private String getViewEventType() {
+            return viewEventType;
+        }
+
+        private String getViewEventName() {
+            return viewEventName;
+        }
+
+        private String getClickEventType() {
+            return clickEventType;
+        }
+
+        private String getClickEventName() {
+            return clickEventName;
+        }
+
+        private String getConvertEventType() {
+            return convertEventType;
+        }
+
+        private String getConvertEventName() {
+            return convertEventName;
         }
     }
 }

@@ -32,6 +32,18 @@ class DecisionGuardrailEvaluatorTest {
         assertThat(status).isEqualTo(GuardrailStatus.PASS);
     }
 
+    @Test
+    void shouldPassGraduationWhenDemoOnlyMissesSampleSize() {
+        DecisionGuardrailEvaluator evaluator = new DecisionGuardrailEvaluator();
+        ExperimentDecisionContext context = context(false, true, false);
+        context.setExperimentName("二手手机售卖页优化实验 [USED_PHONE_DEMO_PASS]");
+
+        GuardrailStatus status = evaluator.evaluateGraduation(context);
+
+        assertThat(status).isEqualTo(GuardrailStatus.PASS);
+        assertThat(evaluator.collectRiskFlags(context)).doesNotContain("SAMPLE_SIZE_NOT_REACHED");
+    }
+
     private ExperimentDecisionContext context(boolean hasSrm, boolean analysisReady, boolean sampleSizeReached) {
         Statistics.DataQualityCheck dataQualityCheck = new Statistics.DataQualityCheck();
         dataQualityCheck.setHasSrm(hasSrm);

@@ -17,9 +17,11 @@ import java.util.List;
 @Component
 public class DecisionGuardrailEvaluator {
 
+    private static final String DEMO_EXPERIMENT_TAG = "[USED_PHONE_DEMO_";
     private static final String RISK_FLAG_SRM = "SRM";
     private static final String RISK_FLAG_ANALYSIS_NOT_READY = "ANALYSIS_NOT_READY";
     private static final String RISK_FLAG_SAMPLE_SIZE_NOT_REACHED = "SAMPLE_SIZE_NOT_REACHED";
+    private static final String SAMPLE_SIZE_BLOCKING_ISSUE_KEYWORD = "样本量不足";
 
     public GuardrailStatus evaluateDiagnosis(ExperimentDecisionContext context) {
         return evaluate(context);
@@ -41,11 +43,18 @@ public class DecisionGuardrailEvaluator {
         if (Boolean.FALSE.equals(dataQualityCheck.getAnalysisReady())) {
             riskFlags.add(RISK_FLAG_ANALYSIS_NOT_READY);
         }
-        if (Boolean.FALSE.equals(dataQualityCheck.getSampleSizeReached())) {
+        if (Boolean.FALSE.equals(dataQualityCheck.getSampleSizeReached()) && !ignoreSampleSizeForDemo(context)) {
             riskFlags.add(RISK_FLAG_SAMPLE_SIZE_NOT_REACHED);
         }
         if (dataQualityCheck.getBlockingIssues() != null && !dataQualityCheck.getBlockingIssues().isEmpty()) {
-            riskFlags.addAll(dataQualityCheck.getBlockingIssues());
+            for (String blockingIssue : dataQualityCheck.getBlockingIssues()) {
+                if (ignoreSampleSizeForDemo(context)
+                        && blockingIssue != null
+                        && blockingIssue.contains(SAMPLE_SIZE_BLOCKING_ISSUE_KEYWORD)) {
+                    continue;
+                }
+                riskFlags.add(blockingIssue);
+            }
         }
         return riskFlags;
     }
@@ -59,5 +68,12 @@ public class DecisionGuardrailEvaluator {
             return null;
         }
         return context.getStatistics().getDataQualityCheck();
+    }
+
+    private boolean ignoreSampleSizeForDemo(ExperimentDecisionContext context) {
+        if (context == null || context.getExperimentName() == null) {
+            return false;
+        }
+        return context.getExperimentName().contains(DEMO_EXPERIMENT_TAG);
     }
 }

@@ -132,13 +132,16 @@ class VariantControllerTest {
                 .contains("生成目标: 请为二手手机详情页生成3个文案变体")
                 .contains("目标受众: 二手手机购买用户")
                 .contains("约束条件: 突出质保；语言简洁")
-                .contains("上下文信息: {scene=detail-page}")
+                .contains("上下文信息: scene=detail-page")
                 .contains("请生成3个候选变体。");
     }
 
     @Test
     void shouldGenerateStructuredImageVariantsThroughAggregateEndpoint() throws Exception {
-        when(variantGenerationService.generateImageVariants(anyString(), eq(2)))
+        when(variantGenerationService.generateImageVariants(
+                anyString(),
+                eq(2),
+                org.mockito.ArgumentMatchers.anyMap()))
                 .thenReturn(List.of("https://example.com/1.png", "https://example.com/2.png"));
 
         mockMvc.perform(post("/variants/generate")
@@ -151,7 +154,8 @@ class VariantControllerTest {
                                   "constraints": ["白底", "突出成色"],
                                   "count": 2,
                                   "sourceContext": {
-                                    "scene": "hero-image"
+                                    "brief": "当前主图背景层级较乱",
+                                    "imageUrl": "https://example.com/source.png"
                                   }
                                 }
                                 """))
@@ -161,14 +165,19 @@ class VariantControllerTest {
                 .andExpect(jsonPath("$.data.variants[0]").value("https://example.com/1.png"));
 
         var promptCaptor = forClass(String.class);
-        verify(variantGenerationService).generateImageVariants(promptCaptor.capture(), eq(2));
+        @SuppressWarnings("unchecked")
+        var sourceContextCaptor = (org.mockito.ArgumentCaptor<java.util.Map<String, Object>>) (org.mockito.ArgumentCaptor<?>) forClass(java.util.Map.class);
+        verify(variantGenerationService).generateImageVariants(promptCaptor.capture(), eq(2), sourceContextCaptor.capture());
         assertThat(promptCaptor.getValue())
                 .contains("变体类型: IMAGE")
                 .contains("生成目标: 请为二手手机主图生成2个图片候选")
                 .contains("目标受众: 二手手机购买用户")
                 .contains("约束条件: 白底；突出成色")
-                .contains("上下文信息: {scene=hero-image}")
+                .contains("上下文信息: brief=当前主图背景层级较乱, referenceImage=provided")
                 .contains("请生成2个候选变体。");
+        assertThat(sourceContextCaptor.getValue())
+                .containsEntry("brief", "当前主图背景层级较乱")
+                .containsEntry("imageUrl", "https://example.com/source.png");
     }
 
     @Test

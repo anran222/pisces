@@ -22,6 +22,16 @@ public class TongYiConfig {
      * 可选值：qwen-turbo, qwen-plus, qwen-max等
      */
     private String model = "qwen-plus";
+
+    /**
+     * 文生图模型名称
+     */
+    private String imageGenerationModel = "wan2.6-t2i";
+
+    /**
+     * 图像编辑模型名称
+     */
+    private String imageEditModel = "wan2.6-image";
     
     /**
      * API请求超时时间（毫秒，默认：30000）

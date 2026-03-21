@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 变体生成控制器（无用户系统版本）
@@ -74,7 +75,7 @@ public class VariantController {
         int count = request.getCount() == null ? 1 : request.getCount();
         String prompt = buildVariantPrompt(request, normalizedVariantType);
 
-        List<String> variants = dispatchGenerateVariants(normalizedVariantType, prompt, count);
+        List<String> variants = dispatchGenerateVariants(normalizedVariantType, prompt, count, request.getSourceContext());
         if (variants == null) {
             return BaseResponse.error(ResponseCode.BAD_REQUEST, "不支持的变体类型: " + request.getVariantType());
         }
@@ -86,12 +87,15 @@ public class VariantController {
         return BaseResponse.of(GENERATE_SUCCESS_MESSAGE, response);
     }
 
-    private List<String> dispatchGenerateVariants(String normalizedVariantType, String prompt, int count) {
+    private List<String> dispatchGenerateVariants(String normalizedVariantType,
+                                                  String prompt,
+                                                  int count,
+                                                  Map<String, Object> sourceContext) {
         if ("TEXT".equals(normalizedVariantType)) {
             return variantGenerationService.generateTextVariants(prompt, count);
         }
         if ("IMAGE".equals(normalizedVariantType)) {
-            return variantGenerationService.generateImageVariants(prompt, count);
+            return variantGenerationService.generateImageVariants(prompt, count, sourceContext);
         }
         return null;
     }
@@ -109,9 +113,50 @@ public class VariantController {
             lines.add("约束条件: " + String.join("；", request.getConstraints()));
         }
         if (request.getSourceContext() != null && !request.getSourceContext().isEmpty()) {
-            lines.add("上下文信息: " + request.getSourceContext());
+            String sourceContextSummary = buildSourceContextSummary(request.getSourceContext());
+            if (StringUtils.hasText(sourceContextSummary)) {
+                lines.add("上下文信息: " + sourceContextSummary);
+            }
         }
         lines.add("请生成" + (request.getCount() == null ? 1 : request.getCount()) + "个候选变体。");
         return String.join("\n", lines);
+    }
+
+    private String buildSourceContextSummary(Map<String, Object> sourceContext) {
+        List<String> details = new ArrayList<>();
+        Object brief = sourceContext.get("brief");
+        if (brief instanceof String briefText && StringUtils.hasText(briefText)) {
+            details.add("brief=" + briefText.trim());
+        }
+
+        String genericContext = sourceContext.entrySet().stream()
+                .filter(entry -> !"brief".equals(entry.getKey()))
+                .filter(entry -> !"imageUrl".equals(entry.getKey()))
+                .filter(entry -> !"imageBase64".equals(entry.getKey()))
+                .filter(entry -> !"referenceImages".equals(entry.getKey()))
+                .map(entry -> entry.getKey() + "=" + entry.getValue())
+                .collect(Collectors.joining(", "));
+        if (StringUtils.hasText(genericContext)) {
+            details.add(genericContext);
+        }
+
+        if (hasTextValue(sourceContext.get("imageUrl"))) {
+            details.add("referenceImage=provided");
+        }
+        if (hasTextValue(sourceContext.get("imageBase64"))) {
+            details.add("referenceImageBase64=provided");
+        }
+        Object referenceImages = sourceContext.get("referenceImages");
+        if (referenceImages instanceof List<?> images && !images.isEmpty()) {
+            details.add("referenceImages=" + images.stream()
+                    .filter(this::hasTextValue)
+                    .count());
+        }
+
+        return String.join(", ", details);
+    }
+
+    private boolean hasTextValue(Object value) {
+        return value instanceof String text && StringUtils.hasText(text);
     }
 }

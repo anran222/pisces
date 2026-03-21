@@ -42,7 +42,9 @@ zookeeper:
 # 阿里通义千问API配置
 tongyi:
   apiKey: ${apiKey:sk-e2240756f78145fd879fcbb4f2767bf8} # 必须配置真实通义 API Key，否则 AI 流程直接失败
-  model: qwen-plus  # 模型名称：qwen-turbo, qwen-plus, qwen-max等
+  model: qwen3-max  # 文本生成默认模型；多模态模型请勿走 Generation 接口
+  imageGenerationModel: wan2.6-t2i  # 纯文生图模型
+  imageEditModel: wan2.6-image  # 带参考图编辑/转换模型
   timeout: 30000  # 请求超时时间（毫秒）
   enabled: true  # 是否启用通义API；关闭后 AI 流程将直接失败
 

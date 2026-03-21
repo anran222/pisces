@@ -2,6 +2,8 @@ package com.pisces.common.response;
 
 import com.pisces.common.model.Experiment;
 import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.common.model.EventDefinition;
+import com.pisces.common.model.GroupConfigFieldDefinition;
 import com.pisces.common.model.MetricDefinition;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -38,9 +40,19 @@ public class ExperimentResponse extends Experiment {
     private List<String> blacklist;
 
     /**
+     * 事件定义
+     */
+    private List<EventDefinition> eventDefinitions;
+
+    /**
      * 指标定义
      */
     private List<MetricDefinition> metricDefinitions;
+
+    /**
+     * 实验组配置字段定义
+     */
+    private List<GroupConfigFieldDefinition> groupConfigSchema;
 
     /**
      * 当前人工确认结论状态

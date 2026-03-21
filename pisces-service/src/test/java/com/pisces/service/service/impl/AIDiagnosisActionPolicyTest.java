@@ -8,10 +8,12 @@ import com.pisces.service.ai.AIDecisionJsonParser;
 import com.pisces.service.ai.DecisionGuardrailEvaluator;
 import com.pisces.service.ai.ExperimentDecisionContextBuilder;
 import com.pisces.service.ai.PromptTemplateBuilder;
+import com.pisces.service.ai.TongYiTextGenerationClient;
 import com.pisces.service.util.JsonUtil;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -32,7 +34,7 @@ class AIDiagnosisActionPolicyTest {
                 new PromptTemplateBuilder(),
                 new AIDecisionJsonParser(jsonUtil),
                 new DecisionGuardrailEvaluator(),
-                jsonUtil);
+                tongYiTextGenerationClient());
 
         when(contextBuilder.buildForExperiment("exp_1")).thenReturn(blockedContext());
 
@@ -41,6 +43,50 @@ class AIDiagnosisActionPolicyTest {
         assertThat(response.getRecommendedActions())
                 .extracting(AIDiagnosisResponse.RecommendedAction::getExecutionMode)
                 .contains("MANUAL_ONLY");
+    }
+
+    @Test
+    void shouldConvertStringDiagnosisActionsIntoStructuredActions() {
+        JsonUtil jsonUtil = new JsonUtil(new ObjectMapper());
+        ExperimentDecisionContextBuilder contextBuilder = mock(ExperimentDecisionContextBuilder.class);
+        AIDecisionServiceImpl service = new AIDecisionServiceImpl(
+                contextBuilder,
+                new PromptTemplateBuilder(),
+                new AIDecisionJsonParser(jsonUtil),
+                new DecisionGuardrailEvaluator(),
+                diagnosisStringActionClient());
+
+        when(contextBuilder.buildForExperiment("exp_1")).thenReturn(blockedContext());
+
+        AIDiagnosisResponse response = service.diagnoseExperiment("exp_1");
+
+        assertThat(response.getRecommendedActions())
+                .extracting(AIDiagnosisResponse.RecommendedAction::getAction)
+                .containsExactly("继续监控关键指标变化，特别是点击率和转化率", "确保样本量充足以支持后续统计显著性分析");
+        assertThat(response.getRecommendedActions())
+                .extracting(AIDiagnosisResponse.RecommendedAction::getExecutionMode)
+                .containsOnly("MANUAL_ONLY");
+    }
+
+    private TongYiTextGenerationClient tongYiTextGenerationClient() {
+        TongYiTextGenerationClient client = mock(TongYiTextGenerationClient.class);
+        when(client.generateText(anyString(), anyString(), anyString())).thenReturn("""
+                {
+                  "decisionType":"DIAGNOSIS",
+                  "summary":"发现样本分配异常",
+                  "confidence":0.72,
+                  "riskFlags":[],
+                  "guardrailStatus":"PASS",
+                  "recommendedActions":[
+                    {
+                      "title":"自动调流",
+                      "action":"提升实验组流量",
+                      "executionMode":"AUTO"
+                    }
+                  ]
+                }
+                """);
+        return client;
     }
 
     private ExperimentDecisionContext blockedContext() {
@@ -57,5 +103,23 @@ class AIDiagnosisActionPolicyTest {
         context.setExperimentName("新客首单优惠");
         context.setStatistics(statistics);
         return context;
+    }
+
+    private TongYiTextGenerationClient diagnosisStringActionClient() {
+        TongYiTextGenerationClient client = mock(TongYiTextGenerationClient.class);
+        when(client.generateText(anyString(), anyString(), anyString())).thenReturn("""
+                {
+                  "decisionType":"CONTINUE",
+                  "summary":"实验运行状态正常",
+                  "confidence":0.85,
+                  "riskFlags":[],
+                  "guardrailStatus":"HEALTHY",
+                  "recommendedActions":[
+                    "继续监控关键指标变化，特别是点击率和转化率",
+                    "确保样本量充足以支持后续统计显著性分析"
+                  ]
+                }
+                """);
+        return client;
     }
 }

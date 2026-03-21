@@ -3,6 +3,8 @@ package com.pisces.service.service.impl;
 import com.pisces.common.enums.ResponseCode;
 import com.pisces.common.model.Experiment;
 import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.common.model.EventDefinition;
+import com.pisces.common.model.GroupConfigFieldDefinition;
 import com.pisces.common.model.MetricDefinition;
 import com.pisces.common.model.TrafficConfig;
 import com.pisces.common.request.ExperimentConclusionStatusUpdateRequest;
@@ -14,6 +16,7 @@ import com.pisces.service.exception.BusinessException;
 import com.pisces.service.service.AnalysisService;
 import com.pisces.service.conclusion.ExperimentConclusionStatusPolicy;
 import com.pisces.service.rule.TrafficRuleEvaluator;
+import com.pisces.service.schema.GroupConfigSchemaValidator;
 import com.pisces.common.model.ExperimentReportSnapshot;
 import org.springframework.beans.BeanUtils;
 import lombok.extern.slf4j.Slf4j;
@@ -27,6 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -35,6 +39,8 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 public class ExperimentServiceImpl implements ExperimentService {
+
+    private static final Pattern DEFINITION_KEY_PATTERN = Pattern.compile("^[A-Z][A-Z0-9_]*$");
     
     @Autowired
     private ConfigService configService;
@@ -44,14 +50,19 @@ public class ExperimentServiceImpl implements ExperimentService {
 
     @Autowired
     private AnalysisService analysisService;
+
+    @Autowired
+    private GroupConfigSchemaValidator groupConfigSchemaValidator;
     
     /**
      * 创建实验（无用户系统版本）
      */
     @Override
     public Experiment createExperiment(ExperimentCreateRequest request) {
+        List<GroupConfigFieldDefinition> groupConfigSchema =
+                groupConfigSchemaValidator.normalizeSchema(request.getGroupConfigSchema());
         // 参数校验
-        validateExperimentRequest(request);
+        validateExperimentRequest(request, groupConfigSchema);
         
         // 生成实验ID
         String experimentId = "exp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
@@ -76,7 +87,8 @@ public class ExperimentServiceImpl implements ExperimentService {
                 group.setId(groupConfig.getId());
                 group.setName(groupConfig.getName());
                 group.setTrafficRatio(groupConfig.getTrafficRatio());
-                group.setConfig(groupConfig.getConfig());
+                group.setConfig(groupConfigSchemaValidator.normalizeGroupConfig(groupConfigSchema,
+                        groupConfig.getConfig(), groupConfig.getId()));
                 groups.put(group.getId(), group);
             }
         }
@@ -92,7 +104,9 @@ public class ExperimentServiceImpl implements ExperimentService {
         metadata.setTraffic(trafficConfig);
         metadata.setWhitelist(request.getWhitelist() != null ? request.getWhitelist() : new ArrayList<>());
         metadata.setBlacklist(request.getBlacklist() != null ? request.getBlacklist() : new ArrayList<>());
+        metadata.setEventDefinitions(resolveEventDefinitions(request));
         metadata.setMetricDefinitions(resolveMetricDefinitions(request));
+        metadata.setGroupConfigSchema(groupConfigSchema);
         metadata.setConclusionStatus(ExperimentMetadata.ConclusionStatus.NOT_READY);
         metadata.setConclusionUpdatedAt(LocalDateTime.now());
         
@@ -113,6 +127,9 @@ public class ExperimentServiceImpl implements ExperimentService {
      */
     @Override
     public Experiment updateExperiment(String experimentId, ExperimentCreateRequest request) {
+        List<GroupConfigFieldDefinition> groupConfigSchema =
+                groupConfigSchemaValidator.normalizeSchema(request.getGroupConfigSchema());
+        validateExperimentRequest(request, groupConfigSchema);
         ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
         if (metadata == null) {
             throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
@@ -133,7 +150,8 @@ public class ExperimentServiceImpl implements ExperimentService {
                 group.setId(groupConfig.getId());
                 group.setName(groupConfig.getName());
                 group.setTrafficRatio(groupConfig.getTrafficRatio());
-                group.setConfig(groupConfig.getConfig());
+                group.setConfig(groupConfigSchemaValidator.normalizeGroupConfig(groupConfigSchema,
+                        groupConfig.getConfig(), groupConfig.getId()));
                 groups.put(group.getId(), group);
             }
         }
@@ -146,7 +164,9 @@ public class ExperimentServiceImpl implements ExperimentService {
         // 更新白名单和黑名单
         metadata.setWhitelist(request.getWhitelist() != null ? request.getWhitelist() : new ArrayList<>());
         metadata.setBlacklist(request.getBlacklist() != null ? request.getBlacklist() : new ArrayList<>());
+        metadata.setEventDefinitions(resolveEventDefinitions(request));
         metadata.setMetricDefinitions(resolveMetricDefinitions(request));
+        metadata.setGroupConfigSchema(groupConfigSchema);
         metadata.setConfigVersion(Math.max(1L, metadata.getConfigVersion()) + 1);
         if (metadata.getConclusionStatus() == null) {
             metadata.setConclusionStatus(ExperimentMetadata.ConclusionStatus.NOT_READY);
@@ -398,7 +418,9 @@ public class ExperimentServiceImpl implements ExperimentService {
         
         response.setWhitelist(metadata.getWhitelist());
         response.setBlacklist(metadata.getBlacklist());
+        response.setEventDefinitions(metadata.getEventDefinitions());
         response.setMetricDefinitions(metadata.getMetricDefinitions());
+        response.setGroupConfigSchema(metadata.getGroupConfigSchema());
         response.setConclusionStatus(metadata.getConclusionStatus());
         response.setConclusionUpdatedAt(metadata.getConclusionUpdatedAt());
         response.setSuggestedConclusionStatus(metadata.getSuggestedConclusionStatus());
@@ -418,18 +440,12 @@ public class ExperimentServiceImpl implements ExperimentService {
         }
     }
 
-    private List<MetricDefinition> resolveMetricDefinitions(ExperimentCreateRequest request) {
-        if (request.getMetricDefinitions() != null && !request.getMetricDefinitions().isEmpty()) {
-            return normalizeMetricDefinitions(request.getMetricDefinitions());
-        }
-        return buildDefaultMetricDefinitions();
+    private List<EventDefinition> resolveEventDefinitions(ExperimentCreateRequest request) {
+        return normalizeEventDefinitions(request.getEventDefinitions());
     }
 
-    private List<MetricDefinition> buildDefaultMetricDefinitions() {
-        List<MetricDefinition> metricDefinitions = new ArrayList<>();
-        metricDefinitions.add(buildRateMetric("click_rate", "点击率", "CLICK", "VIEW", false, true));
-        metricDefinitions.add(buildRateMetric("conversion_rate", "转化率", "CONVERT", "VIEW", true, false));
-        return metricDefinitions;
+    private List<MetricDefinition> resolveMetricDefinitions(ExperimentCreateRequest request) {
+        return normalizeMetricDefinitions(request.getMetricDefinitions());
     }
 
     private TrafficConfig buildTrafficConfig(ExperimentCreateRequest.TrafficConfigRequest trafficRequest) {
@@ -492,43 +508,36 @@ public class ExperimentServiceImpl implements ExperimentService {
         }
     }
 
-    private MetricDefinition buildRateMetric(String key, String name, String numeratorEventType,
-                                             String denominatorEventType, boolean primaryMetric,
-                                             boolean guardrailMetric) {
-        MetricDefinition metricDefinition = new MetricDefinition();
-        metricDefinition.setKey(key);
-        metricDefinition.setName(name);
-        metricDefinition.setDescription(name + "（默认指标）");
-        metricDefinition.setAggregationType(MetricDefinition.AggregationType.RATE);
-        metricDefinition.setNumeratorEventType(numeratorEventType);
-        metricDefinition.setDenominatorType(MetricDefinition.DenominatorType.EVENT_COUNT);
-        metricDefinition.setDenominatorEventType(denominatorEventType);
-        metricDefinition.setPrimaryMetric(primaryMetric);
-        metricDefinition.setGuardrailMetric(guardrailMetric);
-        return metricDefinition;
+    private List<EventDefinition> normalizeEventDefinitions(List<EventDefinition> eventDefinitions) {
+        List<EventDefinition> normalizedDefinitions = new ArrayList<>();
+        for (EventDefinition eventDefinition : eventDefinitions) {
+            EventDefinition normalizedDefinition = new EventDefinition();
+            normalizedDefinition.setKey(normalizeDefinitionKey(eventDefinition.getKey(), "事件编码"));
+            normalizedDefinition.setLabel(requireTrimmedText(eventDefinition.getLabel(),
+                    "事件名称不能为空: " + eventDefinition.getKey()));
+            normalizedDefinition.setDescription(trimToNull(eventDefinition.getDescription()));
+            normalizedDefinition.setCategory(trimToNull(eventDefinition.getCategory()));
+            normalizedDefinition.setPrimary(Boolean.TRUE.equals(eventDefinition.getPrimary()));
+            normalizedDefinitions.add(normalizedDefinition);
+        }
+        return normalizedDefinitions;
     }
 
     private List<MetricDefinition> normalizeMetricDefinitions(List<MetricDefinition> metricDefinitions) {
         List<MetricDefinition> normalizedDefinitions = new ArrayList<>();
-        boolean hasPrimaryMetric = false;
         for (MetricDefinition metricDefinition : metricDefinitions) {
             MetricDefinition normalizedMetric = new MetricDefinition();
-            normalizedMetric.setKey(metricDefinition.getKey());
-            normalizedMetric.setName(metricDefinition.getName());
-            normalizedMetric.setDescription(metricDefinition.getDescription());
+            normalizedMetric.setKey(normalizeDefinitionKey(metricDefinition.getKey(), "指标编码"));
+            normalizedMetric.setName(requireTrimmedText(metricDefinition.getName(),
+                    "指标名称不能为空: " + metricDefinition.getKey()));
+            normalizedMetric.setDescription(trimToNull(metricDefinition.getDescription()));
             normalizedMetric.setAggregationType(metricDefinition.getAggregationType());
-            normalizedMetric.setNumeratorEventType(metricDefinition.getNumeratorEventType());
+            normalizedMetric.setNumeratorEventType(trimToNull(metricDefinition.getNumeratorEventType()));
             normalizedMetric.setDenominatorType(metricDefinition.getDenominatorType());
-            normalizedMetric.setDenominatorEventType(metricDefinition.getDenominatorEventType());
+            normalizedMetric.setDenominatorEventType(trimToNull(metricDefinition.getDenominatorEventType()));
             normalizedMetric.setPrimaryMetric(Boolean.TRUE.equals(metricDefinition.getPrimaryMetric()));
             normalizedMetric.setGuardrailMetric(Boolean.TRUE.equals(metricDefinition.getGuardrailMetric()));
-            if (Boolean.TRUE.equals(normalizedMetric.getPrimaryMetric())) {
-                hasPrimaryMetric = true;
-            }
             normalizedDefinitions.add(normalizedMetric);
-        }
-        if (!hasPrimaryMetric && !normalizedDefinitions.isEmpty()) {
-            normalizedDefinitions.get(0).setPrimaryMetric(true);
         }
         return normalizedDefinitions;
     }
@@ -679,7 +688,7 @@ public class ExperimentServiceImpl implements ExperimentService {
      */
     @Override
     public Map<String, Object> batchPauseExperiments(List<String> experimentIds) {
-        return batchOperation(experimentIds, "pause", this::pauseExperimentSafe);
+        return batchOperation(experimentIds, "pause", experimentId -> executeBatchOperation(experimentId, "暂停", this::pauseExperiment));
     }
     
     /**
@@ -687,7 +696,7 @@ public class ExperimentServiceImpl implements ExperimentService {
      */
     @Override
     public Map<String, Object> batchStopExperiments(List<String> experimentIds) {
-        return batchOperation(experimentIds, "stop", this::stopExperimentSafe);
+        return batchOperation(experimentIds, "stop", experimentId -> executeBatchOperation(experimentId, "停止", this::stopExperiment));
     }
     
     /**
@@ -695,7 +704,7 @@ public class ExperimentServiceImpl implements ExperimentService {
      */
     @Override
     public Map<String, Object> batchResumeExperiments(List<String> experimentIds) {
-        return batchOperation(experimentIds, "resume", this::resumeExperimentSafe);
+        return batchOperation(experimentIds, "resume", experimentId -> executeBatchOperation(experimentId, "恢复", this::resumeExperiment));
     }
     
     /**
@@ -703,7 +712,7 @@ public class ExperimentServiceImpl implements ExperimentService {
      */
     @Override
     public Map<String, Object> batchDeleteExperiments(List<String> experimentIds) {
-        return batchOperation(experimentIds, "delete", this::deleteExperimentSafe);
+        return batchOperation(experimentIds, "delete", experimentId -> executeBatchOperation(experimentId, "删除", this::deleteExperiment));
     }
     
     /**
@@ -767,67 +776,25 @@ public class ExperimentServiceImpl implements ExperimentService {
             default: return operation;
         }
     }
-    
-    /**
-     * 安全暂停实验（不抛异常，返回错误信息）
-     */
-    private String pauseExperimentSafe(String experimentId) {
+
+    private String executeBatchOperation(String experimentId,
+                                         String operationLabel,
+                                         java.util.function.Consumer<String> operation) {
         try {
-            pauseExperiment(experimentId);
+            operation.accept(experimentId);
             return null;
-        } catch (BusinessException e) {
-            return e.getMessage();
-        } catch (Exception e) {
-            return "暂停失败: " + e.getMessage();
-        }
-    }
-    
-    /**
-     * 安全停止实验
-     */
-    private String stopExperimentSafe(String experimentId) {
-        try {
-            stopExperiment(experimentId);
-            return null;
-        } catch (BusinessException e) {
-            return e.getMessage();
-        } catch (Exception e) {
-            return "停止失败: " + e.getMessage();
-        }
-    }
-    
-    /**
-     * 安全恢复实验
-     */
-    private String resumeExperimentSafe(String experimentId) {
-        try {
-            resumeExperiment(experimentId);
-            return null;
-        } catch (BusinessException e) {
-            return e.getMessage();
-        } catch (Exception e) {
-            return "恢复失败: " + e.getMessage();
-        }
-    }
-    
-    /**
-     * 安全删除实验
-     */
-    private String deleteExperimentSafe(String experimentId) {
-        try {
-            deleteExperiment(experimentId);
-            return null;
-        } catch (BusinessException e) {
-            return e.getMessage();
-        } catch (Exception e) {
-            return "删除失败: " + e.getMessage();
+        } catch (BusinessException exception) {
+            return exception.getMessage();
+        } catch (Exception exception) {
+            return operationLabel + "失败: " + exception.getMessage();
         }
     }
     
     /**
      * 校验实验创建请求参数
      */
-    private void validateExperimentRequest(ExperimentCreateRequest request) {
+    private void validateExperimentRequest(ExperimentCreateRequest request,
+                                           List<GroupConfigFieldDefinition> groupConfigSchema) {
         // 校验实验名称
         if (request.getName() == null || request.getName().trim().isEmpty()) {
             throw new BusinessException(ResponseCode.VALIDATION_ERROR, "实验名称不能为空");
@@ -858,6 +825,7 @@ public class ExperimentServiceImpl implements ExperimentService {
             if (group.getName() == null || group.getName().trim().isEmpty()) {
                 throw new BusinessException(ResponseCode.VALIDATION_ERROR, "实验组名称不能为空");
             }
+            groupConfigSchemaValidator.normalizeGroupConfig(groupConfigSchema, group.getConfig(), group.getId());
         }
         
         // 校验流量配置
@@ -928,13 +896,48 @@ public class ExperimentServiceImpl implements ExperimentService {
             }
         }
 
-        validateMetricDefinitions(request.getMetricDefinitions());
+        validateEventDefinitions(request.getEventDefinitions());
+        validateMetricDefinitions(request.getMetricDefinitions(), request.getEventDefinitions());
     }
 
-    private void validateMetricDefinitions(List<MetricDefinition> metricDefinitions) {
-        if (metricDefinitions == null || metricDefinitions.isEmpty()) {
-            return;
+    private void validateEventDefinitions(List<EventDefinition> eventDefinitions) {
+        if (eventDefinitions == null || eventDefinitions.isEmpty()) {
+            throw new BusinessException(ResponseCode.VALIDATION_ERROR, "至少需要定义一个事件");
         }
+
+        java.util.Set<String> eventKeys = new java.util.HashSet<>();
+        int primaryEventCount = 0;
+        for (EventDefinition eventDefinition : eventDefinitions) {
+            if (eventDefinition == null) {
+                throw new BusinessException(ResponseCode.VALIDATION_ERROR, "事件定义不能为空");
+            }
+            String eventKey = normalizeDefinitionKey(eventDefinition.getKey(), "事件编码");
+            if (!eventKeys.add(eventKey)) {
+                throw new BusinessException(ResponseCode.VALIDATION_ERROR, "事件编码重复: " + eventKey);
+            }
+            if (eventDefinition.getLabel() == null || eventDefinition.getLabel().trim().isEmpty()) {
+                throw new BusinessException(ResponseCode.VALIDATION_ERROR, "事件名称不能为空: " + eventKey);
+            }
+            if (Boolean.TRUE.equals(eventDefinition.getPrimary())) {
+                primaryEventCount++;
+            }
+        }
+
+        if (primaryEventCount > 1) {
+            throw new BusinessException(ResponseCode.VALIDATION_ERROR, "只能配置一个主事件");
+        }
+    }
+
+    private void validateMetricDefinitions(List<MetricDefinition> metricDefinitions,
+                                           List<EventDefinition> eventDefinitions) {
+        if (metricDefinitions == null || metricDefinitions.isEmpty()) {
+            throw new BusinessException(ResponseCode.VALIDATION_ERROR, "至少需要定义一个指标");
+        }
+
+        java.util.Set<String> definedEventKeys = eventDefinitions.stream()
+                .map(EventDefinition::getKey)
+                .map(this::normalizeDefinitionKey)
+                .collect(Collectors.toSet());
 
         java.util.Set<String> metricKeys = new java.util.HashSet<>();
         int primaryMetricCount = 0;
@@ -942,41 +945,95 @@ public class ExperimentServiceImpl implements ExperimentService {
             if (metricDefinition == null) {
                 throw new BusinessException(ResponseCode.VALIDATION_ERROR, "指标定义不能为空");
             }
-            if (metricDefinition.getKey() == null || metricDefinition.getKey().trim().isEmpty()) {
-                throw new BusinessException(ResponseCode.VALIDATION_ERROR, "指标编码不能为空");
-            }
-            if (!metricKeys.add(metricDefinition.getKey())) {
+            String metricKey = normalizeDefinitionKey(metricDefinition.getKey(), "指标编码");
+            if (!metricKeys.add(metricKey)) {
                 throw new BusinessException(ResponseCode.VALIDATION_ERROR,
-                        "指标编码重复: " + metricDefinition.getKey());
+                        "指标编码重复: " + metricKey);
+            }
+            if (metricDefinition.getName() == null || metricDefinition.getName().trim().isEmpty()) {
+                throw new BusinessException(ResponseCode.VALIDATION_ERROR, "指标名称不能为空: " + metricKey);
             }
             if (metricDefinition.getAggregationType() == null) {
                 throw new BusinessException(ResponseCode.VALIDATION_ERROR,
-                        "指标聚合类型不能为空: " + metricDefinition.getKey());
+                        "指标聚合类型不能为空: " + metricKey);
             }
             if (metricDefinition.getAggregationType() == MetricDefinition.AggregationType.RATE) {
                 if (metricDefinition.getDenominatorType() == null) {
                     throw new BusinessException(ResponseCode.VALIDATION_ERROR,
-                            "RATE 指标必须配置分母类型: " + metricDefinition.getKey());
+                            "RATE 指标必须配置分母类型: " + metricKey);
                 }
                 if (metricDefinition.getNumeratorEventType() == null
                         || metricDefinition.getNumeratorEventType().trim().isEmpty()) {
                     throw new BusinessException(ResponseCode.VALIDATION_ERROR,
-                            "RATE 指标必须配置分子事件: " + metricDefinition.getKey());
+                            "RATE 指标必须配置分子事件: " + metricKey);
                 }
+                validateMetricEventReference(metricDefinition.getNumeratorEventType(), definedEventKeys,
+                        "分子事件", metricKey);
                 if (metricDefinition.getDenominatorType() == MetricDefinition.DenominatorType.EVENT_COUNT
                         && (metricDefinition.getDenominatorEventType() == null
                         || metricDefinition.getDenominatorEventType().trim().isEmpty())) {
                     throw new BusinessException(ResponseCode.VALIDATION_ERROR,
-                            "事件型分母必须配置分母事件: " + metricDefinition.getKey());
+                            "事件型分母必须配置分母事件: " + metricKey);
                 }
+                if (metricDefinition.getDenominatorType() == MetricDefinition.DenominatorType.EVENT_COUNT) {
+                    validateMetricEventReference(metricDefinition.getDenominatorEventType(), definedEventKeys,
+                            "分母事件", metricKey);
+                }
+            }
+            if (metricDefinition.getAggregationType() == MetricDefinition.AggregationType.COUNT
+                    && metricDefinition.getNumeratorEventType() != null
+                    && !metricDefinition.getNumeratorEventType().trim().isEmpty()) {
+                validateMetricEventReference(metricDefinition.getNumeratorEventType(), definedEventKeys,
+                        "指标事件", metricKey);
             }
             if (Boolean.TRUE.equals(metricDefinition.getPrimaryMetric())) {
                 primaryMetricCount++;
             }
         }
 
+        if (primaryMetricCount == 0) {
+            throw new BusinessException(ResponseCode.VALIDATION_ERROR, "必须配置一个主指标");
+        }
         if (primaryMetricCount > 1) {
             throw new BusinessException(ResponseCode.VALIDATION_ERROR, "只能配置一个主指标");
         }
+    }
+
+    private void validateMetricEventReference(String eventKey, java.util.Set<String> definedEventKeys,
+                                              String role, String metricKey) {
+        String normalizedEventKey = normalizeDefinitionKey(eventKey, role);
+        if (!definedEventKeys.contains(normalizedEventKey)) {
+            throw new BusinessException(ResponseCode.VALIDATION_ERROR,
+                    role + "未在事件定义中声明: " + normalizedEventKey + "，指标: " + metricKey);
+        }
+    }
+
+    private String normalizeDefinitionKey(String key) {
+        return normalizeDefinitionKey(key, "编码");
+    }
+
+    private String normalizeDefinitionKey(String key, String fieldLabel) {
+        String normalizedKey = requireTrimmedText(key, fieldLabel + "不能为空").toUpperCase();
+        if (!DEFINITION_KEY_PATTERN.matcher(normalizedKey).matches()) {
+            throw new BusinessException(ResponseCode.VALIDATION_ERROR,
+                    fieldLabel + "格式不合法，仅支持大写英文、数字和下划线: " + normalizedKey);
+        }
+        return normalizedKey;
+    }
+
+    private String requireTrimmedText(String value, String errorMessage) {
+        String normalizedValue = trimToNull(value);
+        if (normalizedValue == null) {
+            throw new BusinessException(ResponseCode.VALIDATION_ERROR, errorMessage);
+        }
+        return normalizedValue;
+    }
+
+    private String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalizedValue = value.trim();
+        return normalizedValue.isEmpty() ? null : normalizedValue;
     }
 }

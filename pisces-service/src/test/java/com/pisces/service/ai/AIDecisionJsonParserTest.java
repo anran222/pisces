@@ -1,6 +1,7 @@
 package com.pisces.service.ai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.pisces.common.response.AIDiagnosisResponse;
 import com.pisces.common.response.AIGraduationDecisionResponse;
 import com.pisces.service.util.JsonUtil;
 import org.junit.jupiter.api.Test;
@@ -45,5 +46,50 @@ class AIDecisionJsonParserTest {
         assertThat(response.getGuardrailStatus()).isEqualTo("PASS");
         assertThat(response.getDecision()).isEqualTo("CONTINUE");
         assertThat(response.getRiskFlags()).containsExactly("sample_size_low");
+    }
+
+    @Test
+    void shouldNormalizeStringConfidenceInGraduationDecisionPayload() {
+        AIDecisionJsonParser parser = new AIDecisionJsonParser(new JsonUtil(new ObjectMapper()));
+        String json = """
+                {
+                  "decisionType": "GRADUATE",
+                  "summary": "实验结果稳定",
+                  "confidence": "HIGH",
+                  "riskFlags": [],
+                  "guardrailStatus": "PASS",
+                  "decision": "GRADUATE"
+                }
+                """;
+
+        AIGraduationDecisionResponse response = parser.parseGraduation(json);
+
+        assertThat(response.getConfidence()).isEqualTo(0.9D);
+        assertThat(response.getDecision()).isEqualTo("GRADUATE");
+    }
+
+    @Test
+    void shouldNormalizeDiagnosisActionsFromStringArray() {
+        AIDecisionJsonParser parser = new AIDecisionJsonParser(new JsonUtil(new ObjectMapper()));
+        String json = """
+                {
+                  "decisionType": "CONTINUE",
+                  "summary": "实验状态正常",
+                  "confidence": 0.85,
+                  "riskFlags": [],
+                  "guardrailStatus": "HEALTHY",
+                  "recommendedActions": [
+                    "继续监控关键指标变化",
+                    "确保样本量充足"
+                  ]
+                }
+                """;
+
+        AIDiagnosisResponse response = parser.parseDiagnosis(json);
+
+        assertThat(response.getGuardrailStatus()).isEqualTo("HEALTHY");
+        assertThat(response.getRecommendedActions())
+                .extracting(AIDiagnosisResponse.RecommendedAction::getAction)
+                .containsExactly("继续监控关键指标变化", "确保样本量充足");
     }
 }

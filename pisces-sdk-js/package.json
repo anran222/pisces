@@ -1,0 +1,9 @@
+{
+  "name": "pisces-sdk-js",
+  "version": "1.0.0",
+  "description": "Pisces runtime JavaScript SDK",
+  "main": "pisces-sdk.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

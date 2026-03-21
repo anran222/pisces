@@ -1,166 +1,143 @@
 # 领域模型
 
-## 1. 核心实体
+## Experiment
 
-| 实体 | 位置 | 作用 |
-| --- | --- | --- |
-| `Experiment` | `pisces-common/.../model/Experiment.java` | 实验基本信息与生命周期状态 |
-| `ExperimentMetadata` | `pisces-common/.../model/ExperimentMetadata.java` | 实验完整配置载体，实际配置中心存储对象 |
-| `ExperimentGroup` | `pisces-common/.../model/ExperimentGroup.java` | 实验组定义与组内配置 |
-| `TrafficConfig` | `pisces-common/.../model/TrafficConfig.java` | 总流量、分配策略、组配比 |
-| `Event` | `pisces-common/.../model/Event.java` | 采集到的行为事件 |
-| `Statistics` | `pisces-common/.../model/Statistics.java` | 聚合后的实验统计结果 |
-| `ExperimentLayer` | `pisces-common/.../model/ExperimentLayer.java` | Layer 分层与互斥/正交关系 |
-
-## 2. `Experiment`
-
-核心字段：
+核心实验实体，包含：
 
 - `id`
 - `name`
 - `description`
-- `status`: `DRAFT / RUNNING / PAUSED / STOPPED`
-- `startTime / endTime`
-- `creator / createTime / updateTime`
+- `status`
+- `startTime`
+- `endTime`
+- `conclusionStatus`
 
-用途：
+## ExperimentMetadata
 
-- 生命周期控制
-- 分流前状态检查
-- 分析报表基础元信息
+实验配置快照，包含：
 
-## 3. `ExperimentMetadata`
-
-这是项目最关键的配置聚合对象，包含：
-
-- `configVersion`：配置版本，驱动分流缓存失效
-- `layerId`：流量层
 - `experiment`
 - `groups`
 - `traffic`
-- `whitelist`
-- `blacklist`
+- `eventDefinitions`
+- `metricDefinitions`
+- `groupConfigSchema`
+- `configVersion`
 
-设计意图：
+## ExperimentGroup
 
-- `Experiment` 只管实验本身
-- `ExperimentMetadata` 才是“可分流、可分析”的完整实验
-
-## 4. `ExperimentGroup`
-
-字段：
+实验组定义，包含：
 
 - `id`
 - `name`
 - `trafficRatio`
 - `config`
 
-`config` 是可变的扩展载体，项目里的演示数据会在这里放 UI/价格/信任元素等参数。
+`config` 是每个实验组的实际值，是否有结构由 `groupConfigSchema` 决定。
 
-## 5. `TrafficConfig`
+## EventDefinition
 
-字段：
+实验级事件定义，包含：
+
+- `key`
+- `label`
+- `description`
+- `category`
+- `primary`
+
+`key` 当前要求使用大写英文下划线格式。
+
+## MetricDefinition
+
+实验级指标定义，包含：
+
+- `key`
+- `name`
+- `description`
+- `aggregationType`
+- `numeratorEventType`
+- `denominatorType`
+- `denominatorEventType`
+- `primaryMetric`
+- `guardrailMetric`
+
+指标通过实验自己的事件定义计算，不再默认回退到固定点击/转化口径。
+
+## GroupConfigFieldDefinition
+
+实验级可选字段定义，包含：
+
+- `key`
+- `label`
+- `valueType`
+- `required`
+- `description`
+- `defaultValue`
+
+当前支持的 `valueType`：
+
+- `STRING`
+- `INTEGER`
+- `BOOLEAN`
+- `OBJECT`
+- `JSON`
+
+## TrafficConfig
+
+实验流量配置，包含：
 
 - `totalTraffic`
-- `allocation`
 - `strategy`
-- `hashKey`
-- `rules`
-- `ruleFallbackStrategy`
+- `allocation`
+- 可选 `rules`
 
-当前支持的策略名：
+## Event / Exposure
 
-- `RANDOM`
-- `HASH`
-- `RULE`
-- `THOMPSON_SAMPLING`
-- `UCB`
+数据层核心输入：
 
-注意：
-
-- `RULE` 已支持最小规则引擎
-- 规则条件当前支持 `EQ / IN / CONTAINS / EXISTS`
-- 若规则未命中，则按 `ruleFallbackStrategy` 回退，默认 `HASH`
-
-## 6. `Event`
-
-字段：
-
-- `eventId`
 - `experimentId`
-- `userId`
-- `groupId`
+- `visitorId`
 - `eventType`
 - `eventName`
 - `properties`
-- `timestamp`
 
-重要兼容约定：
+`eventType` 既支持历史兼容事件，也支持实验定义的自定义事件 key。
 
-- 字段名仍叫 `userId`
-- 实际业务语义已经切换为 `visitorId`
-- 相关说明在 `Event`、`EventReportRequest`、`Statistics.GroupStatistics` 里都能看到兼容性注释
+## Statistics
 
-默认事件类型：
+统计聚合结果，包含：
 
-- `VIEW`
-- `CLICK`
-- `CONVERT`
+- `summary`
+- `groupStatistics`
+- `dataQualityCheck`
 
-事件时间提取规则：
+`dataQualityCheck` 是当前分析与 AI 决策门禁的事实来源。
 
-- 优先从 `properties.eventTime`
-- 其次 `properties.timestamp`
-- 再次 `properties.transactionDate`
-- 都没有则用服务端当前时间
+## AI 结果模型
 
-## 7. `Statistics`
+### `AIDesignResponse`
 
-由两层组成：
+- `decisionType`
+- `summary`
+- `confidence`
+- `riskFlags`
+- `guardrailStatus`
+- `experimentDraft`
 
-- `ExperimentSummary`
-- `GroupStatistics`
+### `AIDiagnosisResponse`
 
-`GroupStatistics` 关注：
+- `decisionType`
+- `summary`
+- `confidence`
+- `riskFlags`
+- `guardrailStatus`
+- `recommendedActions`
 
-- `userCount`：实际语义是访客数
-- `viewCount / clickCount / conversionCount`
-- `clickRate / conversionRate / liftRate`
-- `trafficRatio`
-- `isBaseline`
-- `metricValues`：指标中心计算结果
+### `AIGraduationDecisionResponse`
 
-`ExperimentSummary` 新增关注：
-
-- `primaryMetricKey / bestPrimaryMetricValue`
-- `breachedGuardrails`
-
-## 8. `ExperimentLayer`
-
-作用：
-
-- 同层互斥：一个访客在同一个 `MUTEX` 层只能进入一个实验
-- 跨层正交：不同层之间可以并行参与
-
-策略：
-
-- `MUTEX`
-- `ORTHOGONAL`
-
-## 9. 关键数据流
-
-### 9.1 配置流
-
-`ExperimentCreateRequest` -> `ExperimentServiceImpl` -> `ExperimentMetadata` -> `ConfigServiceImpl`
-
-### 9.2 分流流
-
-`visitorId` -> `TrafficServiceImpl` -> `groupId` -> Redis 缓存
-
-### 9.3 事件流
-
-`EventReportRequest` -> `DataServiceImpl` -> Redis Event/Counter/Visitor Set
-
-### 9.4 统计流
-
-`ConfigService.getExperimentConfig` + `DataService` 聚合 -> `Statistics`
+- `decisionType`
+- `summary`
+- `confidence`
+- `riskFlags`
+- `guardrailStatus`
+- `decision`

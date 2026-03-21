@@ -1,9 +1,11 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.Event;
+import com.pisces.common.model.EventDefinition;
 import com.pisces.common.model.Experiment;
 import com.pisces.common.model.ExperimentGroup;
 import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.common.model.MetricDefinition;
 import com.pisces.service.config.TongYiConfig;
 import com.pisces.service.service.BayesianAnalysisService;
 import com.pisces.service.service.CausalInferenceService;
@@ -70,12 +72,12 @@ class AnalysisServiceImplTimelineTest {
 
         when(configService.getExperimentConfig("exp_real_timeline")).thenReturn(metadata);
         when(dataService.getEvents("exp_real_timeline", "A")).thenReturn(List.of(
-                buildEvent("visitor-a1", "A", Event.EventType.VIEW, dayOneViewTime),
-                buildEvent("visitor-a1", "A", Event.EventType.CONVERT, dayOneConvertTime),
-                buildEvent("visitor-a2", "A", Event.EventType.VIEW, dayTwoViewTime)
+                buildEvent("visitor-a1", "A", "VIEW", dayOneViewTime),
+                buildEvent("visitor-a1", "A", "CONVERT", dayOneConvertTime),
+                buildEvent("visitor-a2", "A", "VIEW", dayTwoViewTime)
         ));
         when(dataService.getEvents("exp_real_timeline", "B")).thenReturn(List.of(
-                buildEvent("visitor-b1", "B", Event.EventType.VIEW, dayOneViewTime.plusHours(1))
+                buildEvent("visitor-b1", "B", "VIEW", dayOneViewTime.plusHours(1))
         ));
 
         TongYiConfig tongYiConfig = new TongYiConfig();
@@ -113,13 +115,82 @@ class AnalysisServiceImplTimelineTest {
         assertThat(dayTwoValues.get("A")).isEqualTo(0.0);
     }
 
-    private Event buildEvent(String visitorId, String groupId, Event.EventType type, LocalDateTime timestamp) {
+    @Test
+    void getExperimentTimelineShouldUseCustomMetricDefinitionWhenMetricKeyProvided() {
+        LocalDateTime start = LocalDateTime.now().truncatedTo(ChronoUnit.DAYS).minusDays(1);
+        LocalDateTime dayOneViewTime = start.plusHours(1);
+        LocalDateTime dayOnePayTime = start.plusHours(2);
+
+        ExperimentMetadata metadata = new ExperimentMetadata();
+        Experiment experiment = new Experiment();
+        experiment.setId("exp_custom_metric_timeline");
+        experiment.setName("自定义指标时间线实验");
+        experiment.setStartTime(start);
+        metadata.setExperiment(experiment);
+
+        ExperimentGroup groupA = new ExperimentGroup();
+        groupA.setId("A");
+        groupA.setName("A组");
+        metadata.setGroups(Map.of("A", groupA));
+        metadata.setEventDefinitions(List.of(
+                eventDefinition("PRODUCT_VIEW", "商品查看"),
+                eventDefinition("PAY_SUCCESS", "支付成功")
+        ));
+        metadata.setMetricDefinitions(List.of(metricDefinition("PAYMENT_RATE", "PAY_SUCCESS", "PRODUCT_VIEW")));
+
+        when(configService.getExperimentConfig("exp_custom_metric_timeline")).thenReturn(metadata);
+        when(dataService.getEvents("exp_custom_metric_timeline", "A")).thenReturn(List.of(
+                buildEvent("visitor-a1", "A", "PRODUCT_VIEW", dayOneViewTime),
+                buildEvent("visitor-a1", "A", "PAY_SUCCESS", dayOnePayTime),
+                buildEvent("visitor-a2", "A", "PRODUCT_VIEW", dayOneViewTime.plusHours(3))
+        ));
+
+        TongYiConfig tongYiConfig = new TongYiConfig();
+        tongYiConfig.setEnabled(true);
+        tongYiConfig.setApiKey("test-key");
+        ReflectionTestUtils.setField(analysisService, "tongYiConfig", tongYiConfig);
+
+        Map<String, Object> timeline = analysisService.getExperimentTimeline(
+                "exp_custom_metric_timeline", "PAYMENT_RATE", "DAY");
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> dataPoints = (List<Map<String, Object>>) timeline.get("dataPoints");
+        Map<String, Object> dayOnePoint = dataPoints.stream()
+                .filter(point -> ((LocalDateTime) point.get("timestamp")).toLocalDate().equals(start.toLocalDate()))
+                .findFirst()
+                .orElseThrow();
+        @SuppressWarnings("unchecked")
+        Map<String, Double> dayOneValues = (Map<String, Double>) dayOnePoint.get("values");
+
+        assertThat(dayOneValues.get("A")).isEqualTo(0.5);
+    }
+
+    private Event buildEvent(String visitorId, String groupId, String eventType, LocalDateTime timestamp) {
         Event event = new Event();
         event.setExperimentId("exp_real_timeline");
         event.setUserId(visitorId);
         event.setGroupId(groupId);
-        event.setEventType(type);
+        event.setEventType(eventType);
         event.setTimestamp(timestamp);
         return event;
+    }
+
+    private EventDefinition eventDefinition(String key, String label) {
+        EventDefinition definition = new EventDefinition();
+        definition.setKey(key);
+        definition.setLabel(label);
+        return definition;
+    }
+
+    private MetricDefinition metricDefinition(String key, String numeratorEventType, String denominatorEventType) {
+        MetricDefinition definition = new MetricDefinition();
+        definition.setKey(key);
+        definition.setName(key);
+        definition.setAggregationType(MetricDefinition.AggregationType.RATE);
+        definition.setNumeratorEventType(numeratorEventType);
+        definition.setDenominatorType(MetricDefinition.DenominatorType.EVENT_COUNT);
+        definition.setDenominatorEventType(denominatorEventType);
+        definition.setPrimaryMetric(true);
+        return definition;
     }
 }

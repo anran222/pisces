@@ -1,6 +1,7 @@
 package com.pisces.service.service;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 变体生成服务接口
@@ -23,4 +24,13 @@ public interface VariantGenerationService {
      * @return 生成的图像URL列表
      */
     List<String> generateImageVariants(String prompt, int count);
+
+    /**
+     * 生成图像类变体（支持纯文生图和带参考图转换）
+     * @param prompt 生成提示词
+     * @param count 生成数量
+     * @param sourceContext 上下文信息，可包含参考图URL或Base64
+     * @return 生成的图像URL列表
+     */
+    List<String> generateImageVariants(String prompt, int count, Map<String, Object> sourceContext);
 }

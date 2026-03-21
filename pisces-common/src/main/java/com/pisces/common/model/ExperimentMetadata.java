@@ -55,9 +55,19 @@ public class ExperimentMetadata implements Serializable {
     private List<String> blacklist;
 
     /**
+     * 事件定义列表
+     */
+    private List<EventDefinition> eventDefinitions;
+
+    /**
      * 指标定义列表
      */
     private List<MetricDefinition> metricDefinitions;
+
+    /**
+     * 实验组配置字段定义
+     */
+    private List<GroupConfigFieldDefinition> groupConfigSchema;
 
     /**
      * 当前结论状态

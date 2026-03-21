@@ -1,215 +1,79 @@
-# 架构与运行
+# 架构说明
 
-## 1. 工程结构
-
-父工程 `pom.xml` 只聚合了 3 个核心模块：
-
-- `pisces-common`
-- `pisces-service`
-- `pisces-api`
-
-`pisces-sdk-java` 和 `pisces-sdk-js` 在仓库中存在，但不在父 POM `modules` 内，当前更像附属 SDK 目录。
-
-## 2. 模块依赖
+## 总体结构
 
 ```mermaid
-flowchart TD
-    common[pisces-common]
-    service[pisces-service]
-    api[pisces-api]
-
-    service --> common
-    api --> common
-    api --> service
+flowchart LR
+    Client[前端 / SDK / 接入方] --> API[pisces-api]
+    API --> Service[pisces-service]
+    Service --> Common[pisces-common]
+    Service --> Redis[(Redis)]
+    Service --> ZK[(Zookeeper 可选)]
+    Service --> Repo[(MySQL / 内存配置仓库)]
+    Service --> TongYi[阿里百炼 DashScope]
 ```
 
-## 3. 配置与基础设施
+## 模块职责
 
-配置文件：`pisces-service/src/main/resources/application.yml`
+### `pisces-common`
 
-默认配置：
+- 实验、实验组、流量、统计、报告等模型
+- 请求体和响应体
+- `groupConfigSchema` 协议
 
-- `server.port = 9990`
-- `server.servlet.context-path = /api`
-- Redis：`localhost:6379`
-- Zookeeper：`localhost:2181`
-- 通义模型默认：`qwen-plus`
-- 安全 Header：`X-Pisces-Api-Key`
+### `pisces-service`
 
-## 4. 存储职责拆分
+- 实验主流程
+- 数据采集和统计
+- 流量分配和 MAB
+- AI 设计 / 诊断 / 毕业
+- 变体生成
+- 演示实验和补数
 
-### 4.1 Zookeeper / 配置管理
+### `pisces-api`
 
-由 `ConfigServiceImpl` 管理：
+- 暴露 REST 接口
+- 请求日志
+- 无用户系统模式下的大部分开放接口
 
-- 实验元数据 `ExperimentMetadata`
-- 分层配置 `ExperimentLayer`
-- 配置监听与缓存失效
+## 核心链路
 
-仓库规则：
+### 实验创建
 
-- 实验配置仓库固定通过数据库持久化，不再提供内存实现
-- 如果数据源或 `pisces_experiment_config` 表不可用，服务会直接启动失败
-- 当前已提供建表 SQL：`pisces-service/src/main/resources/sql/mysql/pisces_experiment_config.sql`
-- 数据库链路当前已统一改为 `repository -> mapper interface -> mapper.xml`，SQL 不再内嵌在 Java 代码中
+1. `ExperimentController` 接收创建请求
+2. `ExperimentServiceImpl` 校验实验基础信息
+3. `GroupConfigSchemaValidator` 校验 `groupConfigSchema` 和各组 `config`
+4. `ConfigServiceImpl` 保存 `ExperimentMetadata`
 
-### 4.2 MySQL
+### 分流
 
-当前 MySQL 主要承担五类持久化职责：
+1. `TrafficController` 接收 `experimentId + visitorId + attributes`
+2. `TrafficServiceImpl` 读取配置
+3. 按策略分配实验组
+4. 必要时读取 / 更新 MAB 状态
 
-- `pisces_experiment_config`：实验配置持久化
-- `pisces_experiment_report_snapshot`：实验报告快照归档
-- `pisces_experiment_assignment`：分流事实
-- `pisces_experiment_exposure`：曝光事实
-- `pisces_experiment_event`：事件事实
+### 事件与统计
 
-代码结构已收口为：
+1. `DataController` 接收曝光和事件
+2. `DataServiceImpl` 写入事件与计数
+3. `AnalysisServiceImpl` 聚合统计、质量检查、对比和报告
 
-- `repository`：领域语义仓库，对上层 Service 暴露 `save/find/list` 等业务能力
-- `entity`：数据库行模型
-- `mapper interface`：MyBatis 映射接口
-- `mapper.xml`：唯一 SQL 定义位置
+### AI 决策
 
-当前对应实现：
+1. `AnalysisController` 进入结构化 AI 接口
+2. `AIDecisionServiceImpl` 组装 prompt
+3. `TongYiTextGenerationClient` 调用通义文本模型
+4. `AIDecisionJsonParser` 解析结构化 JSON
+5. `DecisionGuardrailEvaluator` 根据数据质量结果做门禁修正
 
-- `ExperimentConfigRepository` -> `DatabaseExperimentConfigRepository` -> `ExperimentConfigMapper` -> `ExperimentConfigMapper.xml`
-- `ExperimentReportSnapshotRepository` -> `DatabaseExperimentReportSnapshotRepository` -> `ExperimentReportSnapshotMapper` -> `ExperimentReportSnapshotMapper.xml`
-- `ExperimentAssignmentRepository` -> `ExperimentAssignmentMapper` -> `ExperimentAssignmentMapper.xml`
-- `ExperimentExposureRepository` -> `ExperimentExposureMapper` -> `ExperimentExposureMapper.xml`
-- `ExperimentEventRepository` -> `ExperimentEventMapper` -> `ExperimentEventMapper.xml`
+## 存储边界
 
-### 4.3 Redis
+- Redis：事件、计数、访客去重、流量缓存、MAB 参数
+- Zookeeper：实验配置主存储，可选
+- 配置仓库：Zookeeper 不可用时承接配置；当前支持 MySQL 或内存
 
-由 `TrafficServiceImpl`、`DataServiceImpl`、`MultiArmedBanditServiceImpl`、`IdentityServiceImpl` 共同使用。
+## 当前约束
 
-当前职责已收口为：
-
-- 分组缓存
-- 在线计数与热点查询投影
-- Layer 互斥标记
-- MAB 状态
-- 身份绑定
-
-主要 Key 约定：
-
-- `pisces:traffic:group:{visitorId}`：访客分组缓存
-- `pisces:assignment:{experimentId}:{visitorId}`：分流缓存投影
-- `pisces:assignment:set:{experimentId}:{groupId}`：实验组 assignment 投影集合
-- `pisces:layer:assign:{layerId}:{visitorId}`：Layer 互斥标记
-- `pisces:event:store:{experimentId}:{groupId}`：事件投影列表
-- `pisces:event:counter:{experimentId}:{groupId}`：事件计数投影
-- `pisces:visitor:set:{experimentId}:{groupId}`：访客去重投影集合
-- `pisces:exposure:{experimentId}:{visitorId}`：曝光缓存投影
-- `pisces:exposure:set:{experimentId}:{groupId}`：实验组 exposure 投影集合
-- `pisces:mab:beta:{experimentId}`：Thompson Sampling 参数
-- `pisces:mab:ucb:{experimentId}`：UCB 统计
-- `pisces:mab:trials:{experimentId}`：UCB 总尝试次数
-- `pisces:identity:bind:{deviceId}`：deviceId -> userId
-
-### 4.4 AI 决策引擎
-
-当前 AI 决策主链已经从 `AnalysisServiceImpl` 的散落式 AI 能力中抽离，统一收口到 `AIDecisionService`。
-
-核心组件：
-
-- `AIDecisionService`：统一暴露实验设计、实验诊断、毕业决策 3 个入口
-- `ExperimentDecisionContextBuilder`：从 `AnalysisService` 聚合实验统计和数据质量事实
-- `PromptTemplateBuilder`：约束大模型必须返回结构化 JSON
-- `AIDecisionJsonParser`：解析并校验 AI JSON 载荷
-- `DecisionGuardrailEvaluator`：基于 `Statistics.DataQualityCheck` 判断 `PASS / BLOCKED`
-
-当前执行边界：
-
-- AI 不直接执行实验状态变更
-- AI 不直接改流量配置
-- 诊断动作统一要求人工执行
-- 旧 `autoGraduateDecision` 已桥接到新引擎，兼容旧接口返回 `Map<String, Object>` 的调用方
-
-## 5. 请求处理横切逻辑
-
-### 5.1 鉴权
-
-`ApiKeyAuthInterceptor` 规则：
-
-- 命中 `pisces.security.skip-paths` 放行
-- 类或方法带 `@NoTokenRequired` 放行
-- 其他接口要求请求头 `X-Pisces-Api-Key`
-
-当前业务 Controller 基本都打了 `@NoTokenRequired`，因此主链路接口默认无需鉴权。
-
-### 5.2 日志
-
-日志链路由三部分组成：
-
-- `RequestIdFilter`：注入 `X-Request-Id`
-- `ApiBodyLogFilter`：打印请求/响应体，自动脱敏与截断
-- `ApiLogAspect`：记录控制器级请求、响应摘要与异常
-
-## 6. 关键运行流程
-
-### 6.1 创建实验
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant A as ExperimentController
-    participant S as ExperimentServiceImpl
-    participant CFG as ConfigServiceImpl
-    participant Z as Zookeeper/Cache
-
-    C->>A: POST /experiments
-    A->>S: createExperiment(request)
-    S->>CFG: saveExperimentConfig(experimentId, metadata)
-    CFG->>Z: 持久化或缓存
-    CFG-->>S: ok
-    S-->>A: Experiment
-    A-->>C: BaseResponse
-```
-
-### 6.2 分流与事件
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant T as TrafficController
-    participant TS as TrafficServiceImpl
-    participant D as DataController
-    participant DS as DataServiceImpl
-    participant DB as MySQL
-    participant R as Redis
-
-    C->>T: POST /traffic/assign
-    T->>TS: assignGroup(experimentId, visitorId, attributes)
-    TS->>DB: 写 assignment 事实
-    TS->>R: 刷新分组缓存投影
-    TS-->>C: groupId
-
-    C->>D: POST /data/exposure
-    D->>DS: reportExposure(...)
-    DS->>DB: 写 exposure 事实
-    DS->>R: 刷新 exposure 投影
-
-    C->>D: POST /data/event
-    D->>DS: reportEvent(...)
-    DS->>TS: getUserGroup(...)
-    DS->>DB: 写 event 事实
-    DS->>R: 刷新事件/计数/访客集合投影
-```
-
-## 7. 运行依赖的真实要求
-
-需要明确区分“可选”与“实际不可少”：
-
-- Zookeeper：可选，但配置监听和分层配置仍依赖它
-- Redis：业务运行仍强依赖；分流缓存、在线投影、MAB、身份绑定都依赖 Redis
-- 通义 API：仅 AI 相关能力依赖，不影响基础实验管理
-
-## 8. 代码级运行风险
-
-- 实验配置当前不再以内存方式持久保留，数据库是唯一持久化来源
-- `assignment / exposure / event` 当前已切换为数据库正式事实源
-- `RULE` 分流策略已是最小可用规则引擎，但暂不支持复杂布尔表达式和数值比较
-- 统计、对比、贝叶斯分析、报告、预测完成时间等分析出口，当前都统一以 `traffic.allocation` 首组作为基准组来源
-- 贝叶斯分析的胜率计算当前已跟随主指标定义的分子/分母口径，若主指标是曝光分母，则会直接使用 exposure 数据而不是 `VIEW`
-- 部分 README/SDK 文档仍使用 `http://localhost:8080/api`，与当前 `application.yml` 的 `9990` 不一致
-- 结构化 AI 决策接口当前仍以建议模式运行，尚未进入自动执行闭环
+- AI 不自动执行实验变更
+- 演示实验允许固定数据
+- 非演示实验的分析、创建和补数必须走真实数据链路

@@ -63,16 +63,9 @@ class ExperimentDemoServiceImplTest {
                         .get("demoAssignedGroup")));
         when(analysisService.getStatistics("exp_pass")).thenReturn(statistics("exp_pass", "D", 0.70, 0.82));
         when(analysisService.getStatistics("exp_fail")).thenReturn(statistics("exp_fail", "D", 0.70, 0.705));
-        when(analysisService.autoGraduateDecision("exp_pass")).thenReturn(Map.of(
-                "canGraduate", true,
-                "recommendedVariant", "D"
-        ));
-        when(analysisService.autoGraduateDecision("exp_fail")).thenReturn(Map.of(
-                "canGraduate", false,
-                "recommendedVariant", "D"
-        ));
         when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", true));
         when(analysisService.shouldEarlyStop("exp_fail", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
+        when(analysisService.autoGraduateDecision("exp_pass")).thenReturn(Map.of("decision", "GRADUATE"));
 
         ExperimentDemoService.ExperimentDemoResult result = experimentDemoService.generateUsedPhoneDemo();
 
@@ -81,8 +74,9 @@ class ExperimentDemoServiceImplTest {
         verify(experimentService, times(2)).createExperiment(any(ExperimentCreateRequest.class));
         verify(experimentService).startExperiment("exp_pass");
         verify(experimentService).startExperiment("exp_fail");
+        verify(trafficService, times(400)).assignGroup(anyString(), anyString(), anyMap());
         verify(dataService, atLeastOnce()).reportExposure(eq("exp_pass"), anyString(), anyMap());
-        verify(dataService, atLeastOnce()).reportEvent(eq("exp_pass"), anyString(), eq("VIEW"), anyString(), anyMap());
+        verify(dataService, atLeastOnce()).reportEvent(eq("exp_pass"), anyString(), eq("PRODUCT_VIEW"), anyString(), anyMap());
 
         ArgumentCaptor<ExperimentCreateRequest> requestCaptor = ArgumentCaptor.forClass(ExperimentCreateRequest.class);
         verify(experimentService, times(2)).createExperiment(requestCaptor.capture());
@@ -93,12 +87,31 @@ class ExperimentDemoServiceImplTest {
         assertThat(requestCaptor.getAllValues())
                 .extracting(request -> request.getTraffic().getStrategy())
                 .containsOnly("RULE");
+        assertThat(requestCaptor.getAllValues())
+                .allSatisfy(request -> {
+                    assertThat(request.getEventDefinitions()).isNotEmpty();
+                    assertThat(request.getEventDefinitions())
+                            .extracting(definition -> definition.getKey())
+                            .containsExactly("PRODUCT_VIEW", "CONSULT_CLICK", "PAY_SUCCESS");
+                    assertThat(request.getMetricDefinitions()).isNotEmpty();
+                    assertThat(request.getMetricDefinitions())
+                            .extracting(definition -> definition.getKey())
+                            .containsExactly("PAYMENT_RATE", "CONSULT_RATE");
+                    assertThat(request.getGroupConfigSchema()).isNotEmpty();
+                    assertThat(request.getGroupConfigSchema())
+                            .extracting(field -> field.getKey())
+                            .contains("mainTitle", "subtitle", "showQualityBadge", "badgeCount",
+                                    "cardMeta", "highlightTags");
+                    assertThat(request.getGroups()).allSatisfy(group ->
+                            assertThat(group.getConfig()).containsKeys("mainTitle", "subtitle",
+                                    "showQualityBadge", "badgeCount", "cardMeta", "highlightTags"));
+                });
 
         assertThat(result.getQualifiedExperiment().getExperimentId()).isEqualTo("exp_pass");
         assertThat(result.getQualifiedExperiment().getCanGraduate()).isTrue();
         assertThat(result.getQualifiedExperiment().getCanStop()).isTrue();
         assertThat(result.getQualifiedExperiment().getAutoGraduateUrl())
-                .isEqualTo("/api/analysis/experiment/exp_pass/auto-graduate");
+                .isEqualTo("/api/analysis/experiment/exp_pass/ai-graduation-decision");
         assertThat(result.getUnqualifiedExperiment().getExperimentId()).isEqualTo("exp_fail");
         assertThat(result.getUnqualifiedExperiment().getCanGraduate()).isFalse();
         assertThat(result.getUnqualifiedExperiment().getCanStop()).isFalse();
@@ -114,20 +127,84 @@ class ExperimentDemoServiceImplTest {
                 .thenAnswer(invocation -> String.valueOf(invocation.<Map<String, Object>>getArgument(2)
                         .get("demoAssignedGroup")));
         when(analysisService.getStatistics(anyString())).thenReturn(statistics("exp_pass", "D", 0.70, 0.82));
-        when(analysisService.autoGraduateDecision("exp_pass")).thenReturn(Map.of(
-                "canGraduate", false,
-                "recommendedVariant", "D"
-        ));
-        when(analysisService.autoGraduateDecision("exp_fail")).thenReturn(Map.of(
-                "canGraduate", false,
-                "recommendedVariant", "D"
-        ));
         when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", true));
-        when(analysisService.shouldEarlyStop("exp_fail", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
+        when(analysisService.autoGraduateDecision("exp_pass")).thenReturn(Map.of("decision", "CONTINUE"));
 
         assertThatThrownBy(() -> experimentDemoService.generateUsedPhoneDemo())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("达标实验");
+    }
+
+    @Test
+    void generateUsedPhoneDemoShouldInvokeAiGraduationDecision() {
+        when(experimentService.listExperiments()).thenReturn(List.of());
+        when(experimentService.createExperiment(any(ExperimentCreateRequest.class)))
+                .thenReturn(experiment("exp_pass", "二手手机售卖实验 [USED_PHONE_DEMO_PASS]"))
+                .thenReturn(experiment("exp_fail", "二手手机售卖实验 [USED_PHONE_DEMO_FAIL]"));
+        when(trafficService.assignGroup(anyString(), anyString(), anyMap()))
+                .thenAnswer(invocation -> String.valueOf(invocation.<Map<String, Object>>getArgument(2)
+                        .get("demoAssignedGroup")));
+        when(analysisService.getStatistics("exp_pass")).thenReturn(statistics("exp_pass", "D", 0.70, 0.82));
+        when(analysisService.getStatistics("exp_fail")).thenReturn(statistics("exp_fail", "D", 0.70, 0.705));
+        when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", true));
+        when(analysisService.shouldEarlyStop("exp_fail", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
+        when(analysisService.autoGraduateDecision("exp_pass")).thenReturn(Map.of("decision", "GRADUATE"));
+
+        ExperimentDemoService.ExperimentDemoResult result = experimentDemoService.generateUsedPhoneDemo();
+
+        verify(analysisService).autoGraduateDecision("exp_pass");
+        assertThat(result.getQualifiedExperiment().getCanGraduate()).isTrue();
+        assertThat(result.getQualifiedExperiment().getCanStop()).isTrue();
+        assertThat(result.getUnqualifiedExperiment().getCanGraduate()).isFalse();
+        assertThat(result.getUnqualifiedExperiment().getCanStop()).isFalse();
+    }
+
+    @Test
+    void generateUsedPhoneDemoShouldFallbackStopDecisionWhenDemoLiftIsClear() {
+        when(experimentService.listExperiments()).thenReturn(List.of());
+        when(experimentService.createExperiment(any(ExperimentCreateRequest.class)))
+                .thenReturn(experiment("exp_pass", "二手手机售卖实验 [USED_PHONE_DEMO_PASS]"))
+                .thenReturn(experiment("exp_fail", "二手手机售卖实验 [USED_PHONE_DEMO_FAIL]"));
+        when(trafficService.assignGroup(anyString(), anyString(), anyMap()))
+                .thenAnswer(invocation -> String.valueOf(invocation.<Map<String, Object>>getArgument(2)
+                        .get("demoAssignedGroup")));
+        when(analysisService.getStatistics("exp_pass")).thenReturn(statistics("exp_pass", "D", 0.60, 0.76));
+        when(analysisService.getStatistics("exp_fail")).thenReturn(statistics("exp_fail", "D", 0.60, 0.62));
+        when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
+        when(analysisService.shouldEarlyStop("exp_fail", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
+        when(analysisService.autoGraduateDecision("exp_pass")).thenReturn(Map.of("decision", "GRADUATE"));
+
+        ExperimentDemoService.ExperimentDemoResult result = experimentDemoService.generateUsedPhoneDemo();
+
+        assertThat(result.getQualifiedExperiment().getCanGraduate()).isTrue();
+        assertThat(result.getQualifiedExperiment().getCanStop()).isTrue();
+        assertThat(result.getUnqualifiedExperiment().getCanGraduate()).isFalse();
+        assertThat(result.getUnqualifiedExperiment().getCanStop()).isFalse();
+    }
+
+    @Test
+    void generateUsedPhoneDemoShouldUsePrimaryMetricWhenLegacyConversionRateIsEmpty() {
+        when(experimentService.listExperiments()).thenReturn(List.of());
+        when(experimentService.createExperiment(any(ExperimentCreateRequest.class)))
+                .thenReturn(experiment("exp_pass", "二手手机售卖实验 [USED_PHONE_DEMO_PASS]"))
+                .thenReturn(experiment("exp_fail", "二手手机售卖实验 [USED_PHONE_DEMO_FAIL]"));
+        when(trafficService.assignGroup(anyString(), anyString(), anyMap()))
+                .thenAnswer(invocation -> String.valueOf(invocation.<Map<String, Object>>getArgument(2)
+                        .get("demoAssignedGroup")));
+        when(analysisService.getStatistics("exp_pass")).thenReturn(statisticsWithPrimaryMetric("exp_pass", "D", 0.60, 0.76));
+        when(analysisService.getStatistics("exp_fail")).thenReturn(statisticsWithPrimaryMetric("exp_fail", "D", 0.60, 0.62));
+        when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
+        when(analysisService.shouldEarlyStop("exp_fail", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
+        when(analysisService.autoGraduateDecision("exp_pass")).thenReturn(Map.of("decision", "GRADUATE"));
+
+        ExperimentDemoService.ExperimentDemoResult result = experimentDemoService.generateUsedPhoneDemo();
+
+        assertThat(result.getQualifiedExperiment().getCanGraduate()).isTrue();
+        assertThat(result.getQualifiedExperiment().getCanStop()).isTrue();
+        assertThat(result.getQualifiedExperiment().getBaselineConversionRate()).isEqualTo(0.60);
+        assertThat(result.getQualifiedExperiment().getWinningConversionRate()).isEqualTo(0.76);
+        assertThat(result.getUnqualifiedExperiment().getCanGraduate()).isFalse();
+        assertThat(result.getUnqualifiedExperiment().getCanStop()).isFalse();
     }
 
     private Experiment experiment(String experimentId, String experimentName) {
@@ -153,6 +230,35 @@ class ExperimentDemoServiceImplTest {
         Statistics.GroupStatistics target = new Statistics.GroupStatistics();
         target.setGroupId("D");
         target.setConversionRate(targetRate);
+
+        Map<String, Statistics.GroupStatistics> groupStatistics = new LinkedHashMap<>();
+        groupStatistics.put("A", baseline);
+        groupStatistics.put("D", target);
+        statistics.setGroupStatistics(groupStatistics);
+        return statistics;
+    }
+
+    private Statistics statisticsWithPrimaryMetric(String experimentId, String bestGroupId,
+                                                   double baselinePrimaryMetricValue,
+                                                   double targetPrimaryMetricValue) {
+        Statistics statistics = new Statistics();
+        statistics.setExperimentId(experimentId);
+
+        Statistics.ExperimentSummary summary = new Statistics.ExperimentSummary();
+        summary.setBestPerformingGroup(bestGroupId);
+        summary.setPrimaryMetricKey("PAYMENT_RATE");
+        summary.setBestPrimaryMetricValue(targetPrimaryMetricValue);
+        statistics.setSummary(summary);
+
+        Statistics.GroupStatistics baseline = new Statistics.GroupStatistics();
+        baseline.setGroupId("A");
+        baseline.setConversionRate(0.0);
+        baseline.setMetricValues(Map.of("PAYMENT_RATE", baselinePrimaryMetricValue));
+
+        Statistics.GroupStatistics target = new Statistics.GroupStatistics();
+        target.setGroupId("D");
+        target.setConversionRate(0.0);
+        target.setMetricValues(Map.of("PAYMENT_RATE", targetPrimaryMetricValue));
 
         Map<String, Statistics.GroupStatistics> groupStatistics = new LinkedHashMap<>();
         groupStatistics.put("A", baseline);

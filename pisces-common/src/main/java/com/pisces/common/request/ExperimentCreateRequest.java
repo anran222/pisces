@@ -1,5 +1,7 @@
 package com.pisces.common.request;
 
+import com.pisces.common.model.GroupConfigFieldDefinition;
+import com.pisces.common.model.EventDefinition;
 import com.pisces.common.model.MetricDefinition;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -48,9 +50,19 @@ public class ExperimentCreateRequest extends BaseRequest {
     private List<String> blacklist;
 
     /**
+     * 事件定义列表
+     */
+    private List<EventDefinition> eventDefinitions;
+
+    /**
      * 指标定义列表
      */
     private List<MetricDefinition> metricDefinitions;
+
+    /**
+     * 实验组配置字段定义
+     */
+    private List<GroupConfigFieldDefinition> groupConfigSchema;
     
     @Data
     public static class GroupConfig {

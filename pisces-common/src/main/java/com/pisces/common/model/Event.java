@@ -11,6 +11,12 @@ import java.util.Map;
 @Data
 public class Event implements Serializable {
     private static final long serialVersionUID = 1L;
+
+    public static final String EVENT_TYPE_VIEW = "VIEW";
+
+    public static final String EVENT_TYPE_CLICK = "CLICK";
+
+    public static final String EVENT_TYPE_CONVERT = "CONVERT";
     
     /**
      * 事件ID
@@ -34,9 +40,9 @@ public class Event implements Serializable {
     private String groupId;
     
     /**
-     * 事件类型：VIEW-浏览, CLICK-点击, CONVERT-转化
+     * 事件类型或实验自定义事件键
      */
-    private EventType eventType;
+    private String eventType;
     
     /**
      * 事件名称
@@ -53,13 +59,4 @@ public class Event implements Serializable {
      */
     private LocalDateTime timestamp;
     
-    /**
-     * 事件类型枚举
-     */
-    public enum EventType {
-        VIEW,     // 浏览
-        CLICK,    // 点击
-        CONVERT   // 转化
-    }
 }
-

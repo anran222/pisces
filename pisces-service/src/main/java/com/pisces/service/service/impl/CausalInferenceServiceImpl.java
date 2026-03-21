@@ -62,13 +62,13 @@ public class CausalInferenceServiceImpl implements CausalInferenceService {
         LocalDateTime afterEnd = (LocalDateTime) contract.get("afterPeriodEnd");
 
         long treatmentBeforeViews = dataService.getEventCountInTimeRange(experimentId, treatmentGroupId,
-                Event.EventType.VIEW.name(), beforeStart, beforeEnd);
+                Event.EVENT_TYPE_VIEW, beforeStart, beforeEnd);
         long treatmentAfterViews = dataService.getEventCountInTimeRange(experimentId, treatmentGroupId,
-                Event.EventType.VIEW.name(), afterStart, afterEnd);
+                Event.EVENT_TYPE_VIEW, afterStart, afterEnd);
         long controlBeforeViews = dataService.getEventCountInTimeRange(experimentId, controlGroupId,
-                Event.EventType.VIEW.name(), beforeStart, beforeEnd);
+                Event.EVENT_TYPE_VIEW, beforeStart, beforeEnd);
         long controlAfterViews = dataService.getEventCountInTimeRange(experimentId, controlGroupId,
-                Event.EventType.VIEW.name(), afterStart, afterEnd);
+                Event.EVENT_TYPE_VIEW, afterStart, afterEnd);
 
         List<String> blockingIssues = new ArrayList<>();
         if (treatmentBeforeViews <= 0) {
@@ -263,9 +263,9 @@ public class CausalInferenceServiceImpl implements CausalInferenceService {
                 v.treatment = isTreatment ? 1 : 0;
                 return v;
                 });
-            if (Event.EventType.VIEW.equals(e.getEventType())) vd.viewCount++;
-            if (Event.EventType.CLICK.equals(e.getEventType())) vd.clickCount++;
-            if (Event.EventType.CONVERT.equals(e.getEventType())) vd.outcome = 1;
+            if (Event.EVENT_TYPE_VIEW.equals(e.getEventType())) vd.viewCount++;
+            if (Event.EVENT_TYPE_CLICK.equals(e.getEventType())) vd.clickCount++;
+            if (Event.EVENT_TYPE_CONVERT.equals(e.getEventType())) vd.outcome = 1;
             vd.eventCount++;
             if (vd.rank == 0) vd.rank = ++rank;
         }
@@ -389,8 +389,8 @@ public class CausalInferenceServiceImpl implements CausalInferenceService {
      */
     private double calculateConversionRate(String experimentId, String groupId,
                                           LocalDateTime start, LocalDateTime end) {
-        long views = dataService.getEventCountInTimeRange(experimentId, groupId, Event.EventType.VIEW.name(), start, end);
-        long converts = dataService.getEventCountInTimeRange(experimentId, groupId, Event.EventType.CONVERT.name(), start, end);
+        long views = dataService.getEventCountInTimeRange(experimentId, groupId, Event.EVENT_TYPE_VIEW, start, end);
+        long converts = dataService.getEventCountInTimeRange(experimentId, groupId, Event.EVENT_TYPE_CONVERT, start, end);
         return views > 0 ? (double) converts / views : 0.0;
     }
     
@@ -403,10 +403,14 @@ public class CausalInferenceServiceImpl implements CausalInferenceService {
                                          String controlGroupId,
                                          LocalDateTime beforeStart, LocalDateTime beforeEnd,
                                          LocalDateTime afterStart, LocalDateTime afterEnd) {
-        long nTreatBefore = dataService.getEventCountInTimeRange(experimentId, treatmentGroupId, "VIEW", beforeStart, beforeEnd);
-        long nTreatAfter  = dataService.getEventCountInTimeRange(experimentId, treatmentGroupId, "VIEW", afterStart, afterEnd);
-        long nCtrlBefore  = dataService.getEventCountInTimeRange(experimentId, controlGroupId, "VIEW", beforeStart, beforeEnd);
-        long nCtrlAfter   = dataService.getEventCountInTimeRange(experimentId, controlGroupId, "VIEW", afterStart, afterEnd);
+        long nTreatBefore = dataService.getEventCountInTimeRange(experimentId, treatmentGroupId, Event.EVENT_TYPE_VIEW,
+                beforeStart, beforeEnd);
+        long nTreatAfter  = dataService.getEventCountInTimeRange(experimentId, treatmentGroupId, Event.EVENT_TYPE_VIEW,
+                afterStart, afterEnd);
+        long nCtrlBefore  = dataService.getEventCountInTimeRange(experimentId, controlGroupId, Event.EVENT_TYPE_VIEW,
+                beforeStart, beforeEnd);
+        long nCtrlAfter   = dataService.getEventCountInTimeRange(experimentId, controlGroupId, Event.EVENT_TYPE_VIEW,
+                afterStart, afterEnd);
 
         double pTB = calculateConversionRate(experimentId, treatmentGroupId, beforeStart, beforeEnd);
         double pTA = calculateConversionRate(experimentId, treatmentGroupId, afterStart, afterEnd);

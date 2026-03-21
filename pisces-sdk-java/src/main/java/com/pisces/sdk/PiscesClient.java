@@ -1,7 +1,18 @@
 package com.pisces.sdk;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.extern.slf4j.Slf4j;
+import com.pisces.sdk.exception.PiscesSdkException;
+import com.pisces.sdk.model.BaseResponse;
+import com.pisces.sdk.model.EventReportRequest;
+import com.pisces.sdk.model.ExperimentConfig;
+import com.pisces.sdk.model.ExperimentGroupConfig;
+import com.pisces.sdk.model.EventDefinition;
+import com.pisces.sdk.model.GroupConfigFieldDefinition;
+import com.pisces.sdk.model.MetricDefinition;
+import com.pisces.sdk.model.ExposureReportRequest;
+import com.pisces.sdk.model.TrafficAssignRequest;
 
 import java.io.IOException;
 import java.net.URI;
@@ -9,156 +20,278 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.HashMap;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
- * Pisces A/B测试 Java SDK
- * 无需用户认证，使用visitorId即可
+ * Pisces运行时客户端
+ *
+ * @author anran.xiang@atrenew.com
+ * @date 2026/3/20 18:09
  */
-@Slf4j
-public class PiscesClient {
-    
-    private final String apiBaseUrl;
+public final class PiscesClient {
+
+    private static final String CONTENT_TYPE = "application/json";
+    private static final String CONTENT_TYPE_HEADER = "Content-Type";
+    private static final int SUCCESS_CODE = 200;
+    private static final long DEFAULT_TIMEOUT_MILLIS = 30_000L;
+    private static final String PATH_EXPERIMENTS = "/experiments/";
+    private static final String PATH_DATA_EVENT = "/data/event";
+    private static final String PATH_DATA_EXPOSURE = "/data/exposure";
+    private static final String COMPAT_VIEW_EVENT_TYPE = "VIEW";
+    private static final String COMPAT_VIEW_EVENT_NAME = "product_view";
+    private static final String COMPAT_CLICK_EVENT_TYPE = "CLICK";
+    private static final String COMPAT_CLICK_EVENT_NAME = "contact_seller";
+    private static final String COMPAT_CONVERT_EVENT_TYPE = "CONVERT";
+    private static final String COMPAT_CONVERT_EVENT_NAME = "transaction_completed";
+
+    private final String baseUrl;
+    private final long timeoutMillis;
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
-    
-    public PiscesClient(String apiBaseUrl) {
-        this.apiBaseUrl = apiBaseUrl.endsWith("/") 
-            ? apiBaseUrl.substring(0, apiBaseUrl.length() - 1) 
-            : apiBaseUrl;
-        this.httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(5))
-            .build();
-        this.objectMapper = new ObjectMapper();
+    private final Map<String, String> defaultHeaders;
+
+    private PiscesClient(Builder builder) {
+        this.baseUrl = normalizeBaseUrl(builder.baseUrl);
+        this.timeoutMillis = normalizeTimeoutMillis(builder.timeoutMillis);
+        this.objectMapper = builder.objectMapper != null ? builder.objectMapper : new ObjectMapper();
+        this.httpClient = builder.httpClient != null
+                ? builder.httpClient
+                : HttpClient.newBuilder().connectTimeout(Duration.ofMillis(this.timeoutMillis)).build();
+        this.defaultHeaders = Collections.unmodifiableMap(new LinkedHashMap<>(builder.defaultHeaders));
     }
-    
-    /**
-     * 分配访客到实验组
-     * @param experimentId 实验ID
-     * @param visitorId 访客唯一标识
-     * @return 实验组ID
-     */
+
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public String getBaseUrl() {
+        return baseUrl;
+    }
+
     public String assignGroup(String experimentId, String visitorId) {
-        try {
-            Map<String, String> requestBody = new HashMap<>();
-            requestBody.put("experimentId", experimentId);
-            requestBody.put("visitorId", visitorId);
-            
-            String jsonBody = objectMapper.writeValueAsString(requestBody);
-            
-            HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(apiBaseUrl + "/traffic/assign"))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                .timeout(Duration.ofSeconds(10))
-                .build();
-            
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            
-            if (response.statusCode() == 200) {
-                Map<String, Object> result = objectMapper.readValue(response.body(), Map.class);
-                Map<String, Object> data = (Map<String, Object>) result.get("data");
-                return (String) data;
-            } else {
-                log.error("分配实验组失败: status={}, body={}", response.statusCode(), response.body());
-                return null;
-            }
-        } catch (Exception e) {
-            log.error("分配实验组异常: experimentId={}, visitorId={}", experimentId, visitorId, e);
-            return null;
-        }
+        return assignGroup(experimentId, visitorId, Collections.emptyMap());
     }
-    
-    /**
-     * 获取实验配置
-     * @param experimentId 实验ID
-     * @return 实验配置
-     */
+
+    public String assignGroup(String experimentId, String visitorId, Map<String, Object> attributes) {
+        TrafficAssignRequest request = new TrafficAssignRequest();
+        request.setExperimentId(requireText(experimentId, "experimentId不能为空"));
+        request.setVisitorId(requireText(visitorId, "visitorId不能为空"));
+        request.setAttributes(attributes == null ? Collections.emptyMap() : new LinkedHashMap<>(attributes));
+        return sendRequest("/traffic/assign", "POST", request, String.class);
+    }
+
     public ExperimentConfig getExperiment(String experimentId) {
+        requireText(experimentId, "experimentId不能为空");
+        return sendRequest(PATH_EXPERIMENTS + experimentId, "GET", null, ExperimentConfig.class);
+    }
+
+    public List<EventDefinition> getEventDefinitions(String experimentId) {
+        ExperimentConfig experimentConfig = getExperiment(experimentId);
+        return experimentConfig.getEventDefinitions() == null
+                ? Collections.emptyList()
+                : List.copyOf(experimentConfig.getEventDefinitions());
+    }
+
+    public List<MetricDefinition> getMetricDefinitions(String experimentId) {
+        ExperimentConfig experimentConfig = getExperiment(experimentId);
+        return experimentConfig.getMetricDefinitions() == null
+                ? Collections.emptyList()
+                : List.copyOf(experimentConfig.getMetricDefinitions());
+    }
+
+    public List<GroupConfigFieldDefinition> getGroupConfigSchema(String experimentId) {
+        ExperimentConfig experimentConfig = getExperiment(experimentId);
+        return experimentConfig.getGroupConfigSchema() == null
+                ? Collections.emptyList()
+                : List.copyOf(experimentConfig.getGroupConfigSchema());
+    }
+
+    public Map<String, Object> getGroupConfig(String experimentId, String visitorId) {
+        return getGroupConfig(experimentId, visitorId, Collections.emptyMap());
+    }
+
+    public Map<String, Object> getGroupConfig(String experimentId, String visitorId, Map<String, Object> attributes) {
+        String groupId = assignGroup(experimentId, visitorId, attributes);
+        ExperimentConfig experimentConfig = getExperiment(experimentId);
+        Map<String, ExperimentGroupConfig> groups = experimentConfig.getGroups();
+        ExperimentGroupConfig groupConfig = groups == null ? null : groups.get(groupId);
+        if (groupConfig == null) {
+            throw new PiscesSdkException("未找到实验组配置", "GROUP_NOT_FOUND", null,
+                    PATH_EXPERIMENTS + experimentId, groupId);
+        }
+        return groupConfig.getConfig() == null ? Collections.emptyMap() : new LinkedHashMap<>(groupConfig.getConfig());
+    }
+
+    public void reportExposure(String experimentId, String visitorId, Map<String, Object> properties) {
+        ExposureReportRequest request = new ExposureReportRequest();
+        request.setExperimentId(requireText(experimentId, "experimentId不能为空"));
+        request.setVisitorId(requireText(visitorId, "visitorId不能为空"));
+        request.setProperties(properties == null ? Collections.emptyMap() : new LinkedHashMap<>(properties));
+        sendRequest(PATH_DATA_EXPOSURE, "POST", request, Object.class);
+    }
+
+    public void reportEvent(String experimentId, String visitorId, String eventType, String eventName,
+                            Map<String, Object> properties) {
+        EventReportRequest request = new EventReportRequest();
+        request.setExperimentId(requireText(experimentId, "experimentId不能为空"));
+        request.setVisitorId(requireText(visitorId, "visitorId不能为空"));
+        request.setEventType(requireText(eventType, "eventType不能为空"));
+        request.setEventName(requireText(eventName, "eventName不能为空"));
+        request.setProperties(properties == null ? Collections.emptyMap() : new LinkedHashMap<>(properties));
+        sendRequest(PATH_DATA_EVENT, "POST", request, Object.class);
+    }
+
+    public void reportEventByKey(String experimentId, String visitorId, String eventKey,
+                                 Map<String, Object> properties) {
+        String normalizedEventKey = requireText(eventKey, "eventKey不能为空");
+        reportEvent(experimentId, visitorId, normalizedEventKey, normalizedEventKey, properties);
+    }
+
+    public void reportView(String experimentId, String visitorId, Map<String, Object> properties) {
+        reportEvent(experimentId, visitorId, COMPAT_VIEW_EVENT_TYPE, COMPAT_VIEW_EVENT_NAME, properties);
+    }
+
+    public void reportClick(String experimentId, String visitorId, Map<String, Object> properties) {
+        reportEvent(experimentId, visitorId, COMPAT_CLICK_EVENT_TYPE, COMPAT_CLICK_EVENT_NAME, properties);
+    }
+
+    public void reportConvert(String experimentId, String visitorId, Map<String, Object> properties) {
+        reportEvent(experimentId, visitorId, COMPAT_CONVERT_EVENT_TYPE, COMPAT_CONVERT_EVENT_NAME, properties);
+    }
+
+    private <T> T sendRequest(String path, String method, Object requestBody, Class<T> responseType) {
+        HttpRequest request = buildRequest(path, method, requestBody);
+        HttpResponse<String> response;
         try {
-            HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(apiBaseUrl + "/experiments/" + experimentId))
-                .GET()
-                .timeout(Duration.ofSeconds(10))
-                .build();
-            
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            
-            if (response.statusCode() == 200) {
-                Map<String, Object> result = objectMapper.readValue(response.body(), Map.class);
-                Map<String, Object> data = (Map<String, Object>) result.get("data");
-                return objectMapper.convertValue(data, ExperimentConfig.class);
-            } else {
-                log.error("获取实验配置失败: status={}, body={}", response.statusCode(), response.body());
-                return null;
-            }
-        } catch (Exception e) {
-            log.error("获取实验配置异常: experimentId={}", experimentId, e);
-            return null;
+            response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (IOException exception) {
+            throw new PiscesSdkException("Pisces SDK请求失败", "IO_ERROR", null, path, null, exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new PiscesSdkException("Pisces SDK请求被中断", "INTERRUPTED", null, path, null, exception);
+        }
+        return unwrapResponse(path, response, responseType);
+    }
+
+    private HttpRequest buildRequest(String path, String method, Object requestBody) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .timeout(Duration.ofMillis(timeoutMillis));
+        defaultHeaders.forEach(builder::header);
+        if ("GET".equals(method)) {
+            return builder.GET().build();
+        }
+        String body = serializeRequestBody(requestBody);
+        builder.header(CONTENT_TYPE_HEADER, CONTENT_TYPE);
+        return builder.method(method, HttpRequest.BodyPublishers.ofString(body)).build();
+    }
+
+    private String serializeRequestBody(Object requestBody) {
+        if (requestBody == null) {
+            return "";
+        }
+        try {
+            return objectMapper.writeValueAsString(requestBody);
+        } catch (JsonProcessingException exception) {
+            throw new PiscesSdkException("Pisces SDK请求序列化失败", "SERIALIZE_ERROR", null, null, null, exception);
         }
     }
-    
-    /**
-     * 上报事件
-     * @param experimentId 实验ID
-     * @param visitorId 访客ID
-     * @param eventType 事件类型
-     * @param eventName 事件名称
-     * @param properties 事件属性
-     */
-    public void reportEvent(String experimentId, String visitorId, String eventType,
-                           String eventName, Map<String, Object> properties) {
+
+    private <T> T unwrapResponse(String path, HttpResponse<String> response, Class<T> responseType) {
+        String responseBody = response.body();
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new PiscesSdkException("Pisces SDK请求失败", "HTTP_ERROR",
+                    response.statusCode(), path, responseBody);
+        }
+        if (responseBody == null || responseBody.isBlank()) {
+            throw new PiscesSdkException("Pisces SDK响应体为空", "EMPTY_RESPONSE",
+                    response.statusCode(), path, responseBody);
+        }
+        BaseResponse<T> baseResponse = parseBaseResponse(responseBody, responseType);
+        if (!Objects.equals(baseResponse.getCode(), SUCCESS_CODE)) {
+            throw new PiscesSdkException(baseResponse.getMessage(), String.valueOf(baseResponse.getCode()),
+                    response.statusCode(), path, responseBody);
+        }
+        return baseResponse.getData();
+    }
+
+    private <T> BaseResponse<T> parseBaseResponse(String responseBody, Class<T> responseType) {
+        JavaType dataJavaType = objectMapper.getTypeFactory().constructType(responseType);
+        JavaType baseResponseType = objectMapper.getTypeFactory()
+                .constructParametricType(BaseResponse.class, dataJavaType);
         try {
-            Map<String, Object> requestBody = new HashMap<>();
-            requestBody.put("experimentId", experimentId);
-            requestBody.put("visitorId", visitorId);
-            requestBody.put("eventType", eventType);
-            requestBody.put("eventName", eventName);
-            requestBody.put("properties", properties);
-            
-            String jsonBody = objectMapper.writeValueAsString(requestBody);
-            
-            HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(apiBaseUrl + "/data/event"))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                .timeout(Duration.ofSeconds(10))
-                .build();
-            
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            
-            if (response.statusCode() != 200) {
-                log.error("上报事件失败: status={}, body={}", response.statusCode(), response.body());
-            }
-        } catch (Exception e) {
-            log.error("上报事件异常: experimentId={}, visitorId={}", experimentId, visitorId, e);
+            return objectMapper.readValue(responseBody, baseResponseType);
+        } catch (JsonProcessingException exception) {
+            throw new PiscesSdkException("Pisces SDK响应解析失败", "INVALID_RESPONSE",
+                    null, null, responseBody, exception);
         }
     }
-    
-    /**
-     * 上报浏览事件
-     */
-    public void reportView(String experimentId, String visitorId, Map<String, Object> productData) {
-        reportEvent(experimentId, visitorId, "VIEW", "product_view", productData);
+
+    private static String normalizeBaseUrl(String baseUrl) {
+        String normalized = requireText(baseUrl, "Pisces SDK baseUrl不能为空");
+        return normalized.endsWith("/") ? normalized.substring(0, normalized.length() - 1) : normalized;
     }
-    
-    /**
-     * 上报咨询事件
-     */
-    public void reportClick(String experimentId, String visitorId, Map<String, Object> clickData) {
-        reportEvent(experimentId, visitorId, "CLICK", "contact_seller", clickData);
+
+    private static long normalizeTimeoutMillis(Long timeoutMillis) {
+        if (timeoutMillis == null) {
+            return DEFAULT_TIMEOUT_MILLIS;
+        }
+        if (timeoutMillis <= 0) {
+            throw new PiscesSdkException("Pisces SDK timeoutMillis必须大于0");
+        }
+        return timeoutMillis;
     }
-    
-    /**
-     * 上报成交事件（关键指标）
-     */
-    public void reportTransaction(String experimentId, String visitorId, Map<String, Object> transactionData) {
-        Double transactionPrice = ((Number) transactionData.get("transactionPrice")).doubleValue();
-        Double marketPrice = ((Number) transactionData.get("marketPrice")).doubleValue();
-        Double priceRatio = marketPrice > 0 ? transactionPrice / marketPrice : 0.0;
-        
-        transactionData.put("priceRatio", priceRatio);
-        reportEvent(experimentId, visitorId, "CONVERT", "transaction_completed", transactionData);
+
+    private static String requireText(String value, String message) {
+        if (value == null || value.isBlank()) {
+            throw new PiscesSdkException(message);
+        }
+        return value.trim();
+    }
+
+    public static final class Builder {
+        private String baseUrl;
+        private Long timeoutMillis;
+        private HttpClient httpClient;
+        private ObjectMapper objectMapper;
+        private final Map<String, String> defaultHeaders = new LinkedHashMap<>();
+
+        private Builder() {
+        }
+
+        public Builder baseUrl(String baseUrl) {
+            this.baseUrl = baseUrl;
+            return this;
+        }
+
+        public Builder timeoutMillis(long timeoutMillis) {
+            this.timeoutMillis = timeoutMillis;
+            return this;
+        }
+
+        public Builder httpClient(HttpClient httpClient) {
+            this.httpClient = httpClient;
+            return this;
+        }
+
+        public Builder objectMapper(ObjectMapper objectMapper) {
+            this.objectMapper = objectMapper;
+            return this;
+        }
+
+        public Builder defaultHeader(String name, String value) {
+            if (name != null && !name.isBlank() && value != null) {
+                defaultHeaders.put(name.trim(), value);
+            }
+            return this;
+        }
+
+        public PiscesClient build() {
+            return new PiscesClient(this);
+        }
     }
 }

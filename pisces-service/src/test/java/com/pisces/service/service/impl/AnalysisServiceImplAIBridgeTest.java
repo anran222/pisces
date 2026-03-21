@@ -4,8 +4,11 @@ import com.pisces.common.response.AIGraduationDecisionResponse;
 import com.pisces.service.service.AIDecisionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -39,7 +42,7 @@ class AnalysisServiceImplAIBridgeTest {
         AnalysisServiceImpl analysisService = new AnalysisServiceImpl();
         AIDecisionService aiDecisionService = new StubAIDecisionService();
 
-        ReflectionTestUtils.setField(analysisService, "aiDecisionService", aiDecisionService);
+        ReflectionTestUtils.setField(analysisService, "aiDecisionServiceProvider", new StubObjectProvider(aiDecisionService));
 
         Map<String, Object> result = analysisService.autoGraduateDecision("exp_1");
 
@@ -48,6 +51,17 @@ class AnalysisServiceImplAIBridgeTest {
         assertThat(result).containsEntry("decision", "CONTINUE");
         assertThat(result).containsEntry("decisionType", "GRADUATION");
         assertThat(capturedExperimentId).isEqualTo("exp_1");
+    }
+
+    @Test
+    void shouldNotKeepLegacyAiFallbackHelpers() {
+        List<String> methodNames = Arrays.stream(AnalysisServiceImpl.class.getDeclaredMethods())
+                .map(Method::getName)
+                .toList();
+
+        assertThat(methodNames)
+                .doesNotContain("generateDataDrivenAnalysis")
+                .doesNotContain("generateDefaultExperimentDesign");
     }
 
     private class StubAIDecisionService implements AIDecisionService {
@@ -67,6 +81,29 @@ class AnalysisServiceImplAIBridgeTest {
         public AIGraduationDecisionResponse decideGraduation(String experimentId) {
             capturedExperimentId = experimentId;
             return response;
+        }
+    }
+
+    private record StubObjectProvider(AIDecisionService aiDecisionService) implements ObjectProvider<AIDecisionService> {
+
+        @Override
+        public AIDecisionService getObject(Object... args) {
+            return aiDecisionService;
+        }
+
+        @Override
+        public AIDecisionService getIfAvailable() {
+            return aiDecisionService;
+        }
+
+        @Override
+        public AIDecisionService getIfUnique() {
+            return aiDecisionService;
+        }
+
+        @Override
+        public AIDecisionService getObject() {
+            return aiDecisionService;
         }
     }
 }
