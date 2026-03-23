@@ -75,6 +75,12 @@ public class ExperimentDataGeneratorController {
         response.setWinningGroupId(caseResult.getWinningGroupId());
         response.setCanGraduate(caseResult.getCanGraduate());
         response.setCanStop(caseResult.getCanStop());
+        response.setAiDecision(caseResult.getAiDecision());
+        response.setAiGuardrailStatus(caseResult.getAiGuardrailStatus());
+        response.setAiSummary(caseResult.getAiSummary());
+        response.setPrimaryMetricKey(caseResult.getPrimaryMetricKey());
+        response.setGroupCount(caseResult.getGroupCount());
+        response.setSchemaFieldCount(caseResult.getSchemaFieldCount());
         response.setBaselineConversionRate(caseResult.getBaselineConversionRate());
         response.setWinningConversionRate(caseResult.getWinningConversionRate());
         response.setStatisticsUrl(caseResult.getStatisticsUrl());

@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * 实验组配置 schema 校验器
@@ -29,6 +30,7 @@ public class GroupConfigSchemaValidator {
 
     private static final String VALUE_TYPE_SUFFIX = "值类型不匹配";
     private static final String DEFAULT_VALUE_SCOPE = "schema默认值";
+    private static final Pattern CAMEL_CASE_FIELD_KEY_PATTERN = Pattern.compile("^[a-z][a-zA-Z0-9]*$");
 
     private final JsonUtil jsonUtil;
 
@@ -45,6 +47,9 @@ public class GroupConfigSchemaValidator {
             String fieldKey = normalizeText(fieldDefinition.getKey());
             if (!StringUtils.hasText(fieldKey)) {
                 throw validationError("实验组配置字段 key 不能为空");
+            }
+            if (!CAMEL_CASE_FIELD_KEY_PATTERN.matcher(fieldKey).matches()) {
+                throw validationError("实验组配置字段 key 必须使用 camelCase: " + fieldKey);
             }
             if (!schemaKeys.add(fieldKey)) {
                 throw validationError("实验组配置字段 key 重复: " + fieldKey);
@@ -96,6 +101,36 @@ public class GroupConfigSchemaValidator {
                     throw validationError("实验组[" + groupId + "]缺少必填配置字段: " + fieldDefinition.getKey());
                 }
                 continue;
+            }
+            normalizedConfig.put(fieldDefinition.getKey(),
+                    normalizeValue(fieldDefinition.getValueType(), rawValue, groupId, fieldDefinition.getKey()));
+        }
+        return normalizedConfig;
+    }
+
+    public Map<String, Object> normalizeCompleteGroupConfig(List<GroupConfigFieldDefinition> schema,
+                                                            Map<String, Object> config,
+                                                            String groupId) {
+        if (schema == null || schema.isEmpty()) {
+            return config == null ? Collections.emptyMap() : new LinkedHashMap<>(config);
+        }
+        Map<String, Object> sourceConfig = config == null ? Collections.emptyMap() : config;
+        Set<String> allowedKeys = schema.stream()
+                .map(GroupConfigFieldDefinition::getKey)
+                .collect(java.util.stream.Collectors.toSet());
+        for (String configKey : sourceConfig.keySet()) {
+            if (!allowedKeys.contains(configKey)) {
+                throw validationError("实验组[" + groupId + "]存在未定义配置字段: " + configKey);
+            }
+        }
+
+        Map<String, Object> normalizedConfig = new LinkedHashMap<>();
+        for (GroupConfigFieldDefinition fieldDefinition : schema) {
+            Object rawValue = sourceConfig.containsKey(fieldDefinition.getKey())
+                    ? sourceConfig.get(fieldDefinition.getKey())
+                    : fieldDefinition.getDefaultValue();
+            if (rawValue == null) {
+                throw validationError("实验组[" + groupId + "]缺少完整配置字段: " + fieldDefinition.getKey());
             }
             normalizedConfig.put(fieldDefinition.getKey(),
                     normalizeValue(fieldDefinition.getValueType(), rawValue, groupId, fieldDefinition.getKey()));

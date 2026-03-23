@@ -4,6 +4,7 @@ import com.pisces.common.request.ExperimentCreateRequest;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * AI实验设计响应
@@ -43,4 +44,14 @@ public class AIDesignResponse {
      * 实验草案骨架
      */
     private ExperimentCreateRequest experimentDraft;
+
+    /**
+     * Schema规划结果
+     */
+    private Map<String, Object> schemaPlanning;
+
+    /**
+     * 草案生成结果
+     */
+    private Map<String, Object> draftGeneration;
 }

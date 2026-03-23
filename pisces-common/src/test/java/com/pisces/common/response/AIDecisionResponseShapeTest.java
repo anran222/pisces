@@ -1,6 +1,7 @@
 package com.pisces.common.response;
 
 import com.pisces.common.model.ExperimentDecisionContext;
+import com.pisces.common.model.GroupConfigFieldDefinition;
 import com.pisces.common.model.Statistics;
 import com.pisces.common.request.AIDesignRequest;
 import org.junit.jupiter.api.Test;
@@ -24,10 +25,39 @@ public class AIDecisionResponseShapeTest {
         request.setBusinessScenario("二手手机详情页优化");
         request.setTargetMetric("支付转化率");
         request.setConstraints(List.of("突出质保", "文案简洁"));
+        AIDesignRequest.DesignContext designContext = new AIDesignRequest.DesignContext();
+        designContext.setSchemaKeys(List.of("mainTitle", "highlightTags"));
+        designContext.setDraftGroupIds(List.of("control", "variant_a"));
+        designContext.setTrafficStrategy("HASH");
+        designContext.setPrioritizedConstraints(List.of("保护毛利率", "突出质检背书"));
+        request.setDesignContext(designContext);
+        request.setBaselineConfig(Map.of("mainTitle", "官方质检二手手机", "showQualityBadge", true));
+        GroupConfigFieldDefinition fieldDefinition = new GroupConfigFieldDefinition();
+        fieldDefinition.setKey("mainTitle");
+        fieldDefinition.setLabel("主标题");
+        fieldDefinition.setValueType(GroupConfigFieldDefinition.ValueType.STRING);
+        fieldDefinition.setRequired(true);
+        request.setExistingSchema(List.of(fieldDefinition));
+        AIDesignRequest.DesignPreferences designPreferences = new AIDesignRequest.DesignPreferences();
+        designPreferences.setExpectedGroupCount(3);
+        designPreferences.setPreferredTrafficStrategy("HASH");
+        designPreferences.setDisabledSchemaKeys(List.of("cardMeta"));
+        request.setDesignPreferences(designPreferences);
 
         assertThat(request.getBusinessScenario()).isEqualTo("二手手机详情页优化");
         assertThat(request.getTargetMetric()).isEqualTo("支付转化率");
         assertThat(request.getConstraints()).containsExactly("突出质保", "文案简洁");
+        assertThat(request.getDesignContext().getSchemaKeys()).containsExactly("mainTitle", "highlightTags");
+        assertThat(request.getDesignContext().getDraftGroupIds()).containsExactly("control", "variant_a");
+        assertThat(request.getDesignContext().getTrafficStrategy()).isEqualTo("HASH");
+        assertThat(request.getDesignContext().getPrioritizedConstraints())
+                .containsExactly("保护毛利率", "突出质检背书");
+        assertThat(request.getBaselineConfig()).containsEntry("mainTitle", "官方质检二手手机");
+        assertThat(request.getExistingSchema()).extracting(GroupConfigFieldDefinition::getKey)
+                .containsExactly("mainTitle");
+        assertThat(request.getDesignPreferences().getExpectedGroupCount()).isEqualTo(3);
+        assertThat(request.getDesignPreferences().getPreferredTrafficStrategy()).isEqualTo("HASH");
+        assertThat(request.getDesignPreferences().getDisabledSchemaKeys()).containsExactly("cardMeta");
     }
 
     @Test
@@ -38,12 +68,16 @@ public class AIDecisionResponseShapeTest {
         response.setConfidence(0.92);
         response.setRiskFlags(List.of("样本量偏小"));
         response.setGuardrailStatus("PASS");
+        response.setSchemaPlanning(Map.of("plannedSchemaSize", 4, "baselineMode", "REUSE"));
+        response.setDraftGeneration(Map.of("filledGroups", List.of("control", "variant_a")));
 
         assertThat(response.getDecisionType()).isEqualTo("DESIGN");
         assertThat(response.getSummary()).isEqualTo("建议先做主图文案实验");
         assertThat(response.getConfidence()).isEqualTo(0.92);
         assertThat(response.getRiskFlags()).containsExactly("样本量偏小");
         assertThat(response.getGuardrailStatus()).isEqualTo("PASS");
+        assertThat(response.getSchemaPlanning()).containsEntry("plannedSchemaSize", 4);
+        assertThat(response.getDraftGeneration()).containsKey("filledGroups");
     }
 
     @Test

@@ -117,14 +117,14 @@ public class AnalysisController {
     
     /**
      * 执行因果推断分析
-     * AI赋能：通过DID、PSM、因果森林等方法，剥离混淆变量影响，精准计算处理效应
+     * AI赋能：通过DID、PSM等方法，剥离混淆变量影响，精准计算处理效应
      * @param id 实验ID
-     * @param method 分析方法：DID（双重差分法）、PSM（倾向得分匹配）、CAUSAL_FOREST（因果森林）
+     * @param method 分析方法：DID（双重差分法）、PSM（倾向得分匹配）
      * @param treatmentGroupId 处理组ID
      * @param controlGroupId 对照组ID
      * @param params 分析参数（根据方法不同，参数不同）
      *                - DID: beforePeriodStart, beforePeriodEnd, afterPeriodStart, afterPeriodEnd
-     *                - PSM/CAUSAL_FOREST: userFeatures (用户特征列表)
+     *                - PSM: userFeatures (用户特征列表)
      */
     @PostMapping("/experiment/{id}/causal-inference")
     @NoTokenRequired
@@ -136,38 +136,6 @@ public class AnalysisController {
             @RequestBody Map<String, Object> params) {
         Map<String, Object> result = analysisService.causalInference(
                 id, treatmentGroupId, controlGroupId, method, params);
-        return BaseResponse.of(result);
-    }
-    
-    /**
-     * 分析异质处理效应（HTE）
-     * AI赋能：识别对策略敏感的用户群体，从"群体平均"到"个体精准"
-     */
-    @PostMapping("/experiment/{id}/hte")
-    @NoTokenRequired
-    public BaseResponse<Map<String, Object>> analyzeHTE(
-            @PathVariable String id,
-            @RequestParam String treatmentGroupId,
-            @RequestParam String controlGroupId,
-            @RequestBody java.util.List<String> userFeatures) {
-        Map<String, Object> result = analysisService.analyzeHTE(
-                id, treatmentGroupId, controlGroupId, userFeatures);
-        return BaseResponse.of(result);
-    }
-    
-    /**
-     * 识别敏感用户群体
-     * AI赋能：根据处理效应大小，将用户划分为高敏感、中敏感、低敏感群体
-     */
-    @PostMapping("/experiment/{id}/sensitive-groups")
-    @NoTokenRequired
-    public BaseResponse<Map<String, Object>> identifySensitiveGroups(
-            @PathVariable String id,
-            @RequestParam String treatmentGroupId,
-            @RequestParam String controlGroupId,
-            @RequestBody java.util.List<String> userFeatures) {
-        Map<String, Object> result = analysisService.identifySensitiveGroups(
-                id, treatmentGroupId, controlGroupId, userFeatures);
         return BaseResponse.of(result);
     }
     

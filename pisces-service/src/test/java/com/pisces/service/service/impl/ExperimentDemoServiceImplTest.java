@@ -1,9 +1,13 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.Experiment;
+import com.pisces.common.model.ExperimentDecisionContext;
 import com.pisces.common.model.Statistics;
 import com.pisces.common.request.ExperimentCreateRequest;
+import com.pisces.common.response.AIGraduationDecisionResponse;
+import com.pisces.service.ai.ExperimentDecisionContextBuilder;
 import com.pisces.service.service.AnalysisService;
+import com.pisces.service.service.AIDecisionService;
 import com.pisces.service.service.DataService;
 import com.pisces.service.service.ExperimentDemoService;
 import com.pisces.service.service.ExperimentService;
@@ -45,6 +49,12 @@ class ExperimentDemoServiceImplTest {
     @Mock
     private AnalysisService analysisService;
 
+    @Mock
+    private AIDecisionService aiDecisionService;
+
+    @Mock
+    private ExperimentDecisionContextBuilder experimentDecisionContextBuilder;
+
     @InjectMocks
     private ExperimentDemoServiceImpl experimentDemoService;
 
@@ -65,7 +75,8 @@ class ExperimentDemoServiceImplTest {
         when(analysisService.getStatistics("exp_fail")).thenReturn(statistics("exp_fail", "D", 0.70, 0.705));
         when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", true));
         when(analysisService.shouldEarlyStop("exp_fail", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
-        when(analysisService.autoGraduateDecision("exp_pass")).thenReturn(Map.of("decision", "GRADUATE"));
+        mockDemoGraduation("exp_pass", "GRADUATE", "PASS", "AI判断当前实验可以毕业");
+        mockDemoGraduation("exp_fail", "CONTINUE", "PASS", "AI判断当前实验暂不毕业");
 
         ExperimentDemoService.ExperimentDemoResult result = experimentDemoService.generateUsedPhoneDemo();
 
@@ -100,21 +111,30 @@ class ExperimentDemoServiceImplTest {
                     assertThat(request.getGroupConfigSchema()).isNotEmpty();
                     assertThat(request.getGroupConfigSchema())
                             .extracting(field -> field.getKey())
-                            .contains("mainTitle", "subtitle", "showQualityBadge", "badgeCount",
-                                    "cardMeta", "highlightTags");
+                            .containsExactly("titlePrimaryText", "titleToneStyle", "highlightedFeature",
+                                    "brandConsistencyCheck", "misleadingContentFlag", "productCategory");
                     assertThat(request.getGroups()).allSatisfy(group ->
-                            assertThat(group.getConfig()).containsKeys("mainTitle", "subtitle",
-                                    "showQualityBadge", "badgeCount", "cardMeta", "highlightTags"));
+                            assertThat(group.getConfig()).containsKeys("titlePrimaryText", "titleToneStyle",
+                                    "highlightedFeature", "brandConsistencyCheck", "misleadingContentFlag",
+                                    "productCategory"));
                 });
 
         assertThat(result.getQualifiedExperiment().getExperimentId()).isEqualTo("exp_pass");
         assertThat(result.getQualifiedExperiment().getCanGraduate()).isTrue();
         assertThat(result.getQualifiedExperiment().getCanStop()).isTrue();
+        assertThat(result.getQualifiedExperiment().getAiDecision()).isEqualTo("GRADUATE");
+        assertThat(result.getQualifiedExperiment().getAiGuardrailStatus()).isEqualTo("PASS");
+        assertThat(result.getQualifiedExperiment().getAiSummary()).isEqualTo("AI判断当前实验可以毕业");
+        assertThat(result.getQualifiedExperiment().getPrimaryMetricKey()).isEqualTo("PAYMENT_RATE");
+        assertThat(result.getQualifiedExperiment().getGroupCount()).isEqualTo(4);
+        assertThat(result.getQualifiedExperiment().getSchemaFieldCount()).isEqualTo(6);
         assertThat(result.getQualifiedExperiment().getAutoGraduateUrl())
                 .isEqualTo("/api/analysis/experiment/exp_pass/ai-graduation-decision");
         assertThat(result.getUnqualifiedExperiment().getExperimentId()).isEqualTo("exp_fail");
         assertThat(result.getUnqualifiedExperiment().getCanGraduate()).isFalse();
         assertThat(result.getUnqualifiedExperiment().getCanStop()).isFalse();
+        assertThat(result.getUnqualifiedExperiment().getAiDecision()).isEqualTo("CONTINUE");
+        assertThat(result.getUnqualifiedExperiment().getAiSummary()).isEqualTo("AI判断当前实验暂不毕业");
     }
 
     @Test
@@ -128,7 +148,7 @@ class ExperimentDemoServiceImplTest {
                         .get("demoAssignedGroup")));
         when(analysisService.getStatistics(anyString())).thenReturn(statistics("exp_pass", "D", 0.70, 0.82));
         when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", true));
-        when(analysisService.autoGraduateDecision("exp_pass")).thenReturn(Map.of("decision", "CONTINUE"));
+        mockDemoGraduation("exp_pass", "CONTINUE", "PASS", null);
 
         assertThatThrownBy(() -> experimentDemoService.generateUsedPhoneDemo())
                 .isInstanceOf(IllegalStateException.class)
@@ -148,11 +168,12 @@ class ExperimentDemoServiceImplTest {
         when(analysisService.getStatistics("exp_fail")).thenReturn(statistics("exp_fail", "D", 0.70, 0.705));
         when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", true));
         when(analysisService.shouldEarlyStop("exp_fail", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
-        when(analysisService.autoGraduateDecision("exp_pass")).thenReturn(Map.of("decision", "GRADUATE"));
+        mockDemoGraduation("exp_pass", "GRADUATE", "PASS", null);
+        mockDemoGraduation("exp_fail", "CONTINUE", "PASS", null);
 
         ExperimentDemoService.ExperimentDemoResult result = experimentDemoService.generateUsedPhoneDemo();
 
-        verify(analysisService).autoGraduateDecision("exp_pass");
+        verify(aiDecisionService, times(2)).decideGraduation(any(ExperimentDecisionContext.class));
         assertThat(result.getQualifiedExperiment().getCanGraduate()).isTrue();
         assertThat(result.getQualifiedExperiment().getCanStop()).isTrue();
         assertThat(result.getUnqualifiedExperiment().getCanGraduate()).isFalse();
@@ -172,12 +193,13 @@ class ExperimentDemoServiceImplTest {
         when(analysisService.getStatistics("exp_fail")).thenReturn(statistics("exp_fail", "D", 0.60, 0.62));
         when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
         when(analysisService.shouldEarlyStop("exp_fail", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
-        when(analysisService.autoGraduateDecision("exp_pass")).thenReturn(Map.of("decision", "GRADUATE"));
+        mockDemoGraduation("exp_pass", "GRADUATE", "PASS", null);
+        mockDemoGraduation("exp_fail", "CONTINUE", "PASS", null);
 
         ExperimentDemoService.ExperimentDemoResult result = experimentDemoService.generateUsedPhoneDemo();
 
         assertThat(result.getQualifiedExperiment().getCanGraduate()).isTrue();
-        assertThat(result.getQualifiedExperiment().getCanStop()).isTrue();
+        assertThat(result.getQualifiedExperiment().getCanStop()).isFalse();
         assertThat(result.getUnqualifiedExperiment().getCanGraduate()).isFalse();
         assertThat(result.getUnqualifiedExperiment().getCanStop()).isFalse();
     }
@@ -195,16 +217,79 @@ class ExperimentDemoServiceImplTest {
         when(analysisService.getStatistics("exp_fail")).thenReturn(statisticsWithPrimaryMetric("exp_fail", "D", 0.60, 0.62));
         when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
         when(analysisService.shouldEarlyStop("exp_fail", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
-        when(analysisService.autoGraduateDecision("exp_pass")).thenReturn(Map.of("decision", "GRADUATE"));
+        mockDemoGraduation("exp_pass", "GRADUATE", "PASS", null);
+        mockDemoGraduation("exp_fail", "CONTINUE", "PASS", null);
 
         ExperimentDemoService.ExperimentDemoResult result = experimentDemoService.generateUsedPhoneDemo();
 
         assertThat(result.getQualifiedExperiment().getCanGraduate()).isTrue();
-        assertThat(result.getQualifiedExperiment().getCanStop()).isTrue();
+        assertThat(result.getQualifiedExperiment().getCanStop()).isFalse();
         assertThat(result.getQualifiedExperiment().getBaselineConversionRate()).isEqualTo(0.60);
         assertThat(result.getQualifiedExperiment().getWinningConversionRate()).isEqualTo(0.76);
+        assertThat(result.getQualifiedExperiment().getPrimaryMetricKey()).isEqualTo("PAYMENT_RATE");
         assertThat(result.getUnqualifiedExperiment().getCanGraduate()).isFalse();
         assertThat(result.getUnqualifiedExperiment().getCanStop()).isFalse();
+    }
+
+    @Test
+    void generateUsedPhoneDemoShouldFailWhenAiGraduationApprovesUnqualifiedExperiment() {
+        when(experimentService.listExperiments()).thenReturn(List.of());
+        when(experimentService.createExperiment(any(ExperimentCreateRequest.class)))
+                .thenReturn(experiment("exp_pass", "二手手机售卖实验 [USED_PHONE_DEMO_PASS]"))
+                .thenReturn(experiment("exp_fail", "二手手机售卖实验 [USED_PHONE_DEMO_FAIL]"));
+        when(trafficService.assignGroup(anyString(), anyString(), anyMap()))
+                .thenAnswer(invocation -> String.valueOf(invocation.<Map<String, Object>>getArgument(2)
+                        .get("demoAssignedGroup")));
+        when(analysisService.getStatistics("exp_pass")).thenReturn(statistics("exp_pass", "D", 0.70, 0.82));
+        when(analysisService.getStatistics("exp_fail")).thenReturn(statistics("exp_fail", "D", 0.70, 0.705));
+        when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", true));
+        when(analysisService.shouldEarlyStop("exp_fail", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
+        mockDemoGraduation("exp_pass", "GRADUATE", "PASS", null);
+        mockDemoGraduation("exp_fail", "GRADUATE", "PASS", null);
+
+        assertThatThrownBy(() -> experimentDemoService.generateUsedPhoneDemo())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("未达标实验");
+    }
+
+    @Test
+    void generateUsedPhoneDemoShouldPassDifferentHintsToPassAndFailCases() {
+        when(experimentService.listExperiments()).thenReturn(List.of());
+        when(experimentService.createExperiment(any(ExperimentCreateRequest.class)))
+                .thenReturn(experiment("exp_pass", "二手手机售卖实验 [USED_PHONE_DEMO_PASS]"))
+                .thenReturn(experiment("exp_fail", "二手手机售卖实验 [USED_PHONE_DEMO_FAIL]"));
+        when(trafficService.assignGroup(anyString(), anyString(), anyMap()))
+                .thenAnswer(invocation -> String.valueOf(invocation.<Map<String, Object>>getArgument(2)
+                        .get("demoAssignedGroup")));
+        when(analysisService.getStatistics("exp_pass")).thenReturn(statistics("exp_pass", "D", 0.70, 0.82));
+        when(analysisService.getStatistics("exp_fail")).thenReturn(statistics("exp_fail", "D", 0.70, 0.705));
+        when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", true));
+        when(analysisService.shouldEarlyStop("exp_fail", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
+        mockDemoGraduation("exp_pass", "GRADUATE", "PASS", null);
+        mockDemoGraduation("exp_fail", "CONTINUE", "PASS", null);
+
+        experimentDemoService.generateUsedPhoneDemo();
+
+        ArgumentCaptor<ExperimentDecisionContext> contextCaptor = ArgumentCaptor.forClass(ExperimentDecisionContext.class);
+        verify(aiDecisionService, times(2)).decideGraduation(contextCaptor.capture());
+        assertThat(contextCaptor.getAllValues())
+                .extracting(ExperimentDecisionContext::getDecisionHints)
+                .containsExactly(
+                        List.of("这是固定达标演示实验。请优先依据当前主指标和最佳组表现给出演示性毕业建议，不要因为样本量门槛而保守返回 CONTINUE。"),
+                        List.of("这是固定未达标演示实验。请优先基于当前主指标、护栏和风险信号给出继续观察或不毕业建议，不要为了演示效果直接返回 GRADUATE。"));
+    }
+
+    private void mockDemoGraduation(String experimentId, String decision, String guardrailStatus, String summary) {
+        ExperimentDecisionContext context = new ExperimentDecisionContext();
+        context.setExperimentId(experimentId);
+        context.setExperimentName("demo-" + experimentId);
+        when(experimentDecisionContextBuilder.buildForExperiment(experimentId)).thenReturn(context);
+
+        AIGraduationDecisionResponse response = new AIGraduationDecisionResponse();
+        response.setDecision(decision);
+        response.setGuardrailStatus(guardrailStatus);
+        response.setSummary(summary);
+        when(aiDecisionService.decideGraduation(eq(context))).thenReturn(response);
     }
 
     private Experiment experiment(String experimentId, String experimentName) {
@@ -221,6 +306,8 @@ class ExperimentDemoServiceImplTest {
         Statistics.ExperimentSummary summary = new Statistics.ExperimentSummary();
         summary.setBestPerformingGroup(bestGroupId);
         summary.setOverallConversionRate(targetRate);
+        summary.setPrimaryMetricKey("PAYMENT_RATE");
+        summary.setBestPrimaryMetricValue(targetRate);
         statistics.setSummary(summary);
 
         Statistics.GroupStatistics baseline = new Statistics.GroupStatistics();

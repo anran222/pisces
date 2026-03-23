@@ -5,10 +5,12 @@ import com.pisces.common.model.ExperimentDecisionContext;
 import com.pisces.common.model.Statistics;
 import com.pisces.common.response.AIDiagnosisResponse;
 import com.pisces.service.ai.AIDecisionJsonParser;
+import com.pisces.service.ai.AIDesignContextResolver;
 import com.pisces.service.ai.DecisionGuardrailEvaluator;
 import com.pisces.service.ai.ExperimentDecisionContextBuilder;
 import com.pisces.service.ai.PromptTemplateBuilder;
 import com.pisces.service.ai.TongYiTextGenerationClient;
+import com.pisces.service.schema.GroupConfigSchemaValidator;
 import com.pisces.service.util.JsonUtil;
 import org.junit.jupiter.api.Test;
 
@@ -25,16 +27,20 @@ import static org.mockito.Mockito.when;
  */
 class AIDiagnosisActionPolicyTest {
 
+    private final AIDesignContextResolver aiDesignContextResolver = new AIDesignContextResolver();
+
     @Test
     void shouldMarkTrafficAdjustmentAsManualOnly() {
         JsonUtil jsonUtil = new JsonUtil(new ObjectMapper());
         ExperimentDecisionContextBuilder contextBuilder = mock(ExperimentDecisionContextBuilder.class);
         AIDecisionServiceImpl service = new AIDecisionServiceImpl(
                 contextBuilder,
-                new PromptTemplateBuilder(),
+                new PromptTemplateBuilder(aiDesignContextResolver),
+                aiDesignContextResolver,
                 new AIDecisionJsonParser(jsonUtil),
                 new DecisionGuardrailEvaluator(),
-                tongYiTextGenerationClient());
+                tongYiTextGenerationClient(),
+                new GroupConfigSchemaValidator(jsonUtil));
 
         when(contextBuilder.buildForExperiment("exp_1")).thenReturn(blockedContext());
 
@@ -51,10 +57,12 @@ class AIDiagnosisActionPolicyTest {
         ExperimentDecisionContextBuilder contextBuilder = mock(ExperimentDecisionContextBuilder.class);
         AIDecisionServiceImpl service = new AIDecisionServiceImpl(
                 contextBuilder,
-                new PromptTemplateBuilder(),
+                new PromptTemplateBuilder(aiDesignContextResolver),
+                aiDesignContextResolver,
                 new AIDecisionJsonParser(jsonUtil),
                 new DecisionGuardrailEvaluator(),
-                diagnosisStringActionClient());
+                diagnosisStringActionClient(),
+                new GroupConfigSchemaValidator(jsonUtil));
 
         when(contextBuilder.buildForExperiment("exp_1")).thenReturn(blockedContext());
 

@@ -34,6 +34,8 @@ class AnalysisControllerAIDesignTest {
         response.setDecisionType("DESIGN");
         response.setSummary("AI实验设计草案: 二手手机详情页");
         response.setGuardrailStatus("PASS");
+        response.setSchemaPlanning(java.util.Map.of("baselineMode", "REUSE"));
+        response.setDraftGeneration(java.util.Map.of("filledGroups", java.util.List.of("control", "variant_a")));
 
         when(aiDecisionService.designExperiment(org.mockito.ArgumentMatchers.any())).thenReturn(response);
 
@@ -43,11 +45,16 @@ class AnalysisControllerAIDesignTest {
                                 {
                                   "businessScenario": "二手手机详情页",
                                   "targetMetric": "支付转化率",
-                                  "constraints": ["保护毛利率"]
+                                  "constraints": ["保护毛利率"],
+                                  "baselineConfig": {
+                                    "mainTitle": "官方质检二手手机"
+                                  }
                                 }
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.decisionType").value("DESIGN"))
-                .andExpect(jsonPath("$.data.guardrailStatus").value("PASS"));
+                .andExpect(jsonPath("$.data.guardrailStatus").value("PASS"))
+                .andExpect(jsonPath("$.data.schemaPlanning.baselineMode").value("REUSE"))
+                .andExpect(jsonPath("$.data.draftGeneration.filledGroups[0]").value("control"));
     }
 }

@@ -53,12 +53,12 @@ Pisces 是一个面向业务接入的实验系统，当前代码已经收口为 
 - `GET /api/analysis/experiment/{id}/ai-graduation-decision`
 - `POST /api/variants/generate`
 
-AI 当前只输出建议，不自动修改实验状态或流量。
+AI 当前只输出建议，不自动修改实验状态或流量。`ai-design/v2` 对外仍是单接口，但内部已经拆成 `Schema Planning` 和 `Draft Filling` 两阶段，并优先复用传入的 `baselineConfig`。
 
 ### 5. 演示与补数
 
 - `POST /api/experiments/generator/demo`
-  生成固定演示实验，允许使用演示数据
+  生成固定演示实验，实验结构使用当前 schema / 指标契约，最终是否可毕业依赖 AI 毕业决策
 - `POST /api/experiments/generator/{experimentId}/simulate`
   为已有实验补充真实事件数据
 

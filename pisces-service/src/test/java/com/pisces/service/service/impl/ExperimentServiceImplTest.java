@@ -151,6 +151,30 @@ class ExperimentServiceImplTest {
     }
 
     @Test
+    void createExperimentShouldAllowManualSchemaBelowAiGenerationMinimum() throws Exception {
+        ExperimentCreateRequest request = buildRequest("手动保存精简配置实验");
+        request.setGroupConfigSchema(List.of(
+                schemaField("mainTitle", "主标题", GroupConfigFieldDefinition.ValueType.STRING, true, null),
+                schemaField("subtitle", "副标题", GroupConfigFieldDefinition.ValueType.STRING, false, null)
+        ));
+        request.getGroups().get(0).setConfig(new LinkedHashMap<>(Map.of("mainTitle", "基准标题")));
+        request.getGroups().get(1).setConfig(new LinkedHashMap<>(Map.of(
+                "mainTitle", "实验标题",
+                "subtitle", "平台补贴"
+        )));
+
+        experimentService.createExperiment(request);
+
+        ArgumentCaptor<ExperimentMetadata> captor = ArgumentCaptor.forClass(ExperimentMetadata.class);
+        verify(configService).saveExperimentConfig(org.mockito.ArgumentMatchers.anyString(), captor.capture());
+        assertThat(captor.getValue().getGroupConfigSchema()).hasSize(2);
+        assertThat(captor.getValue().getGroups().get("A").getConfig()).containsEntry("mainTitle", "基准标题");
+        assertThat(captor.getValue().getGroups().get("B").getConfig())
+                .containsEntry("mainTitle", "实验标题")
+                .containsEntry("subtitle", "平台补贴");
+    }
+
+    @Test
     void createExperimentShouldRejectMissingEventDefinitions() {
         ExperimentCreateRequest request = buildRequest("缺少事件定义");
         request.setEventDefinitions(null);

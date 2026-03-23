@@ -1,12 +1,16 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.Experiment;
+import com.pisces.common.model.ExperimentDecisionContext;
 import com.pisces.common.model.EventDefinition;
 import com.pisces.common.model.GroupConfigFieldDefinition;
 import com.pisces.common.model.MetricDefinition;
 import com.pisces.common.model.Statistics;
 import com.pisces.common.request.ExperimentCreateRequest;
+import com.pisces.common.response.AIGraduationDecisionResponse;
+import com.pisces.service.ai.ExperimentDecisionContextBuilder;
 import com.pisces.service.service.AnalysisService;
+import com.pisces.service.service.AIDecisionService;
 import com.pisces.service.service.DataService;
 import com.pisces.service.service.ExperimentDemoService;
 import com.pisces.service.service.ExperimentService;
@@ -40,18 +44,29 @@ public class ExperimentDemoServiceImpl implements ExperimentDemoService {
     private static final String DEMO_GROUP_FIELD = "demoAssignedGroup";
     private static final String ANALYSIS_PREFIX = "/api/analysis/experiment/";
     private static final String GRADUATION_DECISION_PATH = "/ai-graduation-decision";
-    private static final String MAIN_TITLE_KEY = "mainTitle";
-    private static final String SUBTITLE_KEY = "subtitle";
-    private static final String SHOW_QUALITY_BADGE_KEY = "showQualityBadge";
-    private static final String BADGE_COUNT_KEY = "badgeCount";
-    private static final String CARD_META_KEY = "cardMeta";
-    private static final String HIGHLIGHT_TAGS_KEY = "highlightTags";
+    private static final String TITLE_PRIMARY_TEXT_KEY = "titlePrimaryText";
+    private static final String TITLE_TONE_STYLE_KEY = "titleToneStyle";
+    private static final String HIGHLIGHTED_FEATURE_KEY = "highlightedFeature";
+    private static final String BRAND_CONSISTENCY_CHECK_KEY = "brandConsistencyCheck";
+    private static final String MISLEADING_CONTENT_FLAG_KEY = "misleadingContentFlag";
+    private static final String PRODUCT_CATEGORY_KEY = "productCategory";
     private static final String PRODUCT_VIEW_EVENT = "PRODUCT_VIEW";
     private static final String CONSULT_CLICK_EVENT = "CONSULT_CLICK";
     private static final String PAY_SUCCESS_EVENT = "PAY_SUCCESS";
     private static final String PAYMENT_RATE_METRIC = "PAYMENT_RATE";
     private static final String CONSULT_RATE_METRIC = "CONSULT_RATE";
     private static final String GRADUATE_DECISION = "GRADUATE";
+    private static final String DECISION_KEY = "decision";
+    private static final String GUARDRAIL_STATUS_KEY = "guardrailStatus";
+    private static final String SUMMARY_KEY = "summary";
+    private static final String DEFAULT_AI_SUMMARY = "AI暂未返回明确毕业结论";
+    private static final String DEFAULT_PRIMARY_METRIC_KEY = PAYMENT_RATE_METRIC;
+    private static final String PASS_DEMO_DECISION_HINT =
+            "这是固定达标演示实验。请优先依据当前主指标和最佳组表现给出演示性毕业建议，不要因为样本量门槛而保守返回 CONTINUE。";
+    private static final String FAIL_DEMO_DECISION_HINT =
+            "这是固定未达标演示实验。请优先基于当前主指标、护栏和风险信号给出继续观察或不毕业建议，不要为了演示效果直接返回 GRADUATE。";
+    private static final int DEMO_GROUP_COUNT = 4;
+    private static final int DEMO_SCHEMA_FIELD_COUNT = 6;
     private static final double EARLY_STOP_THRESHOLD = 0.95D;
     private static final double PASS_MIN_LIFT = 0.05D;
     private static final double FAIL_MAX_LIFT = 0.04D;
@@ -62,6 +77,8 @@ public class ExperimentDemoServiceImpl implements ExperimentDemoService {
     private final TrafficService trafficService;
     private final DataService dataService;
     private final AnalysisService analysisService;
+    private final AIDecisionService aiDecisionService;
+    private final ExperimentDecisionContextBuilder experimentDecisionContextBuilder;
 
     /**
      * 清理历史演示实验 -> 创建两套二手手机实验 -> 启动并写入事实数据 -> 校验实验结果。
@@ -205,11 +222,13 @@ public class ExperimentDemoServiceImpl implements ExperimentDemoService {
         double baselinePrimaryMetricValue = resolvePrimaryMetricValue(statistics, baselineStats);
         double winningPrimaryMetricValue = resolvePrimaryMetricValue(statistics, winningStats);
         double lift = winningPrimaryMetricValue - baselinePrimaryMetricValue;
+        String primaryMetricKey = resolvePrimaryMetricKey(statistics);
 
         Map<String, Object> earlyStopDecision = analysisService.shouldEarlyStop(experiment.getId(),
                 WINNING_GROUP_ID, BASELINE_GROUP_ID, EARLY_STOP_THRESHOLD);
-        boolean canStop = resolveCanStop(Boolean.TRUE.equals(earlyStopDecision.get("canStop")), lift);
-        boolean canGraduate = resolveCanGraduate(experiment.getId(), canStop, lift);
+        boolean canStop = Boolean.TRUE.equals(earlyStopDecision.get("canStop"));
+        Map<String, Object> graduationDecision = resolveAiGraduationDecision(experiment.getId(), profile);
+        boolean canGraduate = GRADUATE_DECISION.equals(graduationDecision.get(DECISION_KEY));
 
         assertExpectedOutcome(profile, statistics, canGraduate, canStop, lift);
 
@@ -221,6 +240,12 @@ public class ExperimentDemoServiceImpl implements ExperimentDemoService {
         result.setWinningGroupId(WINNING_GROUP_ID);
         result.setCanGraduate(canGraduate);
         result.setCanStop(canStop);
+        result.setAiDecision(stringValue(graduationDecision.get(DECISION_KEY)));
+        result.setAiGuardrailStatus(stringValue(graduationDecision.get(GUARDRAIL_STATUS_KEY)));
+        result.setAiSummary(resolveAiSummary(graduationDecision));
+        result.setPrimaryMetricKey(primaryMetricKey);
+        result.setGroupCount(DEMO_GROUP_COUNT);
+        result.setSchemaFieldCount(DEMO_SCHEMA_FIELD_COUNT);
         result.setBaselineConversionRate(baselinePrimaryMetricValue);
         result.setWinningConversionRate(winningPrimaryMetricValue);
         result.setStatisticsUrl(ANALYSIS_PREFIX + experiment.getId() + "/statistics");
@@ -247,22 +272,38 @@ public class ExperimentDemoServiceImpl implements ExperimentDemoService {
         return groupStatistics.getConversionRate() != null ? groupStatistics.getConversionRate() : 0.0D;
     }
 
-    private boolean resolveCanGraduate(String experimentId, boolean canStop, double lift) {
-        if (!canStop || lift < PASS_MIN_LIFT) {
-            log.info("示例实验跳过外部毕业判断: experimentId={}, canStop={}, lift={}",
-                    experimentId, canStop, lift);
-            return false;
+    private String resolvePrimaryMetricKey(Statistics statistics) {
+        if (statistics == null || statistics.getSummary() == null || statistics.getSummary().getPrimaryMetricKey() == null) {
+            return DEFAULT_PRIMARY_METRIC_KEY;
         }
-        Map<String, Object> decision = analysisService.autoGraduateDecision(experimentId);
-        log.info("示例实验外部毕业判断返回: experimentId={}, decision={}", experimentId, decision);
-        return GRADUATE_DECISION.equals(decision.get("decision"));
+        return statistics.getSummary().getPrimaryMetricKey();
     }
 
-    private boolean resolveCanStop(boolean canStop, double lift) {
-        if (canStop) {
-            return true;
+    private Map<String, Object> resolveAiGraduationDecision(String experimentId, DemoProfile profile) {
+        ExperimentDecisionContext context = experimentDecisionContextBuilder.buildForExperiment(experimentId);
+        context.setDecisionHints(List.of(resolveDemoDecisionHint(profile)));
+        AIGraduationDecisionResponse response = aiDecisionService.decideGraduation(context);
+        Map<String, Object> decision = new LinkedHashMap<>();
+        decision.put(DECISION_KEY, response.getDecision());
+        decision.put(GUARDRAIL_STATUS_KEY, response.getGuardrailStatus());
+        decision.put(SUMMARY_KEY, response.getSummary());
+        log.info("示例实验外部毕业判断返回: experimentId={}, decision={}", experimentId, decision);
+        return decision;
+    }
+
+    private String resolveDemoDecisionHint(DemoProfile profile) {
+        if (profile.isQualified()) {
+            return PASS_DEMO_DECISION_HINT;
         }
-        return lift >= PASS_MIN_LIFT;
+        return FAIL_DEMO_DECISION_HINT;
+    }
+
+    private String resolveAiSummary(Map<String, Object> graduationDecision) {
+        String aiSummary = stringValue(graduationDecision.get(SUMMARY_KEY));
+        if (aiSummary != null) {
+            return aiSummary;
+        }
+        return DEFAULT_AI_SUMMARY;
     }
 
     private void assertExpectedOutcome(DemoProfile profile, Statistics statistics, boolean canGraduate,
@@ -277,7 +318,7 @@ public class ExperimentDemoServiceImpl implements ExperimentDemoService {
         }
 
         if (profile.isQualified()) {
-            if (!canGraduate || !canStop || lift < PASS_MIN_LIFT) {
+            if (!canGraduate || lift < PASS_MIN_LIFT) {
                 log.warn("示例实验达标校验失败: experimentId={}, canGraduate={}, canStop={}, lift={}, summary={}, dataQualityCheck={}",
                         statistics.getExperimentId(), canGraduate, canStop, lift,
                         statistics.getSummary(), statistics.getDataQualityCheck());
@@ -286,7 +327,7 @@ public class ExperimentDemoServiceImpl implements ExperimentDemoService {
             return;
         }
 
-        if (canGraduate || canStop || lift <= 0 || lift >= FAIL_MAX_LIFT) {
+        if (canGraduate || lift <= 0 || lift >= FAIL_MAX_LIFT) {
             log.warn("示例实验未达标校验失败: experimentId={}, canGraduate={}, canStop={}, lift={}, summary={}, dataQualityCheck={}",
                     statistics.getExperimentId(), canGraduate, canStop, lift,
                     statistics.getSummary(), statistics.getDataQualityCheck());
@@ -350,63 +391,67 @@ public class ExperimentDemoServiceImpl implements ExperimentDemoService {
 
     private Map<String, Object> standardCardConfig() {
         return Map.of(
-                MAIN_TITLE_KEY, "iPhone 16 Pro 95新 到手即用",
-                SUBTITLE_KEY, "平台验机，成色透明",
-                SHOW_QUALITY_BADGE_KEY, false,
-                BADGE_COUNT_KEY, 2,
-                CARD_META_KEY, Map.of("theme", "standard", "showMarketPrice", false),
-                HIGHLIGHT_TAGS_KEY, List.of("平台验机", "7天无理由")
+                TITLE_PRIMARY_TEXT_KEY, "iPhone 16 Pro 95新 平台验机更放心",
+                TITLE_TONE_STYLE_KEY, "稳重可信",
+                HIGHLIGHTED_FEATURE_KEY, "平台验机",
+                BRAND_CONSISTENCY_CHECK_KEY, true,
+                MISLEADING_CONTENT_FLAG_KEY, false,
+                PRODUCT_CATEGORY_KEY, "iPhone 16 Pro"
         );
     }
 
     private Map<String, Object> trustCardConfig() {
         return Map.of(
-                MAIN_TITLE_KEY, "iPhone 16 Pro 官方质检 优选成色",
-                SUBTITLE_KEY, "成色透明，卖得更快",
-                SHOW_QUALITY_BADGE_KEY, true,
-                BADGE_COUNT_KEY, 3,
-                CARD_META_KEY, Map.of("theme", "trust", "showMarketPrice", false),
-                HIGHLIGHT_TAGS_KEY, List.of("官方质检", "无拆无修", "一年质保")
+                TITLE_PRIMARY_TEXT_KEY, "iPhone 16 Pro 官方质检 优选成色更可信",
+                TITLE_TONE_STYLE_KEY, "专业背书",
+                HIGHLIGHTED_FEATURE_KEY, "官方质检",
+                BRAND_CONSISTENCY_CHECK_KEY, true,
+                MISLEADING_CONTENT_FLAG_KEY, false,
+                PRODUCT_CATEGORY_KEY, "iPhone 16 Pro"
         );
     }
 
     private Map<String, Object> anchorCardConfig() {
         return Map.of(
-                MAIN_TITLE_KEY, "iPhone 16 Pro 95新 市场价对比",
-                SUBTITLE_KEY, "价格透明，成交更稳",
-                SHOW_QUALITY_BADGE_KEY, false,
-                BADGE_COUNT_KEY, 2,
-                CARD_META_KEY, Map.of("theme", "anchor", "showMarketPrice", true),
-                HIGHLIGHT_TAGS_KEY, List.of("市场均价", "省心保价")
+                TITLE_PRIMARY_TEXT_KEY, "iPhone 16 Pro 95新 市场行情透明更好卖",
+                TITLE_TONE_STYLE_KEY, "价格锚定",
+                HIGHLIGHTED_FEATURE_KEY, "行情透明",
+                BRAND_CONSISTENCY_CHECK_KEY, true,
+                MISLEADING_CONTENT_FLAG_KEY, false,
+                PRODUCT_CATEGORY_KEY, "iPhone 16 Pro"
         );
     }
 
     private Map<String, Object> combinedCardConfig() {
         return Map.of(
-                MAIN_TITLE_KEY, "iPhone 16 Pro 官方质检 + 市场价锚点",
-                SUBTITLE_KEY, "强化信任与价格感知",
-                SHOW_QUALITY_BADGE_KEY, true,
-                BADGE_COUNT_KEY, 3,
-                CARD_META_KEY, Map.of("theme", "combined", "showMarketPrice", true),
-                HIGHLIGHT_TAGS_KEY, List.of("官方质检", "高于市场均价回收", "极速成交")
+                TITLE_PRIMARY_TEXT_KEY, "iPhone 16 Pro 官方质检 行情透明成交更快",
+                TITLE_TONE_STYLE_KEY, "信任成交",
+                HIGHLIGHTED_FEATURE_KEY, "官方质检+行情透明",
+                BRAND_CONSISTENCY_CHECK_KEY, true,
+                MISLEADING_CONTENT_FLAG_KEY, false,
+                PRODUCT_CATEGORY_KEY, "iPhone 16 Pro"
         );
     }
 
     private List<GroupConfigFieldDefinition> usedPhoneGroupConfigSchema() {
         return List.of(
-                schemaField(MAIN_TITLE_KEY, "主标题", GroupConfigFieldDefinition.ValueType.STRING,
-                        true, "商品卡主标题", "iPhone 16 Pro 回收"),
-                schemaField(SUBTITLE_KEY, "副标题", GroupConfigFieldDefinition.ValueType.STRING,
-                        false, "商品卡补充说明", "平台验机，成交更快"),
-                schemaField(SHOW_QUALITY_BADGE_KEY, "展示质检标识",
-                        GroupConfigFieldDefinition.ValueType.BOOLEAN, false, "是否展示官方质检背书", Boolean.FALSE),
-                schemaField(BADGE_COUNT_KEY, "标签数量", GroupConfigFieldDefinition.ValueType.INTEGER,
-                        false, "商品卡上展示的标签数量", 2),
-                schemaField(CARD_META_KEY, "卡片样式信息", GroupConfigFieldDefinition.ValueType.OBJECT,
-                        false, "卡片主题和市场价展示配置", Map.of("theme", "standard", "showMarketPrice", false)),
-                schemaField(HIGHLIGHT_TAGS_KEY, "亮点标签", GroupConfigFieldDefinition.ValueType.JSON,
-                        false, "商品卡亮点标签列表", List.of("平台验机", "极速成交"))
+                schemaField(TITLE_PRIMARY_TEXT_KEY, "主标题文本", GroupConfigFieldDefinition.ValueType.STRING,
+                        true, "用于展示的 iPhone 16 Pro 主标题完整文本，需真实反映产品特性", "iPhone 16 Pro 官方质检"),
+                schemaField(TITLE_TONE_STYLE_KEY, "标题语气风格", GroupConfigFieldDefinition.ValueType.STRING,
+                        true, "控制标题整体表达风格，例如稳重可信、价格锚定、信任成交", "稳重可信"),
+                schemaField(HIGHLIGHTED_FEATURE_KEY, "强调的核心卖点", GroupConfigFieldDefinition.ValueType.STRING,
+                        false, "在标题中突出显示的产品核心功能或优势，确保不夸大或虚构", "官方质检"),
+                schemaField(BRAND_CONSISTENCY_CHECK_KEY, "品牌一致性校验结果",
+                        GroupConfigFieldDefinition.ValueType.BOOLEAN, true, "指示该标题是否通过品牌语言规范与可信度审核", Boolean.TRUE),
+                schemaField(MISLEADING_CONTENT_FLAG_KEY, "是否存在误导性表述",
+                        GroupConfigFieldDefinition.ValueType.BOOLEAN, true, "标识标题是否包含可能引起用户误解的措辞", Boolean.FALSE),
+                schemaField(PRODUCT_CATEGORY_KEY, "产品类别", GroupConfigFieldDefinition.ValueType.STRING,
+                        true, "明确标识商品类别，用于上下文区分和流量过滤", "iPhone 16 Pro")
         );
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 
     private GroupConfigFieldDefinition schemaField(String key, String label,

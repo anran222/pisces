@@ -37,7 +37,6 @@
 - `service/impl/DataServiceImpl.java`
 - `service/impl/AnalysisServiceImpl.java`
 - `service/impl/CausalInferenceServiceImpl.java`
-- `service/impl/HTEAnalysisServiceImpl.java`
 
 ### AI
 

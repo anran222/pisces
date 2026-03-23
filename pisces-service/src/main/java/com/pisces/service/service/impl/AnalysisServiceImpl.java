@@ -23,7 +23,6 @@ import com.pisces.service.service.BayesianAnalysisService;
 import com.pisces.service.service.CausalInferenceService;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.DataService;
-import com.pisces.service.service.HTEAnalysisService;
 import lombok.extern.slf4j.Slf4j;
 import jakarta.annotation.Resource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -66,9 +65,6 @@ public class AnalysisServiceImpl implements AnalysisService {
     
     @Autowired
     private CausalInferenceService causalInferenceService;
-    
-    @Autowired
-    private HTEAnalysisService hteAnalysisService;
     
     @Autowired
     private TongYiConfig tongYiConfig;
@@ -587,6 +583,9 @@ public class AnalysisServiceImpl implements AnalysisService {
             comparison.put("error", "基准组统计数据为空");
             return comparison;
         }
+
+        MetricDefinition primaryMetricDefinition = metadata != null
+                ? resolvePrimaryMetric(resolveMetricDefinitions(metadata)) : null;
         
         comparison.put("baseline", baselineGroup);
         comparison.put("baselineStats", baseline);
@@ -598,7 +597,7 @@ public class AnalysisServiceImpl implements AnalysisService {
             if (!entry.getKey().equals(baselineGroup)) {
                 Statistics.GroupStatistics target = entry.getValue();
                 if (target != null) {
-                    Map<String, Object> comp = compareWithBaseline(baseline, target);
+                    Map<String, Object> comp = compareWithBaseline(baseline, target, primaryMetricDefinition);
                     comparisons.put(entry.getKey(), comp);
                 }
             }
@@ -611,15 +610,14 @@ public class AnalysisServiceImpl implements AnalysisService {
     /**
      * 与基准组对比
      */
-    private Map<String, Object> compareWithBaseline(Statistics.GroupStatistics baseline, 
-                                                    Statistics.GroupStatistics target) {
+    private Map<String, Object> compareWithBaseline(Statistics.GroupStatistics baseline,
+                                                    Statistics.GroupStatistics target,
+                                                    MetricDefinition primaryMetricDefinition) {
         Map<String, Object> comparison = new HashMap<>();
         
         // 转化率对比
-        Double baselineRateObj = baseline.getConversionRate();
-        Double targetRateObj = target.getConversionRate();
-        double baselineRate = baselineRateObj != null ? baselineRateObj : 0.0;
-        double targetRate = targetRateObj != null ? targetRateObj : 0.0;
+        double baselineRate = resolveComparisonMetricValue(baseline, primaryMetricDefinition);
+        double targetRate = resolveComparisonMetricValue(target, primaryMetricDefinition);
         double rateDiff = targetRate - baselineRate;
         double rateChangePercent = baselineRate > 0 ? (rateDiff / baselineRate) * 100 : 0;
         
@@ -660,6 +658,22 @@ public class AnalysisServiceImpl implements AnalysisService {
         comparison.put("events", eventComparison);
         
         return comparison;
+    }
+
+    private double resolveComparisonMetricValue(Statistics.GroupStatistics groupStatistics,
+                                                MetricDefinition primaryMetricDefinition) {
+        if (groupStatistics == null) {
+            return 0.0D;
+        }
+        if (primaryMetricDefinition != null
+                && StringUtils.hasText(primaryMetricDefinition.getKey())
+                && groupStatistics.getMetricValues() != null) {
+            Double primaryMetricValue = groupStatistics.getMetricValues().get(primaryMetricDefinition.getKey());
+            if (primaryMetricValue != null) {
+                return primaryMetricValue;
+            }
+        }
+        return groupStatistics.getConversionRate() != null ? groupStatistics.getConversionRate() : 0.0D;
     }
     
     @Override
@@ -885,52 +899,9 @@ public class AnalysisServiceImpl implements AnalysisService {
                 java.util.List<String> features = (java.util.List<String>) params.get("userFeatures");
                 result = causalInferenceService.analyzeByPSM(experimentId, treatmentGroupId, controlGroupId, features);
                 break;
-            case "CAUSAL_FOREST":
-                @SuppressWarnings("unchecked")
-                java.util.List<String> features2 = (java.util.List<String>) params.get("userFeatures");
-                result = causalInferenceService.analyzeByCausalForest(experimentId, treatmentGroupId, controlGroupId, features2);
-                break;
             default:
                 throw new IllegalArgumentException("不支持的因果推断方法: " + method);
         }
-        if (!isBlockedResult(result)) {
-            attachDataQualityCheck(result, statistics);
-        }
-        return result;
-    }
-
-    @Override
-    public Map<String, Object> analyzeHTE(String experimentId, String treatmentGroupId,
-                                           String controlGroupId, java.util.List<String> userFeatures) {
-        Statistics statistics = getStatistics(experimentId);
-        Map<String, Object> gateResult = buildAnalysisGateResult("HTE", "HTE", statistics);
-        if (gateResult != null) {
-            return gateResult;
-        }
-        Map<String, Object> contractResult = validateFeatureContract("HTE", userFeatures);
-        if (contractResult != null) {
-            return contractResult;
-        }
-        Map<String, Object> result = hteAnalysisService.analyzeHTE(experimentId, treatmentGroupId, controlGroupId, userFeatures);
-        if (!isBlockedResult(result)) {
-            attachDataQualityCheck(result, statistics);
-        }
-        return result;
-    }
-    
-    @Override
-    public Map<String, Object> identifySensitiveGroups(String experimentId, String treatmentGroupId,
-                                                       String controlGroupId, java.util.List<String> userFeatures) {
-        Statistics statistics = getStatistics(experimentId);
-        Map<String, Object> gateResult = buildAnalysisGateResult("HTE", "IDENTIFY_SENSITIVE_GROUPS", statistics);
-        if (gateResult != null) {
-            return gateResult;
-        }
-        Map<String, Object> contractResult = validateFeatureContract("IDENTIFY_SENSITIVE_GROUPS", userFeatures);
-        if (contractResult != null) {
-            return contractResult;
-        }
-        Map<String, Object> result = hteAnalysisService.identifySensitiveGroups(experimentId, treatmentGroupId, controlGroupId, userFeatures);
         if (!isBlockedResult(result)) {
             attachDataQualityCheck(result, statistics);
         }
@@ -2220,7 +2191,7 @@ public class AnalysisServiceImpl implements AnalysisService {
                         contract,
                         null);
             }
-        } else if ("PSM".equals(normalizedMethod) || "CAUSAL_FOREST".equals(normalizedMethod)) {
+        } else if ("PSM".equals(normalizedMethod)) {
             Object userFeaturesObject = safeParams.get("userFeatures");
             if (!(userFeaturesObject instanceof List)) {
                 Map<String, Object> contract = new LinkedHashMap<>();
@@ -2228,7 +2199,7 @@ public class AnalysisServiceImpl implements AnalysisService {
                 contract.put("supportedCovariates", Arrays.asList("viewCount", "clickCount", "eventCount", "rank"));
                 contract.put("providedInputs", safeParams.keySet());
                 return buildBlockedAnalysisResult("CAUSAL_INFERENCE", method,
-                        "PSM / 因果森林需要显式协变量输入，当前请求无效",
+                        "PSM 需要显式协变量输入，当前请求无效",
                         Collections.singletonList("userFeatures 必须是非空列表"),
                         Collections.emptyList(),
                         contract,
@@ -2248,26 +2219,18 @@ public class AnalysisServiceImpl implements AnalysisService {
                 contract.put("supportedCovariates", Arrays.asList("viewCount", "clickCount", "eventCount", "rank"));
                 contract.put("providedInputs", safeParams.keySet());
                 return buildBlockedAnalysisResult("CAUSAL_INFERENCE", method,
-                        "PSM / 因果森林需要显式协变量输入，当前请求无效",
+                        "PSM 需要显式协变量输入，当前请求无效",
                         Collections.singletonList("userFeatures 必须是非空列表"),
                         Collections.emptyList(),
                         contract,
                         null);
             }
-        }
-        return null;
-    }
-
-    private Map<String, Object> validateFeatureContract(String analysisType, List<String> userFeatures) {
-        if (userFeatures == null || userFeatures.isEmpty()) {
-            Map<String, Object> contract = new LinkedHashMap<>();
-            contract.put("requiredInputs", Collections.singletonList("userFeatures"));
-            contract.put("supportedCovariates", Arrays.asList("viewCount", "clickCount", "eventCount", "rank"));
-            return buildBlockedAnalysisResult(analysisType, analysisType,
-                    "当前分析接口需要显式协变量输入",
-                    Collections.singletonList("userFeatures 不能为空"),
+        } else if (normalizedMethod != null && !"DID".equals(normalizedMethod)) {
+            return buildBlockedAnalysisResult("CAUSAL_INFERENCE", method,
+                    "当前仅支持 DID 和 PSM",
+                    Collections.singletonList("不支持的因果推断方法: " + normalizedMethod),
                     Collections.emptyList(),
-                    contract,
+                    Collections.emptyMap(),
                     null);
         }
         return null;

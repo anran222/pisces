@@ -2,6 +2,7 @@ package com.pisces.common.model;
 
 import lombok.Data;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -32,6 +33,26 @@ public class ExperimentDecisionContext {
      * 统计信息
      */
     private Statistics statistics;
+
+    /**
+     * 统计事实摘要
+     */
+    private List<String> statisticsFacts;
+
+    /**
+     * 分组指标快照
+     */
+    private List<String> groupMetricSnapshots;
+
+    /**
+     * 数据质量事实
+     */
+    private List<String> dataQualityFacts;
+
+    /**
+     * 决策提示
+     */
+    private List<String> decisionHints;
 
     /**
      * 上下文扩展信息

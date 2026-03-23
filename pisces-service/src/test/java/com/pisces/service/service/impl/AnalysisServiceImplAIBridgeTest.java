@@ -1,5 +1,6 @@
 package com.pisces.service.service.impl;
 
+import com.pisces.common.model.ExperimentDecisionContext;
 import com.pisces.common.response.AIGraduationDecisionResponse;
 import com.pisces.service.service.AIDecisionService;
 import org.junit.jupiter.api.BeforeEach;
@@ -9,6 +10,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -64,6 +66,21 @@ class AnalysisServiceImplAIBridgeTest {
                 .doesNotContain("generateDefaultExperimentDesign");
     }
 
+    @Test
+    void shouldRejectCausalForestAtContractLevel() throws Exception {
+        AnalysisServiceImpl analysisService = new AnalysisServiceImpl();
+        Method method = AnalysisServiceImpl.class.getDeclaredMethod("validateCausalInputContract", String.class, Map.class);
+        method.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) method.invoke(analysisService,
+                "CAUSAL_FOREST", Collections.singletonMap("userFeatures", List.of("viewCount")));
+
+        assertThat(result).isNotNull();
+        assertThat(result).containsEntry("status", "BLOCKED");
+        assertThat(result).containsEntry("reason", "当前仅支持 DID 和 PSM");
+    }
+
     private class StubAIDecisionService implements AIDecisionService {
 
         @Override
@@ -80,6 +97,12 @@ class AnalysisServiceImplAIBridgeTest {
         @Override
         public AIGraduationDecisionResponse decideGraduation(String experimentId) {
             capturedExperimentId = experimentId;
+            return response;
+        }
+
+        @Override
+        public AIGraduationDecisionResponse decideGraduation(ExperimentDecisionContext context) {
+            capturedExperimentId = context == null ? null : context.getExperimentId();
             return response;
         }
     }

@@ -38,15 +38,4 @@ public interface CausalInferenceService {
     Map<String, Object> analyzeByPSM(String experimentId, String treatmentGroupId,
                                       String controlGroupId, List<String> userFeatures);
     
-    /**
-     * 因果森林（Causal Forest）分析
-     * 可同时估计平均处理效应（ATE）和条件平均处理效应（CATE），识别敏感用户群体
-     * @param experimentId 实验ID
-     * @param treatmentGroupId 处理组ID
-     * @param controlGroupId 对照组ID
-     * @param userFeatures 用户特征列表
-     * @return ATE、CATE和敏感群体划分结果
-     */
-    Map<String, Object> analyzeByCausalForest(String experimentId, String treatmentGroupId,
-                                               String controlGroupId, List<String> userFeatures);
 }

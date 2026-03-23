@@ -57,16 +57,14 @@
 | `GET` | `/analysis/experiment/{id}/timeline` | 时间线 |
 | `GET` | `/analysis/experiment/{id}/ai-diagnosis` | 结构化 AI 诊断 |
 | `GET` | `/analysis/experiment/{id}/ai-graduation-decision` | 结构化 AI 毕业决策 |
-| `POST` | `/analysis/experiment/ai-design/v2` | 结构化 AI 实验设计 |
+| `POST` | `/analysis/experiment/ai-design/v2` | 结构化 AI 实验设计；单接口，内部执行 Schema Planning + Draft Filling，两阶段返回 `schemaPlanning` / `draftGeneration` |
 
 ### 仍保留的兼容接口
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/analysis/experiment/{id}/significance` | 显著性检验 |
-| `POST` | `/analysis/experiment/{id}/causal-inference` | 因果推断 |
-| `POST` | `/analysis/experiment/{id}/hte` | HTE 分析 |
-| `POST` | `/analysis/experiment/{id}/sensitive-groups` | 敏感群体 |
+| `POST` | `/analysis/experiment/{id}/causal-inference` | 因果推断（仅 `DID` / `PSM`） |
 | `GET` | `/analysis/experiment/{id}/ai-insights` | 旧 AI 解读接口 |
 | `POST` | `/analysis/experiment/ai-design` | 旧 AI 设计接口 |
 | `GET` | `/analysis/experiment/{id}/auto-graduate` | 旧自动毕业接口 |
@@ -93,5 +91,5 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/experiments/generator/demo` | 生成固定演示实验 |
+| `POST` | `/experiments/generator/demo` | 生成固定演示实验，返回 AI 毕业决策结果和示例实验结构摘要 |
 | `POST` | `/experiments/generator/{experimentId}/simulate` | 为已有实验补充真实事件数据，事件类型会遵循实验自己的 `eventDefinitions` / `metricDefinitions` |

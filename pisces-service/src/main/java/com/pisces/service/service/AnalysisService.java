@@ -55,23 +55,11 @@ public interface AnalysisService {
                                         String baselineGroupId, Double winRateThreshold);
     
     /**
-     * 执行因果推断分析（DID、PSM、因果森林）
+     * 执行因果推断分析（DID、PSM）
      */
     Map<String, Object> causalInference(String experimentId, String treatmentGroupId,
                                         String controlGroupId, String method,
                                         Map<String, Object> params);
-    
-    /**
-     * 分析异质处理效应（HTE）
-     */
-    Map<String, Object> analyzeHTE(String experimentId, String treatmentGroupId,
-                                   String controlGroupId, java.util.List<String> userFeatures);
-    
-    /**
-     * 识别敏感用户群体
-     */
-    Map<String, Object> identifySensitiveGroups(String experimentId, String treatmentGroupId,
-                                                 String controlGroupId, java.util.List<String> userFeatures);
     
     /**
      * 导出实验报告

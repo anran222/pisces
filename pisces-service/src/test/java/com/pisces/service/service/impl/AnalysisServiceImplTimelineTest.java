@@ -11,7 +11,6 @@ import com.pisces.service.service.BayesianAnalysisService;
 import com.pisces.service.service.CausalInferenceService;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.DataService;
-import com.pisces.service.service.HTEAnalysisService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -25,6 +24,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.data.Offset.offset;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -41,9 +42,6 @@ class AnalysisServiceImplTimelineTest {
 
     @Mock
     private CausalInferenceService causalInferenceService;
-
-    @Mock
-    private HTEAnalysisService hteAnalysisService;
 
     @InjectMocks
     private AnalysisServiceImpl analysisService;
@@ -163,6 +161,59 @@ class AnalysisServiceImplTimelineTest {
         Map<String, Double> dayOneValues = (Map<String, Double>) dayOnePoint.get("values");
 
         assertThat(dayOneValues.get("A")).isEqualTo(0.5);
+    }
+
+    @Test
+    void compareGroupsShouldUsePrimaryMetricWhenLegacyConversionRateIsZero() {
+        ExperimentMetadata metadata = new ExperimentMetadata();
+        Experiment experiment = new Experiment();
+        experiment.setId("exp_compare_custom_metric");
+        experiment.setName("自定义指标对比实验");
+        experiment.setStatus(Experiment.ExperimentStatus.RUNNING);
+        experiment.setStartTime(LocalDateTime.now().minusDays(2));
+        metadata.setExperiment(experiment);
+
+        ExperimentGroup groupA = new ExperimentGroup();
+        groupA.setId("A");
+        groupA.setName("A组");
+        groupA.setTrafficRatio(0.5D);
+        ExperimentGroup groupB = new ExperimentGroup();
+        groupB.setId("B");
+        groupB.setName("B组");
+        groupB.setTrafficRatio(0.5D);
+        metadata.setGroups(Map.of("A", groupA, "B", groupB));
+        metadata.setEventDefinitions(List.of(
+                eventDefinition("PRODUCT_VIEW", "商品查看"),
+                eventDefinition("PAY_SUCCESS", "支付成功")
+        ));
+        metadata.setMetricDefinitions(List.of(metricDefinition("PAYMENT_RATE", "PAY_SUCCESS", "PRODUCT_VIEW")));
+
+        when(configService.getExperimentConfig("exp_compare_custom_metric")).thenReturn(metadata);
+        when(dataService.getVisitorCount("exp_compare_custom_metric", "A")).thenReturn(100L);
+        when(dataService.getVisitorCount("exp_compare_custom_metric", "B")).thenReturn(100L);
+        when(dataService.getAssignmentCount("exp_compare_custom_metric", "A")).thenReturn(100L);
+        when(dataService.getAssignmentCount("exp_compare_custom_metric", "B")).thenReturn(100L);
+        when(dataService.getExposureCount("exp_compare_custom_metric", "A")).thenReturn(100L);
+        when(dataService.getExposureCount("exp_compare_custom_metric", "B")).thenReturn(100L);
+        when(dataService.getEventCount("exp_compare_custom_metric", "A", "CLICK")).thenReturn(0L);
+        when(dataService.getEventCount("exp_compare_custom_metric", "B", "CLICK")).thenReturn(0L);
+        when(dataService.getEventCount("exp_compare_custom_metric", "A", "VIEW")).thenReturn(0L);
+        when(dataService.getEventCount("exp_compare_custom_metric", "B", "VIEW")).thenReturn(0L);
+        when(dataService.getEventCount("exp_compare_custom_metric", "A", "CONVERT")).thenReturn(0L);
+        when(dataService.getEventCount("exp_compare_custom_metric", "B", "CONVERT")).thenReturn(0L);
+        when(dataService.getEventCount("exp_compare_custom_metric", "A", "PRODUCT_VIEW")).thenReturn(100L);
+        when(dataService.getEventCount("exp_compare_custom_metric", "B", "PRODUCT_VIEW")).thenReturn(100L);
+        when(dataService.getEventCount("exp_compare_custom_metric", "A", "PAY_SUCCESS")).thenReturn(10L);
+        when(dataService.getEventCount("exp_compare_custom_metric", "B", "PAY_SUCCESS")).thenReturn(12L);
+
+        Map<String, Object> comparison = analysisService.compareGroups("exp_compare_custom_metric");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Map<String, Object>> comparisons = (Map<String, Map<String, Object>>) comparison.get("comparisons");
+        assertThat(comparisons).containsKey("B");
+        assertThat((Double) comparisons.get("B").get("conversionRate")).isCloseTo(0.12D, offset(0.000001D));
+        assertThat((Double) comparisons.get("B").get("conversionRateChange")).isCloseTo(0.02D, offset(0.000001D));
+        assertThat((Double) comparisons.get("B").get("conversionRateChangePercent")).isCloseTo(20.0D, offset(0.000001D));
     }
 
     private Event buildEvent(String visitorId, String groupId, String eventType, LocalDateTime timestamp) {

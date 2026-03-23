@@ -27,11 +27,7 @@ public class CausalInferenceServiceImpl implements CausalInferenceService {
 
     private static final String METHOD_PSM = "PSM";
 
-    private static final String METHOD_CAUSAL_FOREST = "CAUSAL_FOREST";
-
     private static final String STATUS_BLOCKED = "BLOCKED";
-
-    private static final String STATUS_UNAVAILABLE = "UNAVAILABLE";
 
     private static final String STATUS_READY = "READY";
 
@@ -368,22 +364,6 @@ public class CausalInferenceServiceImpl implements CausalInferenceService {
         return pairs;
     }
 
-    @Override
-    public Map<String, Object> analyzeByCausalForest(String experimentId, String treatmentGroupId,
-                                                       String controlGroupId, List<String> userFeatures) {
-        log.info("执行因果森林分析: experimentId={}, treatment={}, control={}, features={}", 
-                experimentId, treatmentGroupId, controlGroupId, userFeatures);
-        Map<String, Object> contract = new LinkedHashMap<>();
-        contract.put("requiredInputs", Collections.singletonList("userFeatures"));
-        contract.put("supportedCovariates", SUPPORTED_COVARIATES);
-        contract.put("requestedCovariates", sanitizeCovariates(userFeatures));
-        return buildBlockedResult(METHOD_CAUSAL_FOREST, STATUS_UNAVAILABLE,
-                "因果森林分析尚未接入真实模型，当前仅保留接口契约",
-                Collections.singletonList("未接入真实因果森林模型"),
-                Collections.emptyList(),
-                contract);
-    }
-    
     /**
      * 计算转化率
      */

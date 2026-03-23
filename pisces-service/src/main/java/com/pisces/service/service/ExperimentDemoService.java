@@ -32,6 +32,12 @@ public interface ExperimentDemoService {
         private String winningGroupId;
         private Boolean canGraduate;
         private Boolean canStop;
+        private String aiDecision;
+        private String aiGuardrailStatus;
+        private String aiSummary;
+        private String primaryMetricKey;
+        private Integer groupCount;
+        private Integer schemaFieldCount;
         private Double baselineConversionRate;
         private Double winningConversionRate;
         private String statisticsUrl;

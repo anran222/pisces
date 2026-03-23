@@ -1,5 +1,6 @@
 package com.pisces.service.service;
 
+import com.pisces.common.model.ExperimentDecisionContext;
 import com.pisces.common.request.AIDesignRequest;
 import com.pisces.common.response.AIDesignResponse;
 import com.pisces.common.response.AIDiagnosisResponse;
@@ -36,4 +37,12 @@ public interface AIDecisionService {
      * @return 毕业决策响应
      */
     AIGraduationDecisionResponse decideGraduation(String experimentId);
+
+    /**
+     * 基于已有上下文决策毕业
+     *
+     * @param context 实验决策上下文
+     * @return 毕业决策响应
+     */
+    AIGraduationDecisionResponse decideGraduation(ExperimentDecisionContext context);
 }
