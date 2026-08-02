@@ -42,4 +42,9 @@ public class AIGraduationDecisionResponse {
      * 毕业决策
      */
     private String decision;
+
+    /**
+     * 决策证据
+     */
+    private AIDecisionEvidenceResponse evidence;
 }

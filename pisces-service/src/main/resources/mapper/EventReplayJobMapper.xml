@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.EventReplayJobMapper">
+
+    <resultMap id="eventReplayJobEntityResultMap" type="com.pisces.service.entity.EventReplayJobEntity">
+        <id column="id" property="id"/>
+        <result column="replay_job_id" property="replayJobId"/>
+        <result column="experiment_id" property="experimentId"/>
+        <result column="operator" property="operator"/>
+        <result column="job_status" property="jobStatus"/>
+        <result column="active_key" property="activeKey"/>
+        <result column="replay_mode" property="replayMode"/>
+        <result column="scope_start_time" property="scopeStartTime"/>
+        <result column="scope_end_time" property="scopeEndTime"/>
+        <result column="event_types_json" property="eventTypesJson"/>
+        <result column="include_events" property="includeEvents"/>
+        <result column="include_exposures" property="includeExposures"/>
+        <result column="full_derived_replay" property="fullDerivedReplay"/>
+        <result column="planned_affected_count" property="plannedAffectedCount"/>
+        <result column="planned_event_count" property="plannedEventCount"/>
+        <result column="planned_exposure_count" property="plannedExposureCount"/>
+        <result column="planned_group_count" property="plannedGroupCount"/>
+        <result column="affected_count" property="affectedCount"/>
+        <result column="event_count" property="eventCount"/>
+        <result column="exposure_count" property="exposureCount"/>
+        <result column="group_count" property="groupCount"/>
+        <result column="mab_reward_count" property="mabRewardCount"/>
+        <result column="error_message" property="errorMessage"/>
+        <result column="started_at" property="startedAt"/>
+        <result column="finished_at" property="finishedAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <update id="expireStaleRunningJobs">
+        UPDATE pisces_event_replay_job
+        SET job_status = 'FAILED',
+            active_key = NULL,
+            error_message = #{errorMessage},
+            finished_at = #{finishedAt},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE experiment_id = #{experimentId}
+          AND job_status IN ('RUNNING', 'CANCEL_REQUESTED')
+          AND started_at <![CDATA[<]]> #{staleBefore}
+    </update>
+
+    <insert id="insertRunningJob" parameterType="com.pisces.service.entity.EventReplayJobEntity">
+        INSERT IGNORE INTO pisces_event_replay_job
+            (replay_job_id, experiment_id, operator, job_status, active_key,
+             replay_mode, scope_start_time, scope_end_time, event_types_json, include_events, include_exposures,
+             full_derived_replay,
+             planned_affected_count, planned_event_count, planned_exposure_count, planned_group_count,
+             affected_count, event_count, exposure_count, group_count, mab_reward_count,
+             error_message, started_at, finished_at)
+        VALUES
+            (#{entity.replayJobId}, #{entity.experimentId}, #{entity.operator}, #{entity.jobStatus},
+             #{entity.activeKey}, #{entity.replayMode}, #{entity.scopeStartTime}, #{entity.scopeEndTime},
+             #{entity.eventTypesJson}, #{entity.includeEvents}, #{entity.includeExposures},
+             #{entity.fullDerivedReplay}, #{entity.plannedAffectedCount}, #{entity.plannedEventCount},
+             #{entity.plannedExposureCount}, #{entity.plannedGroupCount}, #{entity.affectedCount}, #{entity.eventCount},
+             #{entity.exposureCount}, #{entity.groupCount}, #{entity.mabRewardCount}, #{entity.errorMessage},
+             #{entity.startedAt}, #{entity.finishedAt})
+    </insert>
+
+    <select id="selectRecentByExperimentId" resultMap="eventReplayJobEntityResultMap">
+        SELECT id, replay_job_id, experiment_id, operator, job_status, active_key,
+               replay_mode, scope_start_time, scope_end_time, event_types_json, include_events, include_exposures,
+               full_derived_replay,
+               planned_affected_count, planned_event_count, planned_exposure_count, planned_group_count,
+               affected_count, event_count, exposure_count, group_count, mab_reward_count,
+               error_message, started_at, finished_at, created_at, updated_at
+        FROM pisces_event_replay_job
+        WHERE experiment_id = #{experimentId}
+        ORDER BY id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectByExperimentIdAndReplayJobId" resultMap="eventReplayJobEntityResultMap">
+        SELECT id, replay_job_id, experiment_id, operator, job_status, active_key,
+               replay_mode, scope_start_time, scope_end_time, event_types_json, include_events, include_exposures,
+               full_derived_replay,
+               planned_affected_count, planned_event_count, planned_exposure_count, planned_group_count,
+               affected_count, event_count, exposure_count, group_count, mab_reward_count,
+               error_message, started_at, finished_at, created_at, updated_at
+        FROM pisces_event_replay_job
+        WHERE experiment_id = #{experimentId}
+          AND replay_job_id = #{replayJobId}
+        LIMIT 1
+    </select>
+
+    <update id="updateProgress">
+        UPDATE pisces_event_replay_job
+        SET affected_count = #{affectedCount},
+            event_count = #{eventCount},
+            exposure_count = #{exposureCount},
+            group_count = #{groupCount},
+            mab_reward_count = #{mabRewardCount},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE replay_job_id = #{replayJobId}
+          AND job_status = 'RUNNING'
+    </update>
+
+    <update id="markSucceeded">
+        UPDATE pisces_event_replay_job
+        SET job_status = 'SUCCEEDED',
+            active_key = NULL,
+            affected_count = #{affectedCount},
+            event_count = #{eventCount},
+            exposure_count = #{exposureCount},
+            group_count = #{groupCount},
+            mab_reward_count = #{mabRewardCount},
+            error_message = NULL,
+            finished_at = #{finishedAt},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE replay_job_id = #{replayJobId}
+          AND job_status = 'RUNNING'
+    </update>
+
+    <update id="markFailed">
+        UPDATE pisces_event_replay_job
+        SET job_status = 'FAILED',
+            active_key = NULL,
+            error_message = #{errorMessage},
+            finished_at = #{finishedAt},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE replay_job_id = #{replayJobId}
+          AND job_status IN ('RUNNING', 'CANCEL_REQUESTED')
+    </update>
+
+    <update id="requestCancellation">
+        UPDATE pisces_event_replay_job
+        SET job_status = 'CANCEL_REQUESTED',
+            error_message = #{errorMessage},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE replay_job_id = #{replayJobId}
+          AND job_status = 'RUNNING'
+    </update>
+
+    <update id="markCancelled">
+        UPDATE pisces_event_replay_job
+        SET job_status = 'CANCELLED',
+            active_key = NULL,
+            error_message = #{errorMessage},
+            finished_at = #{finishedAt},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE replay_job_id = #{replayJobId}
+          AND job_status IN ('RUNNING', 'CANCEL_REQUESTED')
+    </update>
+</mapper>

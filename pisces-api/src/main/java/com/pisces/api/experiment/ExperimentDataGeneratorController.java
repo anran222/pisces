@@ -2,7 +2,9 @@ package com.pisces.api.experiment;
 
 import com.pisces.api.experiment.response.ExperimentDemoResponse;
 import com.pisces.common.response.BaseResponse;
+import com.pisces.service.annotation.ApiKeyScopeRequired;
 import com.pisces.service.annotation.NoTokenRequired;
+import com.pisces.service.security.ApiKeyScope;
 import com.pisces.service.service.ExperimentDataGeneratorService;
 import com.pisces.service.service.ExperimentDemoService;
 import lombok.AllArgsConstructor;
@@ -18,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping("/experiments/generator")
+@ApiKeyScopeRequired(ApiKeyScope.MANAGEMENT)
 @NoTokenRequired
 @AllArgsConstructor
 public class ExperimentDataGeneratorController {

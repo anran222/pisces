@@ -132,6 +132,7 @@ class PromptTemplateBuilderTest {
         context.setExperimentName("二手手机售卖页优化实验");
         context.setExperimentStatus("RUNNING");
         context.setStatistics(statistics());
+        context.setReportSnapshotFacts(List.of("latestReportSnapshotVersion=3", "latestReportConclusionStatus=GRADUATED"));
 
         String prompt = builder.buildGraduationPrompt(context);
 
@@ -142,6 +143,8 @@ class PromptTemplateBuilderTest {
         assertThat(prompt).contains("PAYMENT_RATE");
         assertThat(prompt).contains("0.76");
         assertThat(prompt).contains("D");
+        assertThat(prompt).contains("reportSnapshotFacts");
+        assertThat(prompt).contains("latestReportSnapshotVersion=3");
         assertThat(prompt).contains("decisionHints: N/A");
     }
 
@@ -171,6 +174,7 @@ class PromptTemplateBuilderTest {
         context.setStatisticsFacts(List.of("bestPerformingGroup=D", "primaryMetricKey=PAYMENT_RATE"));
         context.setGroupMetricSnapshots(List.of("D(变体3): PAYMENT_RATE=0.76"));
         context.setDataQualityFacts(List.of("analysisReady=true", "sampleSizeReached=false"));
+        context.setReportSnapshotFacts(List.of("latestReportSnapshotVersion=4"));
         context.setDecisionHints(List.of("固定演示实验"));
 
         String prompt = builder.buildDiagnosisPrompt(context);
@@ -180,9 +184,11 @@ class PromptTemplateBuilderTest {
         assertThat(prompt).contains("statisticsFacts");
         assertThat(prompt).contains("groupMetricSnapshot");
         assertThat(prompt).contains("dataQualityFacts");
+        assertThat(prompt).contains("reportSnapshotFacts");
         assertThat(prompt).contains("PAYMENT_RATE");
         assertThat(prompt).contains("0.76");
         assertThat(prompt).contains("analysisReady=true");
+        assertThat(prompt).contains("latestReportSnapshotVersion=4");
         assertThat(prompt).contains("固定演示实验");
     }
 

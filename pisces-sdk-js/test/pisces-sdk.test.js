@@ -30,9 +30,99 @@ test('should assign group and cache result', async () => {
   });
 });
 
+test('should assign group with trace and cache result', async () => {
+  const calls = [];
+  const traceResponse = {
+    experimentId: 'exp_001',
+    visitorId: 'visitor_001',
+    canonicalVisitorId: 'visitor_001',
+    groupId: 'group_a',
+    assigned: true,
+    reason: 'ALLOCATED',
+    source: 'NEW_ASSIGNMENT',
+    strategy: 'HASH',
+    configVersion: 2
+  };
+  const sdk = new PiscesSDK({
+    apiBaseUrl: 'http://localhost:9990/api',
+    experimentId: 'exp_001',
+    visitorId: 'visitor_001',
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return createJsonResponse(200, { code: 200, message: 'ok', data: traceResponse });
+    }
+  });
+
+  const first = await sdk.assignGroupWithTrace({ city: 'shanghai' });
+  const second = await sdk.assignGroupWithTrace({ city: 'beijing' });
+
+  assert.deepEqual(first, traceResponse);
+  assert.deepEqual(second, traceResponse);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'http://localhost:9990/api/traffic/assign/trace');
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    experimentId: 'exp_001',
+    visitorId: 'visitor_001',
+    attributes: { city: 'shanghai' }
+  });
+  assert.equal(sdk.groupIdCache, 'group_a');
+});
+
+test('should retry transient http failure when configured', async () => {
+  const calls = [];
+  const responses = [
+    createJsonResponse(500, {
+      code: 500,
+      message: '系统异常',
+      data: null
+    }),
+    createJsonResponse(200, {
+      code: 200,
+      message: 'ok',
+      data: 'group_a'
+    })
+  ];
+  const sdk = new PiscesSDK({
+    apiBaseUrl: 'http://localhost:9990/api',
+    experimentId: 'exp_001',
+    visitorId: 'visitor_001',
+    maxRetries: 1,
+    retryInitialBackoffMillis: 0,
+    retryMaxBackoffMillis: 0,
+    retryBackoffJitterRatio: 0,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return responses.shift();
+    }
+  });
+
+  const groupId = await sdk.assignGroup({ city: 'shanghai' });
+  const metrics = sdk.getMetricsSnapshot();
+
+  assert.equal(groupId, 'group_a');
+  assert.equal(calls.length, 2);
+  assert.equal(metrics.requestAttemptCount, 2);
+  assert.equal(metrics.requestSuccessCount, 1);
+  assert.equal(metrics.requestFailureCount, 1);
+  assert.equal(metrics.retryCount, 1);
+});
+
 test('should get experiment and group config', async () => {
   const responses = [
-    createJsonResponse(200, { code: 200, message: 'ok', data: 'group_b' }),
+    createJsonResponse(200, {
+      code: 200,
+      message: 'ok',
+      data: {
+        experimentId: 'exp_001',
+        visitorId: 'visitor_001',
+        groupId: 'group_b',
+        assigned: true,
+        reason: 'ALLOCATED',
+        source: 'NEW_ASSIGNMENT',
+        strategy: 'HASH',
+        configVersion: 3
+      }
+    }),
     createJsonResponse(200, {
       code: 200,
       message: 'ok',
@@ -40,6 +130,7 @@ test('should get experiment and group config', async () => {
         id: 'exp_001',
         name: '价格实验',
         status: 'RUNNING',
+        configVersion: 3,
         eventDefinitions: [
           {
             key: 'PRODUCT_VIEW',
@@ -96,8 +187,312 @@ test('should get experiment and group config', async () => {
   const config = await sdk.getGroupConfig();
 
   assert.equal(config.discount, '15%');
-  assert.equal(calls[0].url, 'http://localhost:9990/api/traffic/assign');
-  assert.equal(calls[1].url, 'http://localhost:9990/api/experiments/exp_001');
+  assert.equal(calls[0].url, 'http://localhost:9990/api/traffic/assign/trace');
+  assert.equal(calls[1].url, 'http://localhost:9990/api/runtime/experiments/exp_001/config');
+});
+
+test('should cache experiment config within ttl', async () => {
+  let calls = 0;
+  const sdk = new PiscesSDK({
+    apiBaseUrl: 'http://localhost:9990/api',
+    experimentId: 'exp_001',
+    visitorId: 'visitor_001',
+    experimentCacheTtl: 60000,
+    fetchImpl: async () => {
+      calls += 1;
+      return createJsonResponse(200, {
+        code: 200,
+        message: 'ok',
+        data: {
+          id: 'exp_001',
+          name: '价格实验',
+          status: 'RUNNING',
+          configVersion: 3
+        }
+      });
+    }
+  });
+
+  const first = await sdk.getExperiment();
+  const second = await sdk.getExperiment();
+
+  assert.equal(first.id, 'exp_001');
+  assert.equal(second.id, 'exp_001');
+  assert.equal(calls, 1);
+  const metrics = sdk.getMetricsSnapshot();
+  assert.equal(metrics.experimentCacheHitCount, 1);
+  assert.equal(metrics.experimentCacheMissCount, 1);
+  assert.equal(metrics.requestAttemptCount, 1);
+
+  sdk.resetMetrics();
+  assert.equal(sdk.getMetricsSnapshot().requestAttemptCount, 0);
+});
+
+test('should extend experiment cache when expired version is unchanged', async () => {
+  let now = 1000;
+  const responses = [
+    createJsonResponse(200, {
+      code: 200,
+      message: 'ok',
+      data: {
+        id: 'exp_001',
+        name: '价格实验',
+        status: 'RUNNING',
+        configVersion: 3
+      }
+    }),
+    createJsonResponse(200, {
+      code: 200,
+      message: 'ok',
+      data: {
+        experimentId: 'exp_001',
+        knownVersion: 3,
+        currentVersion: 3,
+        changed: false,
+        status: 'RUNNING'
+      }
+    })
+  ];
+  const calls = [];
+  const sdk = new PiscesSDK({
+    apiBaseUrl: 'http://localhost:9990/api',
+    experimentId: 'exp_001',
+    visitorId: 'visitor_001',
+    experimentCacheTtl: 10,
+    now: () => now,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return responses.shift();
+    }
+  });
+
+  const first = await sdk.getExperiment();
+  now = 2000;
+  const second = await sdk.getExperiment();
+
+  assert.equal(first.id, 'exp_001');
+  assert.equal(second.id, 'exp_001');
+  assert.equal(calls.length, 2);
+  assert.equal(
+    calls[1].url,
+    'http://localhost:9990/api/runtime/experiments/exp_001/config/version?knownVersion=3'
+  );
+});
+
+test('should append config version long poll millis when checking expired cache version', async () => {
+  let now = 1000;
+  const responses = [
+    createJsonResponse(200, {
+      code: 200,
+      message: 'ok',
+      data: {
+        id: 'exp_001',
+        name: '价格实验',
+        status: 'RUNNING',
+        configVersion: 3
+      }
+    }),
+    createJsonResponse(200, {
+      code: 200,
+      message: 'ok',
+      data: {
+        experimentId: 'exp_001',
+        knownVersion: 3,
+        currentVersion: 3,
+        changed: false,
+        status: 'RUNNING'
+      }
+    })
+  ];
+  const calls = [];
+  const sdk = new PiscesSDK({
+    apiBaseUrl: 'http://localhost:9990/api',
+    experimentId: 'exp_001',
+    visitorId: 'visitor_001',
+    experimentCacheTtl: 10,
+    configVersionLongPollMillis: 250,
+    now: () => now,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return responses.shift();
+    }
+  });
+
+  await sdk.getExperiment();
+  now = 2000;
+  await sdk.getExperiment();
+
+  assert.equal(calls.length, 2);
+  assert.equal(
+    calls[1].url,
+    'http://localhost:9990/api/runtime/experiments/exp_001/config/version?knownVersion=3&waitMillis=250'
+  );
+});
+
+test('should refresh experiment config when assignment version differs', async () => {
+  const responses = [
+    createJsonResponse(200, {
+      code: 200,
+      message: 'ok',
+      data: {
+        id: 'exp_001',
+        name: '价格实验',
+        status: 'RUNNING',
+        configVersion: 1
+      }
+    }),
+    createJsonResponse(200, {
+      code: 200,
+      message: 'ok',
+      data: {
+        experimentId: 'exp_001',
+        visitorId: 'visitor_001',
+        groupId: 'group_b',
+        assigned: true,
+        reason: 'ALLOCATED',
+        source: 'NEW_ASSIGNMENT',
+        strategy: 'HASH',
+        configVersion: 2
+      }
+    }),
+    createJsonResponse(200, {
+      code: 200,
+      message: 'ok',
+      data: {
+        id: 'exp_001',
+        name: '价格实验',
+        status: 'RUNNING',
+        configVersion: 2,
+        groups: {
+          group_b: {
+            id: 'group_b',
+            name: '实验组',
+            config: { discount: '20%' }
+          }
+        }
+      }
+    })
+  ];
+  const calls = [];
+  const sdk = new PiscesSDK({
+    apiBaseUrl: 'http://localhost:9990/api',
+    experimentId: 'exp_001',
+    visitorId: 'visitor_001',
+    experimentCacheTtl: 60000,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return responses.shift();
+    }
+  });
+
+  await sdk.getExperiment();
+  const config = await sdk.getGroupConfig();
+
+  assert.equal(config.discount, '20%');
+  assert.equal(calls.length, 3);
+  assert.equal(calls[2].url, 'http://localhost:9990/api/runtime/experiments/exp_001/config');
+});
+
+test('should use stale group config when assignment version differs and refresh fails', async () => {
+  const responses = [
+    createJsonResponse(200, {
+      code: 200,
+      message: 'ok',
+      data: {
+        id: 'exp_001',
+        name: '价格实验',
+        status: 'RUNNING',
+        configVersion: 1,
+        groups: {
+          group_b: {
+            id: 'group_b',
+            name: '实验组',
+            config: { discount: '15%' }
+          }
+        }
+      }
+    }),
+    createJsonResponse(200, {
+      code: 200,
+      message: 'ok',
+      data: {
+        experimentId: 'exp_001',
+        visitorId: 'visitor_001',
+        groupId: 'group_b',
+        assigned: true,
+        reason: 'ALLOCATED',
+        source: 'NEW_ASSIGNMENT',
+        strategy: 'HASH',
+        configVersion: 2
+      }
+    }),
+    createJsonResponse(500, {
+      code: 500,
+      message: '系统异常',
+      data: null
+    })
+  ];
+  const calls = [];
+  const sdk = new PiscesSDK({
+    apiBaseUrl: 'http://localhost:9990/api',
+    experimentId: 'exp_001',
+    visitorId: 'visitor_001',
+    experimentCacheTtl: 60000,
+    allowStaleExperimentConfig: true,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return responses.shift();
+    }
+  });
+
+  await sdk.getExperiment();
+  const config = await sdk.getGroupConfig();
+
+  assert.equal(config.discount, '15%');
+  assert.equal(calls.length, 3);
+});
+
+test('should return stale experiment config when refresh fails and fallback enabled', async () => {
+  let now = 1000;
+  const responses = [
+    createJsonResponse(200, {
+      code: 200,
+      message: 'ok',
+      data: {
+        id: 'exp_001',
+        name: '价格实验',
+        status: 'RUNNING',
+        configVersion: 3
+      }
+    }),
+    createJsonResponse(500, {
+      code: 500,
+      message: '系统异常',
+      data: null
+    })
+  ];
+  const calls = [];
+  const sdk = new PiscesSDK({
+    apiBaseUrl: 'http://localhost:9990/api',
+    experimentId: 'exp_001',
+    visitorId: 'visitor_001',
+    experimentCacheTtl: 10,
+    allowStaleExperimentConfig: true,
+    now: () => now,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return responses.shift();
+    }
+  });
+
+  const fresh = await sdk.getExperiment();
+  now = 2000;
+  const stale = await sdk.getExperiment();
+
+  assert.equal(fresh.id, 'exp_001');
+  assert.equal(stale.id, 'exp_001');
+  assert.equal(calls.length, 2);
+  assert.equal(sdk.getMetricsSnapshot().staleExperimentConfigFallbackCount, 1);
 });
 
 test('should expose group config schema from experiment response', async () => {

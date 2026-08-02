@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.EventMaterializationMapper">
+
+    <insert id="upsert" parameterType="com.pisces.service.entity.EventMaterializationEntity">
+        INSERT INTO pisces_event_materialization
+            (fact_kind, fact_id, experiment_id, group_id, event_type, materialization_source,
+             replay_job_id, materialized_at)
+        VALUES
+            (#{entity.factKind}, #{entity.factId}, #{entity.experimentId}, #{entity.groupId},
+             #{entity.eventType}, #{entity.materializationSource}, #{entity.replayJobId},
+             #{entity.materializedAt})
+        ON DUPLICATE KEY UPDATE
+            experiment_id = VALUES(experiment_id),
+            group_id = VALUES(group_id),
+            event_type = VALUES(event_type),
+            materialization_source = VALUES(materialization_source),
+            replay_job_id = VALUES(replay_job_id),
+            materialized_at = VALUES(materialized_at)
+    </insert>
+
+    <select id="countByFact" resultType="long">
+        SELECT COUNT(1)
+        FROM pisces_event_materialization
+        WHERE fact_kind = #{factKind}
+          AND fact_id = #{factId}
+    </select>
+
+    <select id="countMaterializedEventsByReplayScope" resultType="long">
+        SELECT COUNT(1)
+        FROM pisces_experiment_event e
+        INNER JOIN pisces_event_materialization m
+          ON m.fact_kind = 'EVENT'
+         AND m.fact_id = e.event_id
+         AND m.experiment_id = e.experiment_id
+         AND m.group_id = e.group_id
+        WHERE e.experiment_id = #{experimentId}
+          AND e.group_id = #{groupId}
+        <if test="startTime != null">
+          AND e.event_time <![CDATA[>=]]> #{startTime}
+        </if>
+        <if test="endTime != null">
+          AND e.event_time <![CDATA[<=]]> #{endTime}
+        </if>
+        <if test="eventTypes != null and eventTypes.size() > 0">
+          AND e.event_type IN
+          <foreach collection="eventTypes" item="eventType" open="(" separator="," close=")">
+            #{eventType}
+          </foreach>
+        </if>
+    </select>
+
+    <select id="countMaterializedExposuresByReplayScope" resultType="long">
+        SELECT COUNT(1)
+        FROM pisces_experiment_exposure x
+        INNER JOIN pisces_event_materialization m
+          ON m.fact_kind = 'EXPOSURE'
+         AND m.fact_id = x.exposure_id
+         AND m.experiment_id = x.experiment_id
+         AND m.group_id = x.group_id
+        WHERE x.experiment_id = #{experimentId}
+          AND x.group_id = #{groupId}
+        <if test="startTime != null">
+          AND x.exposed_at <![CDATA[>=]]> #{startTime}
+        </if>
+        <if test="endTime != null">
+          AND x.exposed_at <![CDATA[<=]]> #{endTime}
+        </if>
+    </select>
+</mapper>

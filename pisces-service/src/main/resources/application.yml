@@ -11,7 +11,7 @@ spring:
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3306/pisces?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
     username: ${MYSQL_USERNAME:root}
-    password: ${MYSQL_PASSWORD:xar19990313}
+    password: ${MYSQL_PASSWORD:}
     driver-class-name: com.mysql.cj.jdbc.Driver
   data:
     redis:
@@ -31,9 +31,19 @@ mybatis:
   mapper-locations: classpath*:mapper/**/*.xml
   type-aliases-package: com.pisces.service.entity
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
 # Zookeeper配置
 zookeeper:
-  connectString: localhost:2181
+  connectString: ${PISCES_ZOOKEEPER_CONNECT_STRING:localhost:2181}
   sessionTimeoutMs: 30000
   connectionTimeoutMs: 30000
   maxRetries: 3
@@ -41,8 +51,15 @@ zookeeper:
 
 # 阿里通义千问API配置
 tongyi:
-  apiKey: ${apiKey:sk-e2240756f78145fd879fcbb4f2767bf8} # 必须配置真实通义 API Key，否则 AI 流程直接失败
-  model: qwen3-max  # 文本生成默认模型；多模态模型请勿走 Generation 接口
+  apiKey: ${TONGYI_API_KEY:} # 必须配置真实通义 API Key，否则 AI 流程直接失败
+  model: ${TONGYI_MODEL:qwen3.7-max}  # 普通 DashScope API Key 可直接调用的 Qwen Max 生产模型
+  apiMode: ${TONGYI_API_MODE:dashscope}  # 默认走 DashScope SDK/HTTP 通道
+  baseUrl: ${TONGYI_BASE_URL:https://dashscope.aliyuncs.com/api/v1}
+  fallbackModel: ${TONGYI_FALLBACK_MODEL:qwen3.7-max}  # 显式覆盖 preview 时仍可回退到生产模型
+  fallbackApiMode: ${TONGYI_FALLBACK_API_MODE:dashscope}
+  fallbackBaseUrl: ${TONGYI_FALLBACK_BASE_URL:https://dashscope.aliyuncs.com/api/v1}
+  modelFallbackEnabled: ${TONGYI_MODEL_FALLBACK_ENABLED:true}
+  enableThinking: ${TONGYI_ENABLE_THINKING:true}
   imageGenerationModel: wan2.6-t2i  # 纯文生图模型
   imageEditModel: wan2.6-image  # 带参考图编辑/转换模型
   timeout: 30000  # 请求超时时间（毫秒）
@@ -51,14 +68,39 @@ tongyi:
 # Pisces 安全配置
 pisces:
   security:
-    # 有效的 API Key 列表（生产环境应通过环境变量注入，如 PISCES_API_KEY_1）
+    # 兼容模式：有效的 API Key 列表，使用英文逗号分隔，如 PISCES_API_KEYS=key1,key2
+    # 兼容 key 默认拥有 runtime、analysis、management、admin 全部权限域
     # 请求时在 Header 中携带：X-Pisces-Api-Key: <key>
-    api-keys:
-      - ${PISCES_API_KEY_1:pisces-dev-key-001}
-      - ${PISCES_API_KEY_2:pisces-dev-key-002}
+    api-keys: ${PISCES_API_KEYS:}
+    # 生产推荐：key|appId|owner|scope1+scope2，多条使用英文逗号分隔
+    # 示例：runtime-key|shop-app|sdk|runtime,ops-key|platform|ops|management+analysis
+    api-key-specs: ${PISCES_API_KEY_SPECS:}
     # 完全跳过鉴权的路径前缀（健康检查等）
     skip-paths:
       - /actuator/
+  config-change:
+    redis-broadcast-enabled: ${PISCES_CONFIG_CHANGE_REDIS_BROADCAST_ENABLED:false}
+    redis-channel: ${PISCES_CONFIG_CHANGE_REDIS_CHANNEL:pisces:config-change}
+  event-pipeline:
+    replay:
+      batch-size: ${PISCES_EVENT_REPLAY_BATCH_SIZE:1000}
+      max-filtered-copy-facts: ${PISCES_EVENT_REPLAY_MAX_FILTERED_COPY_FACTS:50000}
+  approval-escalation:
+    scan-enabled: ${PISCES_APPROVAL_ESCALATION_SCAN_ENABLED:true}
+    scan-delay-ms: ${PISCES_APPROVAL_ESCALATION_SCAN_DELAY_MS:60000}
+    scan-initial-delay-ms: ${PISCES_APPROVAL_ESCALATION_SCAN_INITIAL_DELAY_MS:10000}
+    dispatch-enabled: ${PISCES_APPROVAL_ESCALATION_DISPATCH_ENABLED:false}
+    dispatch-delay-ms: ${PISCES_APPROVAL_ESCALATION_DISPATCH_DELAY_MS:10000}
+    dispatch-initial-delay-ms: ${PISCES_APPROVAL_ESCALATION_DISPATCH_INITIAL_DELAY_MS:15000}
+    dispatch-batch-size: ${PISCES_APPROVAL_ESCALATION_DISPATCH_BATCH_SIZE:50}
+    dispatch-lock-minutes: ${PISCES_APPROVAL_ESCALATION_DISPATCH_LOCK_MINUTES:5}
+    metrics-refresh-delay-ms: ${PISCES_APPROVAL_ESCALATION_METRICS_REFRESH_DELAY_MS:30000}
+    metrics-refresh-initial-delay-ms: ${PISCES_APPROVAL_ESCALATION_METRICS_REFRESH_INITIAL_DELAY_MS:5000}
+    max-retry-count: ${PISCES_APPROVAL_ESCALATION_MAX_RETRY_COUNT:5}
+    webhook-url: ${PISCES_APPROVAL_ESCALATION_WEBHOOK_URL:}
+    webhook-urls: ${PISCES_APPROVAL_ESCALATION_WEBHOOK_URLS:}
+    webhook-channel-names: ${PISCES_APPROVAL_ESCALATION_WEBHOOK_CHANNEL_NAMES:}
+    webhook-timeout-ms: ${PISCES_APPROVAL_ESCALATION_WEBHOOK_TIMEOUT_MS:3000}
 
 logging:
   level:

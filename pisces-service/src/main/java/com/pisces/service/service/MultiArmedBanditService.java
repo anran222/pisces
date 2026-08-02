@@ -31,6 +31,18 @@ public interface MultiArmedBanditService {
      * @param success 是否成功（true表示成功，false表示失败）
      */
     void updateReward(String experimentId, String groupId, boolean success);
+
+    /**
+     * 按业务观测键记录奖励数据。
+     * 同一个观测键只贡献一条奖励结果；失败可以被后续成功升级，成功不会被失败降级。
+     *
+     * @param experimentId 实验ID
+     * @param groupId 实验组ID
+     * @param observationId 奖励观测键（例如一次转化漏斗、访客或客户端事件ID）
+     * @param success 是否成功（true表示成功，false表示失败）
+     * @return 本次调用是否实际改变了奖励统计
+     */
+    boolean recordRewardObservation(String experimentId, String groupId, String observationId, boolean success);
     
     /**
      * 获取变体的Beta分布参数（用于Thompson Sampling）

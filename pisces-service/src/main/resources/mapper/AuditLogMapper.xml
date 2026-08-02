@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.AuditLogMapper">
+
+    <resultMap id="auditLogEntityResultMap" type="com.pisces.service.entity.AuditLogEntity">
+        <id column="id" property="id"/>
+        <result column="audit_id" property="auditId"/>
+        <result column="resource_type" property="resourceType"/>
+        <result column="resource_id" property="resourceId"/>
+        <result column="action" property="action"/>
+        <result column="operator" property="operator"/>
+        <result column="before_status" property="beforeStatus"/>
+        <result column="after_status" property="afterStatus"/>
+        <result column="summary" property="summary"/>
+        <result column="detail_json" property="detailJson"/>
+        <result column="created_at" property="createdAt"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.pisces.service.entity.AuditLogEntity">
+        INSERT INTO pisces_audit_log
+            (audit_id, resource_type, resource_id, action, operator, before_status, after_status,
+             summary, detail_json, created_at)
+        VALUES
+            (#{entity.auditId}, #{entity.resourceType}, #{entity.resourceId}, #{entity.action}, #{entity.operator},
+             #{entity.beforeStatus}, #{entity.afterStatus}, #{entity.summary}, #{entity.detailJson}, #{entity.createdAt})
+    </insert>
+
+    <select id="selectByResource" resultMap="auditLogEntityResultMap">
+        SELECT id, audit_id, resource_type, resource_id, action, operator, before_status, after_status,
+               summary, detail_json, created_at
+        FROM pisces_audit_log
+        WHERE resource_type = #{resourceType}
+          AND resource_id = #{resourceId}
+        ORDER BY id DESC
+        LIMIT #{limit}
+    </select>
+</mapper>

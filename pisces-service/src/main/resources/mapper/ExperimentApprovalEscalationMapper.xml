@@ -1,0 +1,500 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.ExperimentApprovalEscalationMapper">
+
+    <resultMap id="experimentApprovalEscalationEntityResultMap"
+               type="com.pisces.service.entity.ExperimentApprovalEscalationEntity">
+        <id column="id" property="id"/>
+        <result column="escalation_id" property="escalationId"/>
+        <result column="experiment_id" property="experimentId"/>
+        <result column="approval_type" property="approvalType"/>
+        <result column="draft_version" property="draftVersion"/>
+        <result column="app_id" property="appId"/>
+        <result column="owner" property="owner"/>
+        <result column="experiment_name" property="experimentName"/>
+        <result column="approval_submitted_at" property="approvalSubmittedAt"/>
+        <result column="approval_elapsed_hours" property="approvalElapsedHours"/>
+        <result column="approval_sla_hours" property="approvalSlaHours"/>
+        <result column="approval_sla_status" property="approvalSlaStatus"/>
+        <result column="escalation_owners" property="escalationOwners"/>
+        <result column="escalation_reason" property="escalationReason"/>
+        <result column="notification_channel" property="notificationChannel"/>
+        <result column="notification_payload_json" property="notificationPayloadJson"/>
+        <result column="notification_status" property="notificationStatus"/>
+        <result column="notification_attempt_count" property="notificationAttemptCount"/>
+        <result column="notification_last_attempt_at" property="notificationLastAttemptAt"/>
+        <result column="notification_next_attempt_at" property="notificationNextAttemptAt"/>
+        <result column="notification_delivered_at" property="notificationDeliveredAt"/>
+        <result column="notification_last_error" property="notificationLastError"/>
+        <result column="escalation_status" property="escalationStatus"/>
+        <result column="acknowledged_by" property="acknowledgedBy"/>
+        <result column="acknowledged_comment" property="acknowledgedComment"/>
+        <result column="acknowledged_at" property="acknowledgedAt"/>
+        <result column="resolved_by" property="resolvedBy"/>
+        <result column="resolved_reason" property="resolvedReason"/>
+        <result column="resolved_at" property="resolvedAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <resultMap id="experimentApprovalEscalationStatusCountResultMap"
+               type="com.pisces.service.entity.ExperimentApprovalEscalationStatusCountEntity">
+        <result column="status" property="status"/>
+        <result column="escalation_count" property="escalationCount"/>
+    </resultMap>
+
+    <resultMap id="experimentApprovalEscalationDeliveryEntityResultMap"
+               type="com.pisces.service.entity.ExperimentApprovalEscalationDeliveryEntity">
+        <id column="id" property="id"/>
+        <result column="escalation_id" property="escalationId"/>
+        <result column="channel_name" property="channelName"/>
+        <result column="target_key" property="targetKey"/>
+        <result column="notification_status" property="notificationStatus"/>
+        <result column="notification_attempt_count" property="notificationAttemptCount"/>
+        <result column="notification_last_attempt_at" property="notificationLastAttemptAt"/>
+        <result column="notification_next_attempt_at" property="notificationNextAttemptAt"/>
+        <result column="notification_delivered_at" property="notificationDeliveredAt"/>
+        <result column="notification_last_error" property="notificationLastError"/>
+        <result column="active" property="active"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <insert id="upsert" parameterType="com.pisces.service.entity.ExperimentApprovalEscalationEntity">
+        INSERT INTO pisces_experiment_approval_escalation
+            (escalation_id, experiment_id, approval_type, draft_version, app_id, owner, experiment_name,
+             approval_submitted_at, approval_elapsed_hours, approval_sla_hours, approval_sla_status,
+             escalation_owners, escalation_reason, notification_channel, notification_payload_json,
+             notification_status, notification_attempt_count, escalation_status)
+        VALUES
+            (#{entity.escalationId}, #{entity.experimentId}, #{entity.approvalType}, #{entity.draftVersion},
+             #{entity.appId}, #{entity.owner}, #{entity.experimentName}, #{entity.approvalSubmittedAt},
+             #{entity.approvalElapsedHours}, #{entity.approvalSlaHours}, #{entity.approvalSlaStatus},
+             #{entity.escalationOwners}, #{entity.escalationReason}, #{entity.notificationChannel},
+             #{entity.notificationPayloadJson}, #{entity.notificationStatus}, #{entity.notificationAttemptCount},
+             #{entity.escalationStatus})
+        ON DUPLICATE KEY UPDATE
+            approval_elapsed_hours = VALUES(approval_elapsed_hours),
+            approval_sla_status = VALUES(approval_sla_status),
+            escalation_reason = VALUES(escalation_reason),
+            notification_payload_json = VALUES(notification_payload_json),
+            updated_at = CURRENT_TIMESTAMP
+    </insert>
+
+    <select id="selectByEscalationId" resultMap="experimentApprovalEscalationEntityResultMap">
+        SELECT id, escalation_id, experiment_id, approval_type, draft_version, app_id, owner, experiment_name,
+               approval_submitted_at, approval_elapsed_hours, approval_sla_hours, approval_sla_status,
+               escalation_owners, escalation_reason, notification_channel, notification_payload_json,
+               notification_status, notification_attempt_count, notification_last_attempt_at,
+               notification_next_attempt_at, notification_delivered_at, notification_last_error,
+               escalation_status, acknowledged_by, acknowledged_comment, acknowledged_at,
+               resolved_by, resolved_reason, resolved_at, created_at, updated_at
+        FROM pisces_experiment_approval_escalation
+        WHERE escalation_id = #{escalationId}
+    </select>
+
+    <select id="selectByTask" resultMap="experimentApprovalEscalationEntityResultMap">
+        SELECT id, escalation_id, experiment_id, approval_type, draft_version, app_id, owner, experiment_name,
+               approval_submitted_at, approval_elapsed_hours, approval_sla_hours, approval_sla_status,
+               escalation_owners, escalation_reason, notification_channel, notification_payload_json,
+               notification_status, notification_attempt_count, notification_last_attempt_at,
+               notification_next_attempt_at, notification_delivered_at, notification_last_error,
+               escalation_status, acknowledged_by, acknowledged_comment, acknowledged_at,
+               resolved_by, resolved_reason, resolved_at, created_at, updated_at
+        FROM pisces_experiment_approval_escalation
+        WHERE experiment_id = #{experimentId}
+          AND approval_type = #{approvalType}
+          AND draft_version = #{draftVersion}
+          AND approval_submitted_at = #{approvalSubmittedAt}
+    </select>
+
+    <select id="list" resultMap="experimentApprovalEscalationEntityResultMap">
+        SELECT id, escalation_id, experiment_id, approval_type, draft_version, app_id, owner, experiment_name,
+               approval_submitted_at, approval_elapsed_hours, approval_sla_hours, approval_sla_status,
+               escalation_owners, escalation_reason, notification_channel, notification_payload_json,
+               notification_status, notification_attempt_count, notification_last_attempt_at,
+               notification_next_attempt_at, notification_delivered_at, notification_last_error,
+               escalation_status, acknowledged_by, acknowledged_comment, acknowledged_at,
+               resolved_by, resolved_reason, resolved_at, created_at, updated_at
+        FROM pisces_experiment_approval_escalation
+        WHERE (#{appId} IS NULL OR app_id = #{appId})
+          AND (#{owner} IS NULL OR owner = #{owner})
+          AND (#{escalationStatus} IS NULL OR escalation_status = #{escalationStatus})
+        ORDER BY updated_at DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="listDispatchable" resultMap="experimentApprovalEscalationEntityResultMap">
+        SELECT id, escalation_id, experiment_id, approval_type, draft_version, app_id, owner, experiment_name,
+               approval_submitted_at, approval_elapsed_hours, approval_sla_hours, approval_sla_status,
+               escalation_owners, escalation_reason, notification_channel, notification_payload_json,
+               notification_status, notification_attempt_count, notification_last_attempt_at,
+               notification_next_attempt_at, notification_delivered_at, notification_last_error,
+               escalation_status, acknowledged_by, acknowledged_comment, acknowledged_at,
+               resolved_by, resolved_reason, resolved_at, created_at, updated_at
+        FROM pisces_experiment_approval_escalation
+        WHERE escalation_status IN ('OPEN', 'ACKNOWLEDGED')
+          AND (
+              notification_status = 'PENDING'
+              OR (notification_status = 'RETRY' AND notification_next_attempt_at <![CDATA[<=]]> #{now})
+              OR (notification_status = 'DISPATCHING' AND notification_next_attempt_at <![CDATA[<=]]> #{now})
+          )
+        ORDER BY updated_at ASC, id ASC
+        LIMIT #{limit}
+    </select>
+
+    <insert id="upsertDeliveries">
+        INSERT INTO pisces_experiment_approval_escalation_delivery
+            (escalation_id, channel_name, target_key, notification_status, notification_attempt_count, active)
+        VALUES
+        <foreach collection="entities" item="entity" separator=",">
+            (#{entity.escalationId}, #{entity.channelName}, #{entity.targetKey},
+             #{entity.notificationStatus}, #{entity.notificationAttemptCount}, 1)
+        </foreach>
+        ON DUPLICATE KEY UPDATE
+            channel_name = VALUES(channel_name),
+            active = 1,
+            updated_at = CURRENT_TIMESTAMP
+    </insert>
+
+    <update id="deactivateStaleDeliveries">
+        UPDATE pisces_experiment_approval_escalation_delivery
+        SET active = 0,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_id = #{escalationId}
+          AND target_key NOT IN
+          <foreach collection="targetKeys" item="targetKey" open="(" separator="," close=")">
+              #{targetKey}
+          </foreach>
+    </update>
+
+    <select id="listDeliveriesByEscalationId" resultMap="experimentApprovalEscalationDeliveryEntityResultMap">
+        SELECT id, escalation_id, channel_name, target_key, notification_status, notification_attempt_count,
+               notification_last_attempt_at, notification_next_attempt_at, notification_delivered_at,
+               notification_last_error, active, created_at, updated_at
+        FROM pisces_experiment_approval_escalation_delivery
+        WHERE escalation_id = #{escalationId}
+          AND active = 1
+        ORDER BY id ASC
+    </select>
+
+    <select id="listDeliveriesByEscalationIds" resultMap="experimentApprovalEscalationDeliveryEntityResultMap">
+        SELECT id, escalation_id, channel_name, target_key, notification_status, notification_attempt_count,
+               notification_last_attempt_at, notification_next_attempt_at, notification_delivered_at,
+               notification_last_error, active, created_at, updated_at
+        FROM pisces_experiment_approval_escalation_delivery
+        WHERE active = 1
+          AND escalation_id IN
+          <foreach collection="escalationIds" item="escalationId" open="(" separator="," close=")">
+              #{escalationId}
+          </foreach>
+        ORDER BY escalation_id ASC, id ASC
+    </select>
+
+    <select id="countByEscalationStatus" resultMap="experimentApprovalEscalationStatusCountResultMap">
+        SELECT escalation_status AS status, COUNT(1) AS escalation_count
+        FROM pisces_experiment_approval_escalation
+        WHERE (#{appId} IS NULL OR app_id = #{appId})
+          AND (#{owner} IS NULL OR owner = #{owner})
+        GROUP BY escalation_status
+    </select>
+
+    <select id="countByNotificationStatus" resultMap="experimentApprovalEscalationStatusCountResultMap">
+        SELECT notification_status AS status, COUNT(1) AS escalation_count
+        FROM pisces_experiment_approval_escalation
+        WHERE (#{appId} IS NULL OR app_id = #{appId})
+          AND (#{owner} IS NULL OR owner = #{owner})
+          AND escalation_status IN ('OPEN', 'ACKNOWLEDGED')
+        GROUP BY notification_status
+    </select>
+
+    <select id="countDeliveryByNotificationStatus" resultMap="experimentApprovalEscalationStatusCountResultMap">
+        SELECT delivery.notification_status AS status, COUNT(1) AS escalation_count
+        FROM pisces_experiment_approval_escalation_delivery delivery
+        INNER JOIN pisces_experiment_approval_escalation escalation
+            ON escalation.escalation_id = delivery.escalation_id
+        WHERE delivery.active = 1
+          AND escalation.escalation_status IN ('OPEN', 'ACKNOWLEDGED')
+          AND (#{appId} IS NULL OR escalation.app_id = #{appId})
+          AND (#{owner} IS NULL OR escalation.owner = #{owner})
+        GROUP BY delivery.notification_status
+    </select>
+
+    <update id="acknowledge">
+        UPDATE pisces_experiment_approval_escalation
+        SET escalation_status = 'ACKNOWLEDGED',
+            acknowledged_by = #{operator},
+            acknowledged_comment = #{comment},
+            acknowledged_at = #{acknowledgedAt},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_id = #{escalationId}
+          AND escalation_status = 'OPEN'
+    </update>
+
+    <update id="resolveByTask">
+        UPDATE pisces_experiment_approval_escalation
+        SET escalation_status = 'RESOLVED',
+            resolved_by = #{operator},
+            resolved_reason = #{reason},
+            resolved_at = #{resolvedAt},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE experiment_id = #{experimentId}
+          AND approval_type = #{approvalType}
+          AND draft_version = #{draftVersion}
+          AND escalation_status IN ('OPEN', 'ACKNOWLEDGED')
+    </update>
+
+    <update id="markNotificationDispatching">
+        UPDATE pisces_experiment_approval_escalation
+        SET notification_status = 'DISPATCHING',
+            notification_last_attempt_at = #{now},
+            notification_next_attempt_at = #{lockedUntil},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_id = #{escalationId}
+          AND escalation_status IN ('OPEN', 'ACKNOWLEDGED')
+          AND (
+              notification_status = 'PENDING'
+              OR (notification_status = 'RETRY' AND notification_next_attempt_at <![CDATA[<=]]> #{now})
+              OR (notification_status = 'DISPATCHING' AND notification_next_attempt_at <![CDATA[<=]]> #{now})
+          )
+    </update>
+
+    <update id="markNotificationSent">
+        UPDATE pisces_experiment_approval_escalation
+        SET notification_status = 'SENT',
+            notification_attempt_count = #{attemptCount},
+            notification_last_attempt_at = #{deliveredAt},
+            notification_delivered_at = #{deliveredAt},
+            notification_next_attempt_at = NULL,
+            notification_last_error = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_id = #{escalationId}
+    </update>
+
+    <update id="markNotificationRetry">
+        UPDATE pisces_experiment_approval_escalation
+        SET notification_status = 'RETRY',
+            notification_attempt_count = #{attemptCount},
+            notification_last_attempt_at = #{lastAttemptAt},
+            notification_next_attempt_at = #{nextAttemptAt},
+            notification_last_error = #{lastError},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_id = #{escalationId}
+    </update>
+
+    <update id="markNotificationDead">
+        UPDATE pisces_experiment_approval_escalation
+        SET notification_status = 'DEAD',
+            notification_attempt_count = #{attemptCount},
+            notification_last_attempt_at = #{lastAttemptAt},
+            notification_next_attempt_at = NULL,
+            notification_last_error = #{lastError},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_id = #{escalationId}
+    </update>
+
+    <update id="markNotificationDeliveryDispatching">
+        UPDATE pisces_experiment_approval_escalation_delivery
+        SET notification_status = 'DISPATCHING',
+            notification_last_attempt_at = #{now},
+            notification_next_attempt_at = #{lockedUntil},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_id = #{escalationId}
+          AND target_key = #{targetKey}
+          AND active = 1
+          AND (
+              notification_status = 'PENDING'
+              OR (notification_status = 'RETRY' AND notification_next_attempt_at <![CDATA[<=]]> #{now})
+              OR (notification_status = 'DISPATCHING' AND notification_next_attempt_at <![CDATA[<=]]> #{now})
+          )
+    </update>
+
+    <update id="markNotificationDeliverySent">
+        UPDATE pisces_experiment_approval_escalation_delivery
+        SET notification_status = 'SENT',
+            notification_attempt_count = #{attemptCount},
+            notification_last_attempt_at = #{deliveredAt},
+            notification_delivered_at = #{deliveredAt},
+            notification_next_attempt_at = NULL,
+            notification_last_error = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_id = #{escalationId}
+          AND target_key = #{targetKey}
+          AND active = 1
+    </update>
+
+    <update id="markNotificationDeliveryRetry">
+        UPDATE pisces_experiment_approval_escalation_delivery
+        SET notification_status = 'RETRY',
+            notification_attempt_count = #{attemptCount},
+            notification_last_attempt_at = #{lastAttemptAt},
+            notification_next_attempt_at = #{nextAttemptAt},
+            notification_last_error = #{lastError},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_id = #{escalationId}
+          AND target_key = #{targetKey}
+          AND active = 1
+    </update>
+
+    <update id="markNotificationDeliveryDead">
+        UPDATE pisces_experiment_approval_escalation_delivery
+        SET notification_status = 'DEAD',
+            notification_attempt_count = #{attemptCount},
+            notification_last_attempt_at = #{lastAttemptAt},
+            notification_next_attempt_at = NULL,
+            notification_last_error = #{lastError},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_id = #{escalationId}
+          AND target_key = #{targetKey}
+          AND active = 1
+    </update>
+
+    <update id="refreshNotificationStatusFromDeliveries">
+        UPDATE pisces_experiment_approval_escalation escalation
+        SET notification_status = CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM pisces_experiment_approval_escalation_delivery delivery
+                    WHERE delivery.escalation_id = escalation.escalation_id
+                      AND delivery.active = 1
+                      AND delivery.notification_status = 'DEAD'
+                ) THEN 'DEAD'
+                WHEN EXISTS (
+                    SELECT 1 FROM pisces_experiment_approval_escalation_delivery delivery
+                    WHERE delivery.escalation_id = escalation.escalation_id
+                      AND delivery.active = 1
+                      AND delivery.notification_status = 'RETRY'
+                ) THEN 'RETRY'
+                WHEN EXISTS (
+                    SELECT 1 FROM pisces_experiment_approval_escalation_delivery delivery
+                    WHERE delivery.escalation_id = escalation.escalation_id
+                      AND delivery.active = 1
+                      AND delivery.notification_status = 'DISPATCHING'
+                ) THEN 'DISPATCHING'
+                WHEN EXISTS (
+                    SELECT 1 FROM pisces_experiment_approval_escalation_delivery delivery
+                    WHERE delivery.escalation_id = escalation.escalation_id
+                      AND delivery.active = 1
+                      AND delivery.notification_status = 'PENDING'
+                ) THEN 'PENDING'
+                WHEN EXISTS (
+                    SELECT 1 FROM pisces_experiment_approval_escalation_delivery delivery
+                    WHERE delivery.escalation_id = escalation.escalation_id
+                      AND delivery.active = 1
+                ) THEN 'SENT'
+                ELSE escalation.notification_status
+            END,
+            notification_attempt_count = COALESCE((
+                SELECT MAX(delivery.notification_attempt_count)
+                FROM pisces_experiment_approval_escalation_delivery delivery
+                WHERE delivery.escalation_id = escalation.escalation_id
+                  AND delivery.active = 1
+            ), escalation.notification_attempt_count),
+            notification_last_attempt_at = (
+                SELECT MAX(delivery.notification_last_attempt_at)
+                FROM pisces_experiment_approval_escalation_delivery delivery
+                WHERE delivery.escalation_id = escalation.escalation_id
+                  AND delivery.active = 1
+            ),
+            notification_next_attempt_at = (
+                SELECT MIN(delivery.notification_next_attempt_at)
+                FROM pisces_experiment_approval_escalation_delivery delivery
+                WHERE delivery.escalation_id = escalation.escalation_id
+                  AND delivery.active = 1
+                  AND delivery.notification_status IN ('RETRY', 'DISPATCHING')
+            ),
+            notification_delivered_at = CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM pisces_experiment_approval_escalation_delivery delivery
+                    WHERE delivery.escalation_id = escalation.escalation_id
+                      AND delivery.active = 1
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM pisces_experiment_approval_escalation_delivery delivery
+                    WHERE delivery.escalation_id = escalation.escalation_id
+                      AND delivery.active = 1
+                      AND delivery.notification_status != 'SENT'
+                ) THEN (
+                    SELECT MAX(delivery.notification_delivered_at)
+                    FROM pisces_experiment_approval_escalation_delivery delivery
+                    WHERE delivery.escalation_id = escalation.escalation_id
+                      AND delivery.active = 1
+                )
+                ELSE NULL
+            END,
+            notification_last_error = (
+                SELECT delivery_error.notification_last_error
+                FROM pisces_experiment_approval_escalation_delivery delivery_error
+                WHERE delivery_error.escalation_id = escalation.escalation_id
+                  AND delivery_error.active = 1
+                  AND delivery_error.notification_last_error IS NOT NULL
+                ORDER BY delivery_error.updated_at DESC, delivery_error.id DESC
+                LIMIT 1
+            ),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation.escalation_id = #{escalationId}
+    </update>
+
+    <update id="retryDeadNotification">
+        UPDATE pisces_experiment_approval_escalation
+        SET notification_status = 'RETRY',
+            notification_attempt_count = 0,
+            notification_last_attempt_at = NULL,
+            notification_next_attempt_at = #{nextAttemptAt},
+            notification_delivered_at = NULL,
+            notification_last_error = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_id = #{escalationId}
+          AND escalation_status IN ('OPEN', 'ACKNOWLEDGED')
+          AND notification_status = 'DEAD'
+    </update>
+
+    <update id="retryDeadNotificationDeliveries">
+        UPDATE pisces_experiment_approval_escalation_delivery
+        SET notification_status = 'RETRY',
+            notification_attempt_count = 0,
+            notification_last_attempt_at = NULL,
+            notification_next_attempt_at = #{nextAttemptAt},
+            notification_delivered_at = NULL,
+            notification_last_error = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_id = #{escalationId}
+          AND active = 1
+          AND notification_status = 'DEAD'
+    </update>
+
+    <update id="retryDeadNotifications">
+        UPDATE pisces_experiment_approval_escalation
+        SET notification_status = 'RETRY',
+            notification_attempt_count = 0,
+            notification_last_attempt_at = NULL,
+            notification_next_attempt_at = #{nextAttemptAt},
+            notification_delivered_at = NULL,
+            notification_last_error = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE escalation_status IN ('OPEN', 'ACKNOWLEDGED')
+          AND notification_status = 'DEAD'
+          AND (#{appId} IS NULL OR app_id = #{appId})
+          AND (#{owner} IS NULL OR owner = #{owner})
+    </update>
+
+    <update id="retryDeadNotificationDeliveriesByFilter">
+        UPDATE pisces_experiment_approval_escalation_delivery delivery
+        INNER JOIN pisces_experiment_approval_escalation escalation
+            ON escalation.escalation_id = delivery.escalation_id
+        SET delivery.notification_status = 'RETRY',
+            delivery.notification_attempt_count = 0,
+            delivery.notification_last_attempt_at = NULL,
+            delivery.notification_next_attempt_at = #{nextAttemptAt},
+            delivery.notification_delivered_at = NULL,
+            delivery.notification_last_error = NULL,
+            delivery.updated_at = CURRENT_TIMESTAMP
+        WHERE delivery.active = 1
+          AND delivery.notification_status = 'DEAD'
+          AND escalation.escalation_status IN ('OPEN', 'ACKNOWLEDGED')
+          AND escalation.notification_status = 'DEAD'
+          AND (#{appId} IS NULL OR escalation.app_id = #{appId})
+          AND (#{owner} IS NULL OR escalation.owner = #{owner})
+    </update>
+</mapper>

@@ -8,6 +8,7 @@ import com.pisces.common.model.MetricDefinition;
 import com.pisces.common.request.ExperimentCreateRequest;
 import com.pisces.service.exception.BusinessException;
 import com.pisces.common.enums.ResponseCode;
+import com.pisces.service.security.ApiKeyContextHolder;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.DataService;
 import com.pisces.service.service.ExperimentDataGeneratorService;
@@ -111,6 +112,7 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
         if (metadata == null || metadata.getGroups() == null || metadata.getGroups().isEmpty()) {
             throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND, "实验不存在或未配置实验组");
         }
+        ApiKeyContextHolder.assertCanAccess(metadata);
 
         Map<String, List<String>> groupVisitors = assignVisitorsToConfiguredGroups(
                 experimentId,
@@ -292,17 +294,11 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
         Random random = new Random();
         LocalDateTime baseTime = LocalDateTime.now().minusDays(daysSpan); // 从指定天数前开始
         
-        // 不同组的转化率和价格提升效果
-        Map<String, GroupStats> groupStats = new HashMap<>();
-        groupStats.put("A", new GroupStats(0.10, 4500, 0.75));   // 基准组：10%转化率，4500元，75%市场价
-        groupStats.put("B", new GroupStats(0.11, 4650, 0.775));  // 变体1：11%转化率，4650元，77.5%市场价
-        groupStats.put("C", new GroupStats(0.105, 4725, 0.7875)); // 变体2：10.5%转化率，4725元，78.75%市场价
-        groupStats.put("D", new GroupStats(0.12, 4800, 0.80));    // 变体3：12%转化率，4800元，80%市场价
-        
+        int groupIndex = 0;
         for (Map.Entry<String, List<String>> entry : groupVisitors.entrySet()) {
             String groupId = entry.getKey();
             List<String> visitors = entry.getValue();
-            GroupStats stats = groupStats.get(groupId);
+            GroupStats stats = resolveGroupStats(groupId, groupIndex++);
             
             for (String visitorId : visitors) {
                 generateViewEvent(experimentId, visitorId, groupId, baseTime, random, daysSpan, simulationProfile);
@@ -323,6 +319,27 @@ public class ExperimentDataGeneratorServiceImpl implements ExperimentDataGenerat
         }
         
         log.info("事件数据生成完成: 实验ID={}", experimentId);
+    }
+
+    private GroupStats resolveGroupStats(String groupId, int groupIndex) {
+        String normalizedGroupId = groupId == null ? "" : groupId.toLowerCase(Locale.ROOT);
+        return switch (normalizedGroupId) {
+            case "a" -> new GroupStats(0.10, 4500, 0.75);
+            case "b" -> new GroupStats(0.11, 4650, 0.775);
+            case "c" -> new GroupStats(0.105, 4725, 0.7875);
+            case "d" -> new GroupStats(0.12, 4800, 0.80);
+            case "control" -> new GroupStats(0.09, 5600, 0.80);
+            default -> resolveConfiguredGroupStats(normalizedGroupId, groupIndex);
+        };
+    }
+
+    private GroupStats resolveConfiguredGroupStats(String normalizedGroupId, int groupIndex) {
+        if (normalizedGroupId.contains("trust")) {
+            return new GroupStats(0.14, 5800, 0.83);
+        }
+        return groupIndex == 0
+                ? new GroupStats(0.10, 4500, 0.75)
+                : new GroupStats(0.12, 4800, 0.80);
     }
     
     private void generateViewEvent(String experimentId, String visitorId, String groupId,

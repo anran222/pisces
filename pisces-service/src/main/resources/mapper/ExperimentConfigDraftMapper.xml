@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.ExperimentConfigDraftMapper">
+
+    <resultMap id="experimentConfigDraftEntityResultMap"
+               type="com.pisces.service.entity.ExperimentConfigDraftEntity">
+        <id column="id" property="id"/>
+        <result column="experiment_id" property="experimentId"/>
+        <result column="draft_version" property="draftVersion"/>
+        <result column="base_config_version" property="baseConfigVersion"/>
+        <result column="metadata_json" property="metadataJson"/>
+        <result column="updated_by" property="updatedBy"/>
+        <result column="draft_comment" property="draftComment"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <insert id="upsert" parameterType="com.pisces.service.entity.ExperimentConfigDraftEntity">
+        INSERT INTO pisces_experiment_config_draft
+            (experiment_id, draft_version, base_config_version, metadata_json, updated_by, draft_comment)
+        VALUES
+            (#{entity.experimentId}, 1, #{entity.baseConfigVersion}, #{entity.metadataJson},
+             #{entity.updatedBy}, #{entity.draftComment})
+        ON DUPLICATE KEY UPDATE
+            draft_version = draft_version + 1,
+            base_config_version = VALUES(base_config_version),
+            metadata_json = VALUES(metadata_json),
+            updated_by = VALUES(updated_by),
+            draft_comment = VALUES(draft_comment),
+            updated_at = CURRENT_TIMESTAMP
+    </insert>
+
+    <select id="selectByExperimentId" resultMap="experimentConfigDraftEntityResultMap">
+        SELECT id, experiment_id, draft_version, base_config_version, metadata_json, updated_by, draft_comment,
+               created_at, updated_at
+        FROM pisces_experiment_config_draft
+        WHERE experiment_id = #{experimentId}
+    </select>
+
+    <delete id="deleteByExperimentId">
+        DELETE FROM pisces_experiment_config_draft
+        WHERE experiment_id = #{experimentId}
+    </delete>
+</mapper>

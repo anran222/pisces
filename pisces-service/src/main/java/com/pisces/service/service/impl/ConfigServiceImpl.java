@@ -1,8 +1,15 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.ExperimentLayer;
+import com.pisces.common.model.ExperimentConfigDraft;
+import com.pisces.common.model.ExperimentConfigDraftApproval;
+import com.pisces.common.model.ExperimentConfigVersion;
 import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.service.config.ExperimentConfigChangeBroadcaster;
 import com.pisces.service.repository.ExperimentConfigRepository;
+import com.pisces.service.repository.ExperimentConfigDraftApprovalRepository;
+import com.pisces.service.repository.ExperimentConfigDraftRepository;
+import com.pisces.service.repository.ExperimentConfigVersionRepository;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.zookeeper.ZookeeperClient;
 import com.pisces.service.zookeeper.ZookeeperConfig;
@@ -10,12 +17,15 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.curator.framework.recipes.cache.ChildData;
 import org.apache.curator.framework.recipes.cache.PathChildrenCache;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
@@ -31,6 +41,15 @@ public class ConfigServiceImpl implements ConfigService {
     private final ZookeeperConfig zookeeperConfig;
 
     private final ExperimentConfigRepository experimentConfigRepository;
+
+    private final ExperimentConfigVersionRepository experimentConfigVersionRepository;
+
+    private final ExperimentConfigDraftRepository experimentConfigDraftRepository;
+
+    private final ExperimentConfigDraftApprovalRepository experimentConfigDraftApprovalRepository;
+
+    @Autowired(required = false)
+    private ExperimentConfigChangeBroadcaster experimentConfigChangeBroadcaster;
     
     private static final String EXPERIMENTS_PATH = "/experiments";
     
@@ -39,10 +58,25 @@ public class ConfigServiceImpl implements ConfigService {
      */
     private final ConcurrentHashMap<String, List<Consumer<ExperimentMetadata>>> listeners = new ConcurrentHashMap<>();
 
+    /**
+     * 配置变更等待锁
+     */
+    private final ConcurrentHashMap<String, Object> configChangeMonitors = new ConcurrentHashMap<>();
+
+    /**
+     * 配置变更序列，避免通知发生在 wait 前时丢失唤醒
+     */
+    private final ConcurrentHashMap<String, AtomicLong> configChangeSequences = new ConcurrentHashMap<>();
+
     private static final String LAYERS_PATH = "/layers";
     
     @PostConstruct
     public void init() {
+        registerExperimentConfigChangeBroadcaster();
+        if (!zookeeperClient.isConnected()) {
+            log.info("Zookeeper不可用，配置监听器不启动");
+            return;
+        }
         try {
             // 监听实验配置变化
             String basePath = zookeeperConfig.getBasePath() + EXPERIMENTS_PATH;
@@ -59,7 +93,7 @@ public class ConfigServiceImpl implements ConfigService {
                     String experimentId = extractExperimentId(path);
                     if (experimentId != null) {
                         log.info("实验配置变更: {}", experimentId);
-                        notifyListeners(experimentId);
+                        publishLocalExperimentConfigChange(experimentId);
                     }
                 }
             });
@@ -90,6 +124,7 @@ public class ConfigServiceImpl implements ConfigService {
         } else {
             log.info("Zookeeper不可用，实验配置仅写入数据库仓库: {}", experimentId);
         }
+        publishExperimentConfigChange(experimentId);
     }
     
     /**
@@ -138,6 +173,8 @@ public class ConfigServiceImpl implements ConfigService {
         } else {
             log.info("数据库仓库中的实验配置已删除，Zookeeper当前不可用: {}", experimentId);
         }
+        publishExperimentConfigChange(experimentId);
+        configChangeMonitors.remove(experimentId);
     }
     
     /**
@@ -173,6 +210,68 @@ public class ConfigServiceImpl implements ConfigService {
     public void addConfigChangeListener(String experimentId, Consumer<ExperimentMetadata> listener) {
         listeners.computeIfAbsent(experimentId, k -> new ArrayList<>()).add(listener);
     }
+
+    @Override
+    public long getExperimentConfigChangeSequence(String experimentId) {
+        return resolveConfigChangeSequence(experimentId).get();
+    }
+
+    @Override
+    public void waitForExperimentConfigChange(String experimentId, long knownChangeSequence, long waitMillis)
+            throws InterruptedException {
+        if (waitMillis <= 0) {
+            return;
+        }
+        AtomicLong changeSequence = resolveConfigChangeSequence(experimentId);
+        Object monitor = configChangeMonitors.computeIfAbsent(experimentId, key -> new Object());
+        long deadlineMillis = System.currentTimeMillis() + waitMillis;
+        synchronized (monitor) {
+            while (changeSequence.get() <= knownChangeSequence) {
+                long remainingMillis = deadlineMillis - System.currentTimeMillis();
+                if (remainingMillis <= 0) {
+                    return;
+                }
+                monitor.wait(remainingMillis);
+            }
+        }
+    }
+
+    private void publishExperimentConfigChange(String experimentId) {
+        publishLocalExperimentConfigChange(experimentId);
+        if (experimentConfigChangeBroadcaster != null) {
+            experimentConfigChangeBroadcaster.publishExperimentChange(experimentId);
+        }
+    }
+
+    private void publishLocalExperimentConfigChange(String experimentId) {
+        notifyConfigChangeWaiters(experimentId);
+        notifyListeners(experimentId);
+    }
+
+    private void registerExperimentConfigChangeBroadcaster() {
+        if (experimentConfigChangeBroadcaster == null) {
+            return;
+        }
+        experimentConfigChangeBroadcaster.addExperimentChangeListener(this::handleRemoteExperimentConfigChange);
+    }
+
+    private void handleRemoteExperimentConfigChange(String experimentId) {
+        log.info("收到远端实验配置变更广播: {}", experimentId);
+        publishLocalExperimentConfigChange(experimentId);
+    }
+
+    private void notifyConfigChangeWaiters(String experimentId) {
+        AtomicLong changeSequence = resolveConfigChangeSequence(experimentId);
+        Object monitor = configChangeMonitors.computeIfAbsent(experimentId, key -> new Object());
+        synchronized (monitor) {
+            changeSequence.incrementAndGet();
+            monitor.notifyAll();
+        }
+    }
+
+    private AtomicLong resolveConfigChangeSequence(String experimentId) {
+        return configChangeSequences.computeIfAbsent(experimentId, key -> new AtomicLong());
+    }
     
     /**
      * 通知监听器
@@ -191,6 +290,71 @@ public class ConfigServiceImpl implements ConfigService {
                 });
             }
         }
+    }
+
+    @Override
+    public ExperimentConfigVersion saveExperimentConfigVersion(String experimentId, ExperimentMetadata metadata,
+                                                              String publishedBy, String publishComment,
+                                                              Long sourceConfigVersion, String sourceType) {
+        return experimentConfigVersionRepository.save(experimentId, metadata, publishedBy, publishComment,
+                sourceConfigVersion, sourceType);
+    }
+
+    @Override
+    public List<ExperimentConfigVersion> listExperimentConfigVersions(String experimentId) {
+        return experimentConfigVersionRepository.listByExperimentId(experimentId);
+    }
+
+    @Override
+    public Optional<ExperimentConfigVersion> getExperimentConfigVersion(String experimentId, long configVersion) {
+        return experimentConfigVersionRepository.findByExperimentIdAndVersion(experimentId, configVersion);
+    }
+
+    @Override
+    public ExperimentConfigDraft saveExperimentConfigDraft(String experimentId, ExperimentMetadata metadata,
+                                                          long baseConfigVersion, String updatedBy,
+                                                          String draftComment) {
+        return experimentConfigDraftRepository.save(experimentId, metadata, baseConfigVersion, updatedBy,
+                draftComment);
+    }
+
+    @Override
+    public Optional<ExperimentConfigDraft> getExperimentConfigDraft(String experimentId) {
+        return experimentConfigDraftRepository.findByExperimentId(experimentId);
+    }
+
+    @Override
+    public void deleteExperimentConfigDraft(String experimentId) {
+        experimentConfigDraftRepository.delete(experimentId);
+    }
+
+    @Override
+    public ExperimentConfigDraftApproval saveExperimentConfigDraftApproval(ExperimentConfigDraftApproval approval) {
+        return experimentConfigDraftApprovalRepository.save(approval);
+    }
+
+    @Override
+    public Optional<ExperimentConfigDraftApproval> getCurrentExperimentConfigDraftApproval(String experimentId) {
+        return experimentConfigDraftApprovalRepository.findLatestByExperimentId(experimentId);
+    }
+
+    @Override
+    public List<ExperimentConfigDraftApproval> listExperimentConfigDraftApprovals(String experimentId) {
+        return experimentConfigDraftApprovalRepository.listByExperimentId(experimentId);
+    }
+
+    @Override
+    public Optional<ExperimentConfigDraftApproval> getExperimentConfigDraftApproval(String experimentId,
+                                                                                   long draftVersion) {
+        return experimentConfigDraftApprovalRepository.findByExperimentIdAndDraftVersion(experimentId, draftVersion);
+    }
+
+    @Override
+    public Optional<ExperimentConfigDraftApproval> updateExperimentConfigDraftApprovalStatus(
+            String experimentId, long draftVersion, ExperimentMetadata.ApprovalStatus approvalStatus,
+            String approvalOperator, String approvalComment) {
+        return experimentConfigDraftApprovalRepository.updateStatus(experimentId, draftVersion, approvalStatus,
+                approvalOperator, approvalComment);
     }
     
     /**

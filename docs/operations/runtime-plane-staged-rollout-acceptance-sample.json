@@ -1,0 +1,21 @@
+{
+  "approvedBy": [
+    "runtime-owner",
+    "business-owner"
+  ],
+  "approvalTicket": "CHANGE-20260720-001",
+  "decision": "PROCEED",
+  "environment": "prod",
+  "operator": "release-operator",
+  "recordType": "pisces-runtime-plane-staged-rollout-acceptance",
+  "recordVersion": 1,
+  "releaseId": "release-20260720-runtime-plane",
+  "rollbackPlan": {
+    "commandOrRunbook": "docs/operations/runtime-plane-rollback-decision-drill-template.md",
+    "owner": "runtime-owner",
+    "tested": true
+  },
+  "stage": "canary",
+  "startedAt": "2026-07-20T06:00:00Z",
+  "targetTrafficPercent": 10
+}

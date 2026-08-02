@@ -61,10 +61,12 @@ flowchart LR
 ### AI 决策
 
 1. `AnalysisController` 进入结构化 AI 接口
-2. `AIDecisionServiceImpl` 组装 prompt
-3. `TongYiTextGenerationClient` 调用通义文本模型
-4. `AIDecisionJsonParser` 解析结构化 JSON
-5. `DecisionGuardrailEvaluator` 根据数据质量结果做门禁修正
+2. `ExperimentDecisionContextBuilder` 汇总统计事实、数据质量事实和最新报告快照事实
+3. `AIDecisionServiceImpl` 基于决策上下文组装 prompt
+4. `DecisionGuardrailEvaluator` 根据数据质量结果计算护栏状态和风险标记
+5. `TongYiTextGenerationClient` 调用通义文本模型
+6. `AIDecisionJsonParser` 解析结构化 JSON
+7. `AIDecisionServiceImpl` 写回护栏状态，并绑定 `AIDecisionEvidenceResponse` 作为可审计证据
 
 ## 存储边界
 

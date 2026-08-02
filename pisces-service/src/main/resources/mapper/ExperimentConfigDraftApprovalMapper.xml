@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.ExperimentConfigDraftApprovalMapper">
+
+    <resultMap id="experimentConfigDraftApprovalEntityResultMap"
+               type="com.pisces.service.entity.ExperimentConfigDraftApprovalEntity">
+        <id column="id" property="id"/>
+        <result column="experiment_id" property="experimentId"/>
+        <result column="draft_version" property="draftVersion"/>
+        <result column="base_config_version" property="baseConfigVersion"/>
+        <result column="approval_status" property="approvalStatus"/>
+        <result column="requested_by" property="requestedBy"/>
+        <result column="draft_comment" property="draftComment"/>
+        <result column="approval_operator" property="approvalOperator"/>
+        <result column="approval_comment" property="approvalComment"/>
+        <result column="approval_updated_at" property="approvalUpdatedAt"/>
+        <result column="approval_owners_snapshot" property="approvalOwnersSnapshot"/>
+        <result column="approval_required_count_snapshot" property="approvalRequiredCountSnapshot"/>
+        <result column="approval_policy_version" property="approvalPolicyVersion"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <insert id="upsert" parameterType="com.pisces.service.entity.ExperimentConfigDraftApprovalEntity">
+        INSERT INTO pisces_experiment_config_draft_approval
+            (experiment_id, draft_version, base_config_version, approval_status, requested_by,
+             draft_comment, approval_operator, approval_comment, approval_updated_at,
+             approval_owners_snapshot, approval_required_count_snapshot, approval_policy_version)
+        VALUES
+            (#{entity.experimentId}, #{entity.draftVersion}, #{entity.baseConfigVersion},
+             #{entity.approvalStatus}, #{entity.requestedBy}, #{entity.draftComment},
+             #{entity.approvalOperator}, #{entity.approvalComment}, CURRENT_TIMESTAMP,
+             #{entity.approvalOwnersSnapshot}, #{entity.approvalRequiredCountSnapshot},
+             #{entity.approvalPolicyVersion})
+        ON DUPLICATE KEY UPDATE
+            base_config_version = VALUES(base_config_version),
+            approval_status = VALUES(approval_status),
+            requested_by = VALUES(requested_by),
+            draft_comment = VALUES(draft_comment),
+            approval_operator = VALUES(approval_operator),
+            approval_comment = VALUES(approval_comment),
+            approval_owners_snapshot = VALUES(approval_owners_snapshot),
+            approval_required_count_snapshot = VALUES(approval_required_count_snapshot),
+            approval_policy_version = VALUES(approval_policy_version),
+            approval_updated_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+    </insert>
+
+    <select id="selectByExperimentIdAndDraftVersion" resultMap="experimentConfigDraftApprovalEntityResultMap">
+        SELECT id, experiment_id, draft_version, base_config_version, approval_status, requested_by,
+               draft_comment, approval_operator, approval_comment, approval_updated_at,
+               approval_owners_snapshot, approval_required_count_snapshot, approval_policy_version,
+               created_at, updated_at
+        FROM pisces_experiment_config_draft_approval
+        WHERE experiment_id = #{experimentId}
+          AND draft_version = #{draftVersion}
+    </select>
+
+    <select id="selectLatestByExperimentId" resultMap="experimentConfigDraftApprovalEntityResultMap">
+        SELECT id, experiment_id, draft_version, base_config_version, approval_status, requested_by,
+               draft_comment, approval_operator, approval_comment, approval_updated_at,
+               approval_owners_snapshot, approval_required_count_snapshot, approval_policy_version,
+               created_at, updated_at
+        FROM pisces_experiment_config_draft_approval
+        WHERE experiment_id = #{experimentId}
+        ORDER BY draft_version DESC
+        LIMIT 1
+    </select>
+
+    <select id="listByExperimentId" resultMap="experimentConfigDraftApprovalEntityResultMap">
+        SELECT id, experiment_id, draft_version, base_config_version, approval_status, requested_by,
+               draft_comment, approval_operator, approval_comment, approval_updated_at,
+               approval_owners_snapshot, approval_required_count_snapshot, approval_policy_version,
+               created_at, updated_at
+        FROM pisces_experiment_config_draft_approval
+        WHERE experiment_id = #{experimentId}
+        ORDER BY draft_version DESC
+    </select>
+
+    <update id="updateStatus">
+        UPDATE pisces_experiment_config_draft_approval
+        SET approval_status = #{approvalStatus},
+            approval_operator = #{approvalOperator},
+            approval_comment = #{approvalComment},
+            approval_updated_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE experiment_id = #{experimentId}
+          AND draft_version = #{draftVersion}
+    </update>
+</mapper>

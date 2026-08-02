@@ -11,6 +11,9 @@ public interface DataService {
     
     /**
      * 上报事件
+     *
+     * properties.clientEventId 作为客户端幂等键，同一实验内重复上报不重复计数。
+     *
      * @param experimentId 实验ID
      * @param visitorId 访客唯一标识（可以是userId、设备ID、会话ID等）
      * @param eventType 事件类型

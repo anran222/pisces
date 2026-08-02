@@ -1,0 +1,52 @@
+groups:
+  - name: pisces-runtime-plane
+    rules:
+      - alert: PiscesRuntimeTrafficAssignmentErrors
+        expr: increase(pisces_traffic_assignment_requests_total{result="ERROR"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: pisces
+        annotations:
+          summary: "Pisces runtime traffic assignment errors detected"
+          description: "Traffic assignment returned errors in the last 5 minutes. Check runtime API logs, experiment accessibility, Redis, and configuration dependencies."
+
+      - alert: PiscesRuntimeTrafficCacheErrors
+        expr: increase(pisces_traffic_cache_events_total{result="ERROR"}[5m]) > 10
+        for: 10m
+        labels:
+          severity: warning
+          service: pisces
+        annotations:
+          summary: "Pisces runtime traffic cache errors are increasing"
+          description: "Traffic Redis cache operations are failing repeatedly. Assignment can degrade to recomputation, but latency and consistency risk should be checked."
+
+      - alert: PiscesConfigChangeBroadcastPublishErrors
+        expr: increase(pisces_config_change_broadcast_published_total{result="ERROR"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: pisces
+        annotations:
+          summary: "Pisces config change broadcast publish errors detected"
+          description: "Config changes could not be published to Redis Pub/Sub. Other runtime instances may wait until long-poll timeout or SDK TTL refresh."
+
+      - alert: PiscesConfigChangeBroadcastInvalidMessages
+        expr: increase(pisces_config_change_broadcast_received_total{result="INVALID"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: pisces
+        annotations:
+          summary: "Pisces config change broadcast received invalid messages"
+          description: "Redis Pub/Sub delivered malformed config change payloads. Check channel isolation and publisher compatibility."
+
+      - alert: PiscesConfigChangeBroadcastListenerErrors
+        expr: increase(pisces_config_change_broadcast_listener_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: pisces
+        annotations:
+          summary: "Pisces config change broadcast listener errors detected"
+          description: "A config change broadcast was received but a local listener failed to process it. Check application logs around the listener failure."

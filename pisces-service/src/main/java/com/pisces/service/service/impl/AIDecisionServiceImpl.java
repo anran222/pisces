@@ -1,14 +1,15 @@
 package com.pisces.service.service.impl;
 
+import com.pisces.common.enums.ResponseCode;
 import com.pisces.common.model.ExperimentDecisionContext;
 import com.pisces.common.model.GroupConfigFieldDefinition;
-import com.pisces.common.enums.ResponseCode;
+import com.pisces.common.model.Statistics;
 import com.pisces.common.request.AIDesignRequest;
 import com.pisces.common.request.ExperimentCreateRequest;
 import com.pisces.common.response.AIDesignResponse;
+import com.pisces.common.response.AIDecisionEvidenceResponse;
 import com.pisces.common.response.AIDiagnosisResponse;
 import com.pisces.common.response.AIGraduationDecisionResponse;
-import com.pisces.service.exception.BusinessException;
 import com.pisces.service.ai.AIDecisionJsonParser;
 import com.pisces.service.ai.AIDesignContextResolver;
 import com.pisces.service.ai.AIDesignPlanningContext;
@@ -18,6 +19,7 @@ import com.pisces.service.ai.ExperimentDecisionContextBuilder;
 import com.pisces.service.ai.GuardrailStatus;
 import com.pisces.service.ai.PromptTemplateBuilder;
 import com.pisces.service.ai.TongYiTextGenerationClient;
+import com.pisces.service.exception.BusinessException;
 import com.pisces.service.schema.GroupConfigSchemaValidator;
 import com.pisces.service.service.AIDecisionService;
 import lombok.RequiredArgsConstructor;
@@ -172,6 +174,7 @@ public class AIDecisionServiceImpl implements AIDecisionService {
         response.setRiskFlags(mergeRiskFlags(response.getRiskFlags(), guardrailRiskFlags,
                 containsAiUnavailableRisk(response.getRiskFlags())));
         response.setRecommendedActions(normalizeDiagnosisActions(response.getRecommendedActions(), guardrailStatus));
+        response.setEvidence(buildDecisionEvidence(context));
         return response;
     }
 
@@ -197,6 +200,7 @@ public class AIDecisionServiceImpl implements AIDecisionService {
         if (GuardrailStatus.BLOCKED.equals(guardrailStatus)) {
             response.setDecision(DEFAULT_GRADUATION_DECISION);
         }
+        response.setEvidence(buildDecisionEvidence(context));
         log.info("AI毕业决策完成: experimentId={}, decision={}, guardrailStatus={}, riskFlags={}",
                 context == null ? null : context.getExperimentId(),
                 response.getDecision(), response.getGuardrailStatus(), response.getRiskFlags());
@@ -965,6 +969,75 @@ public class AIDecisionServiceImpl implements AIDecisionService {
         return response;
     }
 
+    private AIDecisionEvidenceResponse buildDecisionEvidence(ExperimentDecisionContext context) {
+        AIDecisionEvidenceResponse evidence = new AIDecisionEvidenceResponse();
+        if (context == null) {
+            evidence.setBlockingIssues(List.of());
+            evidence.setWarnings(List.of());
+            evidence.setBreachedGuardrails(List.of());
+            evidence.setStatisticsFacts(List.of());
+            evidence.setGroupMetricSnapshots(List.of());
+            evidence.setDataQualityFacts(List.of());
+            evidence.setLatestReportBreachedGuardrails(List.of());
+            evidence.setReportSnapshotFacts(List.of());
+            return evidence;
+        }
+        Statistics statistics = context.getStatistics();
+        evidence.setExperimentId(firstNonBlank(
+                context.getExperimentId(), statistics == null ? null : statistics.getExperimentId(), null));
+        evidence.setExperimentName(firstNonBlank(
+                context.getExperimentName(), statistics == null ? null : statistics.getExperimentName(), null));
+        evidence.setExperimentStatus(firstNonBlank(
+                context.getExperimentStatus(), statistics == null ? null : statistics.getExperimentStatus(), null));
+        evidence.setStatisticsFacts(safeStringList(context.getStatisticsFacts()));
+        evidence.setGroupMetricSnapshots(safeStringList(context.getGroupMetricSnapshots()));
+        evidence.setDataQualityFacts(safeStringList(context.getDataQualityFacts()));
+        evidence.setReportSnapshotFacts(safeStringList(context.getReportSnapshotFacts()));
+        evidence.setLatestReportSnapshotVersion(context.getLatestReportSnapshotVersion());
+        evidence.setLatestReportGeneratedAt(context.getLatestReportGeneratedAt());
+        evidence.setLatestReportConclusionStatus(context.getLatestReportConclusionStatus());
+        evidence.setLatestReportAnalysisReady(context.getLatestReportAnalysisReady());
+        evidence.setLatestReportHasSrm(context.getLatestReportHasSrm());
+        evidence.setLatestReportPrimaryMetricKey(context.getLatestReportPrimaryMetricKey());
+        evidence.setLatestReportBestPerformingGroup(context.getLatestReportBestPerformingGroup());
+        evidence.setLatestReportWinningVariant(context.getLatestReportWinningVariant());
+        evidence.setLatestReportBreachedGuardrails(safeStringList(context.getLatestReportBreachedGuardrails()));
+        bindSummaryEvidence(evidence, statistics == null ? null : statistics.getSummary());
+        bindDataQualityEvidence(evidence, statistics == null ? null : statistics.getDataQualityCheck());
+        return evidence;
+    }
+
+    private void bindSummaryEvidence(AIDecisionEvidenceResponse evidence, Statistics.ExperimentSummary summary) {
+        if (summary == null) {
+            evidence.setBreachedGuardrails(List.of());
+            return;
+        }
+        evidence.setPrimaryMetricKey(summary.getPrimaryMetricKey());
+        evidence.setBestPerformingGroup(summary.getBestPerformingGroup());
+        evidence.setBestPrimaryMetricValue(summary.getBestPrimaryMetricValue());
+        evidence.setTotalAssignments(summary.getTotalAssignments());
+        evidence.setTotalExposures(summary.getTotalExposures());
+        evidence.setTotalEvents(summary.getTotalEvents());
+        evidence.setTotalVisitors(summary.getTotalVisitors());
+        evidence.setBreachedGuardrails(safeStringList(summary.getBreachedGuardrails()));
+    }
+
+    private void bindDataQualityEvidence(AIDecisionEvidenceResponse evidence,
+                                         Statistics.DataQualityCheck dataQualityCheck) {
+        if (dataQualityCheck == null) {
+            evidence.setBlockingIssues(List.of());
+            evidence.setWarnings(List.of());
+            return;
+        }
+        evidence.setAnalysisReady(dataQualityCheck.getAnalysisReady());
+        evidence.setHasSrm(dataQualityCheck.getHasSrm());
+        evidence.setSrmPValue(dataQualityCheck.getSrmPValue());
+        evidence.setSampleSizeReached(dataQualityCheck.getSampleSizeReached());
+        evidence.setRequiredSampleSizePerGroup(dataQualityCheck.getRequiredSampleSizePerGroup());
+        evidence.setBlockingIssues(safeStringList(dataQualityCheck.getBlockingIssues()));
+        evidence.setWarnings(safeStringList(dataQualityCheck.getWarnings()));
+    }
+
     private String defaultValue(String value, String defaultValue) {
         return StringUtils.hasText(value) ? value.trim() : defaultValue;
     }
@@ -981,6 +1054,19 @@ public class AIDecisionServiceImpl implements AIDecisionService {
 
     private Map<String, Object> safeMap(Map<String, Object> map) {
         return map == null ? Map.of() : Map.copyOf(map);
+    }
+
+    private List<String> safeStringList(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        List<String> normalizedValues = new ArrayList<>();
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                normalizedValues.add(value.trim());
+            }
+        }
+        return normalizedValues;
     }
 
     private Map<String, Object> castObjectMap(Object value) {

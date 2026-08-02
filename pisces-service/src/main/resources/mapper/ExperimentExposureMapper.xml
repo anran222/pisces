@@ -17,19 +17,110 @@
         <result column="created_at" property="createdAt"/>
     </resultMap>
 
-    <insert id="insert" parameterType="com.pisces.service.entity.ExperimentExposureEntity">
-        INSERT INTO pisces_experiment_exposure
+    <insert id="insertIgnore" parameterType="com.pisces.service.entity.ExperimentExposureEntity">
+        INSERT IGNORE INTO pisces_experiment_exposure
             (exposure_id, experiment_id, visitor_id, group_id, scene, properties_json, idempotency_key, exposed_at)
         VALUES
             (#{entity.exposureId}, #{entity.experimentId}, #{entity.visitorId}, #{entity.groupId}, #{entity.scene},
              #{entity.propertiesJson}, #{entity.idempotencyKey}, #{entity.exposedAt})
     </insert>
 
+    <select id="selectByIdempotencyKey" resultMap="experimentExposureEntityResultMap">
+        SELECT id, exposure_id, experiment_id, visitor_id, group_id, scene, properties_json, idempotency_key,
+               exposed_at, created_at
+        FROM pisces_experiment_exposure
+        WHERE idempotency_key = #{idempotencyKey}
+        LIMIT 1
+    </select>
+
     <select id="countByExperimentIdAndGroupId" resultType="long">
         SELECT COUNT(DISTINCT visitor_id)
         FROM pisces_experiment_exposure
         WHERE experiment_id = #{experimentId}
           AND group_id = #{groupId}
+    </select>
+
+    <select id="countByReplayScope" resultType="long">
+        SELECT COUNT(1)
+        FROM pisces_experiment_exposure
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+        <if test="startTime != null">
+          AND exposed_at <![CDATA[>=]]> #{startTime}
+        </if>
+        <if test="endTime != null">
+          AND exposed_at <![CDATA[<=]]> #{endTime}
+        </if>
+    </select>
+
+    <select id="selectByReplayScope" resultMap="experimentExposureEntityResultMap">
+        SELECT id, exposure_id, experiment_id, visitor_id, group_id, scene, properties_json, idempotency_key,
+               exposed_at, created_at
+        FROM pisces_experiment_exposure
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+        <if test="startTime != null">
+          AND exposed_at <![CDATA[>=]]> #{startTime}
+        </if>
+        <if test="endTime != null">
+          AND exposed_at <![CDATA[<=]]> #{endTime}
+        </if>
+        ORDER BY exposed_at ASC, id ASC
+    </select>
+
+    <select id="selectByReplayScopeBatch" resultMap="experimentExposureEntityResultMap">
+        SELECT id, exposure_id, experiment_id, visitor_id, group_id, scene, properties_json, idempotency_key,
+               exposed_at, created_at
+        FROM pisces_experiment_exposure
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+        <if test="startTime != null">
+          AND exposed_at <![CDATA[>=]]> #{startTime}
+        </if>
+        <if test="endTime != null">
+          AND exposed_at <![CDATA[<=]]> #{endTime}
+        </if>
+        ORDER BY exposed_at ASC, id ASC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="selectUnmaterializedByReplayScope" resultMap="experimentExposureEntityResultMap">
+        SELECT x.id, x.exposure_id, x.experiment_id, x.visitor_id, x.group_id, x.scene, x.properties_json,
+               x.idempotency_key, x.exposed_at, x.created_at
+        FROM pisces_experiment_exposure x
+        LEFT JOIN pisces_event_materialization m
+          ON m.fact_kind = 'EXPOSURE'
+         AND m.fact_id = x.exposure_id
+        WHERE x.experiment_id = #{experimentId}
+          AND x.group_id = #{groupId}
+          AND m.fact_id IS NULL
+        <if test="startTime != null">
+          AND x.exposed_at <![CDATA[>=]]> #{startTime}
+        </if>
+        <if test="endTime != null">
+          AND x.exposed_at <![CDATA[<=]]> #{endTime}
+        </if>
+        ORDER BY x.exposed_at ASC, x.id ASC
+    </select>
+
+    <select id="selectUnmaterializedByReplayScopeBatch" resultMap="experimentExposureEntityResultMap">
+        SELECT x.id, x.exposure_id, x.experiment_id, x.visitor_id, x.group_id, x.scene, x.properties_json,
+               x.idempotency_key, x.exposed_at, x.created_at
+        FROM pisces_experiment_exposure x
+        LEFT JOIN pisces_event_materialization m
+          ON m.fact_kind = 'EXPOSURE'
+         AND m.fact_id = x.exposure_id
+        WHERE x.experiment_id = #{experimentId}
+          AND x.group_id = #{groupId}
+          AND m.fact_id IS NULL
+        <if test="startTime != null">
+          AND x.exposed_at <![CDATA[>=]]> #{startTime}
+        </if>
+        <if test="endTime != null">
+          AND x.exposed_at <![CDATA[<=]]> #{endTime}
+        </if>
+        ORDER BY x.exposed_at ASC, x.id ASC
+        LIMIT #{limit} OFFSET #{offset}
     </select>
 
     <select id="selectByExperimentIdAndGroupId" resultMap="experimentExposureEntityResultMap">
@@ -39,6 +130,16 @@
         WHERE experiment_id = #{experimentId}
           AND group_id = #{groupId}
         ORDER BY exposed_at ASC, id ASC
+    </select>
+
+    <select id="selectByExperimentIdAndGroupIdBatch" resultMap="experimentExposureEntityResultMap">
+        SELECT id, exposure_id, experiment_id, visitor_id, group_id, scene, properties_json, idempotency_key,
+               exposed_at, created_at
+        FROM pisces_experiment_exposure
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+        ORDER BY exposed_at ASC, id ASC
+        LIMIT #{limit} OFFSET #{offset}
     </select>
 
     <select id="selectByExperimentIdAndGroupIdInTimeRange" resultMap="experimentExposureEntityResultMap">

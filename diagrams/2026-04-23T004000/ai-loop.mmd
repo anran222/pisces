@@ -1,0 +1,25 @@
+flowchart TD
+    Start([业务目标/基线]) --> Plan[Schema Planning]
+    Plan --> Fill[Draft Filling]
+    Fill --> Design([AI 设计草稿])
+    Design --> Review{人工审阅}
+    Review -->|调整| Fill
+    Review -->|通过| Run([启动实验])
+    Run --> Data[(事件/曝光数据)]
+    Data --> Diag[AI 诊断]
+    Diag --> Q1{护栏状态}
+    Q1 -->|WARN| Wait([继续观察])
+    Q1 -->|OK| Grad[AI 毕业决策]
+    Grad --> Eval{质量门禁}
+    Eval -->|降级| NR([NEEDS_REVIEW])
+    Eval -->|通过| Final([人工发布/下线])
+
+    classDef ai fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+    classDef human fill:#fef3c7,stroke:#d97706,color:#78350f;
+    classDef gate fill:#fecaca,stroke:#dc2626,color:#7f1d1d;
+    classDef data fill:#e0e7ff,stroke:#6366f1,color:#312e81;
+
+    class Plan,Fill,Diag,Grad ai;
+    class Review,Eval,Q1 gate;
+    class Run,Final,Wait,NR human;
+    class Data data;

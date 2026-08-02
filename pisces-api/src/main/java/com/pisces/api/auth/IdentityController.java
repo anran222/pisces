@@ -2,7 +2,9 @@ package com.pisces.api.auth;
 
 import com.pisces.common.request.IdentityBindRequest;
 import com.pisces.common.response.BaseResponse;
+import com.pisces.service.annotation.ApiKeyScopeRequired;
 import com.pisces.service.annotation.NoTokenRequired;
+import com.pisces.service.security.ApiKeyScope;
 import com.pisces.service.service.IdentityService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +22,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/identity")
+@ApiKeyScopeRequired(ApiKeyScope.RUNTIME)
 @NoTokenRequired
 @RequiredArgsConstructor
 public class IdentityController {

@@ -1,21 +1,35 @@
 package com.pisces.service.service.impl;
 
-import com.alibaba.dashscope.aigc.generation.Generation;
-import com.alibaba.dashscope.aigc.generation.GenerationParam;
-import com.alibaba.dashscope.aigc.generation.GenerationResult;
-import com.alibaba.dashscope.common.Message;
-import com.alibaba.dashscope.common.Role;
 import com.pisces.common.model.Event;
 import com.pisces.common.model.EventDefinition;
+import com.pisces.common.model.ExperimentGroup;
 import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.common.model.ExperimentReportSnapshot;
 import com.pisces.common.model.MetricDefinition;
 import com.pisces.common.model.Statistics;
+import com.pisces.common.request.EventReplayPlanRequest;
 import com.pisces.common.response.AIGraduationDecisionResponse;
 import com.pisces.common.enums.ResponseCode;
+import com.pisces.common.response.EventPipelineOperationResponse;
+import com.pisces.common.response.EventReplayPlanResponse;
+import com.pisces.common.response.EventPipelineStatusResponse;
+import com.pisces.common.response.EventReplayJobResponse;
+import com.pisces.service.ai.TongYiTextGenerationClient;
 import com.pisces.service.config.TongYiConfig;
+import com.pisces.service.entity.EventInboxStatusCountEntity;
 import com.pisces.service.exception.BusinessException;
+import com.pisces.service.event.EventInboxConstants;
+import com.pisces.service.event.EventPipelineRebuildResult;
+import com.pisces.service.event.EventReplayJobRecord;
+import com.pisces.service.event.EventReplayProgressReporter;
+import com.pisces.service.metrics.EventReplayMetrics;
+import com.pisces.service.repository.EventInboxRepository;
+import com.pisces.service.repository.EventMaterializationRepository;
+import com.pisces.service.repository.EventReplayJobRepository;
+import com.pisces.service.repository.ExperimentEventRepository;
+import com.pisces.service.repository.ExperimentExposureRepository;
 import com.pisces.service.repository.ExperimentReportSnapshotRepository;
+import com.pisces.service.security.ApiKeyContextHolder;
 import com.pisces.service.service.AIDecisionService;
 import com.pisces.service.service.AnalysisService;
 import com.pisces.service.util.StatisticalUtils;
@@ -27,9 +41,11 @@ import lombok.extern.slf4j.Slf4j;
 import jakarta.annotation.Resource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Collections;
@@ -40,6 +56,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 数据分析服务实现
@@ -53,6 +72,56 @@ public class AnalysisServiceImpl implements AnalysisService {
     private static final double DEFAULT_GATE_ALPHA = 0.05;
 
     private static final double DEFAULT_GATE_POWER = 0.80;
+
+    private static final long MAX_HEALTHY_PENDING_SECONDS = 300L;
+
+    private static final String PIPELINE_STATUS_NO_DATA = "NO_DATA";
+
+    private static final String PIPELINE_STATUS_PENDING = "PENDING";
+
+    private static final String PIPELINE_STATUS_RETRY = "RETRY";
+
+    private static final String PIPELINE_STATUS_DEAD = "DEAD";
+
+    private static final String PIPELINE_STATUS_REJECTED = "REJECTED";
+
+    private static final String PIPELINE_STATUS_DONE = "DONE";
+
+    private static final String EVENT_PIPELINE_OPERATION_RETRY_DEAD = "RETRY_DEAD";
+
+    private static final String EVENT_PIPELINE_OPERATION_DRAIN = "DRAIN_INBOX";
+
+    private static final String EVENT_PIPELINE_OPERATION_REPLAY = "REPLAY_DERIVED";
+
+    private static final String EVENT_PIPELINE_OPERATION_REPAIR_MATERIALIZATION = "REPAIR_MATERIALIZATION";
+
+    private static final String EVENT_PIPELINE_OPERATION_CANCEL_REPLAY_JOB = "CANCEL_REPLAY_JOB";
+
+    private static final String EVENT_PIPELINE_OPERATION_SUCCESS = "SUCCESS";
+
+    private static final String EVENT_PIPELINE_OPERATION_PARTIAL = "PARTIAL";
+
+    private static final String EVENT_PIPELINE_OPERATION_RUNNING = "RUNNING";
+
+    private static final String EVENT_PIPELINE_OPERATION_CANCELLED = "CANCELLED";
+
+    private static final String REPLAY_JOB_ID_PREFIX = "replay_";
+
+    private static final int MAX_REPLAY_JOB_QUERY_LIMIT = 50;
+
+    private static final int MAX_REPLAY_PLAN_SEGMENT_COUNT = 48;
+
+    private static final String REPLAY_JOB_CANCEL_REQUESTED_MESSAGE = "事件重放任务取消已受理";
+
+    private static final String REPLAY_JOB_CANCELLED_MESSAGE = "事件重放任务已取消";
+
+    private static final String REPLAY_MODE_FULL_DERIVED_REBUILD = "FULL_DERIVED_REBUILD";
+
+    private static final String REPLAY_MODE_FILTERED_DERIVED_COPY = "FILTERED_DERIVED_COPY_REPLAY";
+
+    private static final String REPLAY_SEGMENT_ACTION_NONE = "NONE";
+
+    private static final String REPLAY_SEGMENT_ACTION_REPAIR_MATERIALIZATION = "REPAIR_MATERIALIZATION_SEGMENT";
     
     @Autowired
     private ConfigService configService;
@@ -70,7 +139,52 @@ public class AnalysisServiceImpl implements AnalysisService {
     private TongYiConfig tongYiConfig;
 
     @Autowired
+    private TongYiTextGenerationClient tongYiTextGenerationClient;
+
+    @Autowired
     private ExperimentReportSnapshotRepository experimentReportSnapshotRepository;
+
+    @Autowired
+    private EventInboxRepository eventInboxRepository;
+
+    @Autowired
+    private EventInboxConsumer eventInboxConsumer;
+
+    @Autowired
+    private EventInboxMaterializer eventInboxMaterializer;
+
+    @Autowired
+    private EventReplayJobRepository eventReplayJobRepository;
+
+    @Autowired
+    private EventMaterializationRepository eventMaterializationRepository;
+
+    @Autowired
+    private ExperimentEventRepository experimentEventRepository;
+
+    @Autowired
+    private ExperimentExposureRepository experimentExposureRepository;
+
+    @Value("${pisces.event-pipeline.drain.max-rounds:100}")
+    private int eventPipelineDrainMaxRounds;
+
+    @Value("${pisces.event-pipeline.drain.max-wait-ms:5000}")
+    private long eventPipelineDrainMaxWaitMs;
+
+    @Value("${pisces.event-pipeline.drain.idle-wait-ms:50}")
+    private long eventPipelineDrainIdleWaitMs;
+
+    @Value("${pisces.event-pipeline.replay.job-timeout-minutes:30}")
+    private long eventPipelineReplayJobTimeoutMinutes;
+
+    @Value("${pisces.event-pipeline.replay.max-filtered-copy-facts:50000}")
+    private long eventPipelineReplayMaxFilteredCopyFacts;
+
+    @Resource(name = "eventReplayTaskExecutor")
+    private Executor eventReplayTaskExecutor = Runnable::run;
+
+    @Autowired(required = false)
+    private EventReplayMetrics eventReplayMetrics;
 
     @Resource
     private ObjectProvider<AIDecisionService> aiDecisionServiceProvider;
@@ -80,7 +194,7 @@ public class AnalysisServiceImpl implements AnalysisService {
      */
     @Override
     public Statistics getStatistics(String experimentId) {
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         if (metadata == null) {
             return null;
         }
@@ -117,12 +231,16 @@ public class AnalysisServiceImpl implements AnalysisService {
                 
                 Statistics.GroupStatistics groupStats = calculateGroupStatistics(
                         experimentId, groupId, group, baselineGroupId, metadata.getEventDefinitions(), metricDefinitions);
+                long assignmentCount = dataService.getAssignmentCount(experimentId, groupId);
+                long exposureCount = dataService.getExposureCount(experimentId, groupId);
+                groupStats.setAssignmentCount(assignmentCount);
+                groupStats.setExposureCount(exposureCount);
                 groupStatsMap.put(groupId, groupStats);
                 
                 // 累计总访客和事件
                 totalVisitors += groupStats.getUserCount() != null ? groupStats.getUserCount() : 0;
-                totalAssignments += dataService.getAssignmentCount(experimentId, groupId);
-                totalExposures += dataService.getExposureCount(experimentId, groupId);
+                totalAssignments += assignmentCount;
+                totalExposures += exposureCount;
                 if (groupStats.getEventCounts() != null) {
                     for (Long count : groupStats.getEventCounts().values()) {
                         totalEvents += count != null ? count : 0;
@@ -195,6 +313,1235 @@ public class AnalysisServiceImpl implements AnalysisService {
         statistics.setDataQualityCheck(buildDataQualityCheck(experimentId, metadata, groupStatsMap, baselineGroupId));
         
         return statistics;
+    }
+
+    @Override
+    public EventPipelineStatusResponse getEventPipelineStatus(String experimentId) {
+        getAccessibleExperimentMetadataOrThrow(experimentId);
+        LocalDateTime generatedAt = LocalDateTime.now();
+        Map<String, Long> statusCounts = buildEventInboxStatusCounts(experimentId);
+        long pendingCount = getStatusCount(statusCounts, EventInboxConstants.STATUS_PENDING);
+        long processingCount = getStatusCount(statusCounts, EventInboxConstants.STATUS_PROCESSING);
+        long retryCount = getStatusCount(statusCounts, EventInboxConstants.STATUS_RETRY);
+        long doneCount = getStatusCount(statusCounts, EventInboxConstants.STATUS_DONE);
+        long deadCount = getStatusCount(statusCounts, EventInboxConstants.STATUS_DEAD);
+        long rejectedCount = getStatusCount(statusCounts, EventInboxConstants.STATUS_REJECTED);
+        long totalCount = statusCounts.values().stream().mapToLong(Long::longValue).sum();
+        long unfinishedCount = pendingCount + processingCount + retryCount;
+        long maxPendingSeconds = resolveMaxPendingSeconds(experimentId, generatedAt, unfinishedCount);
+        String status = resolvePipelineStatus(totalCount, pendingCount, processingCount, retryCount, deadCount,
+                rejectedCount);
+
+        EventPipelineStatusResponse response = new EventPipelineStatusResponse();
+        response.setExperimentId(experimentId);
+        response.setTotalCount(totalCount);
+        response.setPendingCount(pendingCount);
+        response.setProcessingCount(processingCount);
+        response.setRetryCount(retryCount);
+        response.setDoneCount(doneCount);
+        response.setDeadCount(deadCount);
+        response.setRejectedCount(rejectedCount);
+        response.setUnfinishedCount(unfinishedCount);
+        response.setMaxPendingSeconds(maxPendingSeconds);
+        response.setHealthy(isPipelineHealthy(retryCount, deadCount, rejectedCount, maxPendingSeconds));
+        response.setStatus(status);
+        response.setGeneratedAt(generatedAt);
+        return response;
+    }
+
+    @Override
+    public EventPipelineOperationResponse retryDeadEvents(String experimentId, String operator) {
+        getAccessibleExperimentMetadataOrThrow(experimentId);
+        LocalDateTime operatedAt = LocalDateTime.now();
+        int affectedCount = eventInboxRepository.retryDeadRecords(experimentId, operatedAt);
+        return buildEventPipelineOperationResponse(
+                experimentId,
+                EVENT_PIPELINE_OPERATION_RETRY_DEAD,
+                operator,
+                operatedAt,
+                affectedCount,
+                0L,
+                0L,
+                0L,
+                0L,
+                "死信事件已重新投递，后台消费者会按正常重试流程处理");
+    }
+
+    @Override
+    public EventPipelineOperationResponse drainEventPipeline(String experimentId, String operator) {
+        getAccessibleExperimentMetadataOrThrow(experimentId);
+        LocalDateTime operatedAt = LocalDateTime.now();
+        long affectedCount = 0L;
+        int rounds = 0;
+        int maxRounds = Math.max(1, eventPipelineDrainMaxRounds);
+        long deadlineNanos = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, eventPipelineDrainMaxWaitMs));
+        EventPipelineStatusResponse pipelineStatus = getEventPipelineStatus(experimentId);
+
+        while (resolveLong(pipelineStatus.getUnfinishedCount()) > 0L && rounds < maxRounds) {
+            int processedCount = eventInboxConsumer.processDueRecords(experimentId);
+            affectedCount += processedCount;
+            rounds++;
+            pipelineStatus = getEventPipelineStatus(experimentId);
+            if (resolveLong(pipelineStatus.getUnfinishedCount()) == 0L) {
+                break;
+            }
+            if (processedCount == 0) {
+                if (System.nanoTime() >= deadlineNanos) {
+                    break;
+                }
+                waitBeforeNextDrainPoll();
+            }
+        }
+
+        long unfinishedCount = resolveLong(pipelineStatus.getUnfinishedCount());
+        boolean drained = unfinishedCount == 0L;
+        String message = drained
+                ? "已同步物化实验事件管道待处理记录"
+                : "事件管道仍有未完成 inbox 记录: unfinishedCount=" + unfinishedCount;
+        return buildEventPipelineOperationResponse(
+                experimentId,
+                EVENT_PIPELINE_OPERATION_DRAIN,
+                operator,
+                operatedAt,
+                affectedCount,
+                0L,
+                0L,
+                0L,
+                0L,
+                drained ? EVENT_PIPELINE_OPERATION_SUCCESS : EVENT_PIPELINE_OPERATION_PARTIAL,
+                message);
+    }
+
+    @Override
+    public EventPipelineOperationResponse replayEventPipeline(String experimentId, String operator) {
+        return replayEventPipeline(experimentId, null, operator);
+    }
+
+    @Override
+    public EventPipelineOperationResponse replayEventPipeline(String experimentId, EventReplayPlanRequest request,
+                                                              String operator) {
+        EventReplayPlanResponse replayPlan = planEventReplay(experimentId, request);
+        EventReplayScope replayScope = buildReplayScope(request);
+        validateFilteredCopyReplayPlan(replayScope, replayPlan);
+        LocalDateTime operatedAt = LocalDateTime.now();
+        String normalizedOperator = StringUtils.hasText(operator) ? operator : "system";
+        EventReplayJobRecord replayJob = startReplayJob(experimentId, normalizedOperator, operatedAt, replayScope,
+                replayPlan, false);
+        submitReplayJob(replayJob);
+        String message = replayScope.fullDerivedReplay()
+                ? "已提交全量派生重放任务，请通过 replayJobId 查询进度"
+                : "已提交筛选范围复制型重放任务，请通过 replayJobId 查询进度";
+        EventPipelineOperationResponse response = buildEventPipelineOperationResponse(
+                experimentId,
+                EVENT_PIPELINE_OPERATION_REPLAY,
+                normalizedOperator,
+                operatedAt,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                EVENT_PIPELINE_OPERATION_RUNNING,
+                message);
+        response.setReplayJobId(replayJob.getReplayJobId());
+        response.setReplayJobStatus(EventReplayJobRecord.STATUS_RUNNING);
+        applyReplayScope(response, replayJob);
+        return response;
+    }
+
+    @Override
+    public EventReplayPlanResponse planEventReplay(String experimentId, EventReplayPlanRequest request) {
+        ExperimentMetadata metadata = getAccessibleExperimentMetadataOrThrow(experimentId);
+        EventReplayScope replayScope = buildReplayScope(request);
+        ReplayPlanCounts counts = calculateReplayPlanCounts(metadata, experimentId, replayScope);
+
+        EventReplayPlanResponse response = buildReplayPlanResponse(experimentId, replayScope, counts);
+        applyReplayPlanSegments(response, metadata, experimentId, replayScope, request);
+        response.setGeneratedAt(LocalDateTime.now());
+        return response;
+    }
+
+    private ReplayPlanCounts calculateReplayPlanCounts(ExperimentMetadata metadata, String experimentId,
+                                                       EventReplayScope replayScope) {
+        long totalEventCount = 0L;
+        long totalExposureCount = 0L;
+        long totalMaterializedEventCount = 0L;
+        long totalMaterializedExposureCount = 0L;
+        List<EventReplayPlanResponse.GroupReplayPlan> groups = new ArrayList<>();
+        if (metadata.getGroups() != null) {
+            for (Map.Entry<String, ExperimentGroup> entry : metadata.getGroups().entrySet()) {
+                String groupId = entry.getKey();
+                ExperimentGroup group = entry.getValue();
+                long eventCount = replayScope.includeEvents()
+                        ? experimentEventRepository.countByReplayScope(experimentId, groupId,
+                                replayScope.startTime(), replayScope.endTime(), replayScope.eventTypes())
+                        : 0L;
+                long exposureCount = replayScope.includeExposures()
+                        ? experimentExposureRepository.countByReplayScope(experimentId, groupId,
+                                replayScope.startTime(), replayScope.endTime())
+                        : 0L;
+                long materializedEventCount = replayScope.includeEvents()
+                        ? clampMaterializedCount(eventCount,
+                                eventMaterializationRepository.countMaterializedEventsByReplayScope(experimentId,
+                                        groupId, replayScope.startTime(), replayScope.endTime(),
+                                        replayScope.eventTypes()))
+                        : 0L;
+                long materializedExposureCount = replayScope.includeExposures()
+                        ? clampMaterializedCount(exposureCount,
+                                eventMaterializationRepository.countMaterializedExposuresByReplayScope(experimentId,
+                                        groupId, replayScope.startTime(), replayScope.endTime()))
+                        : 0L;
+                long unmaterializedEventCount = eventCount - materializedEventCount;
+                long unmaterializedExposureCount = exposureCount - materializedExposureCount;
+                totalEventCount += eventCount;
+                totalExposureCount += exposureCount;
+                totalMaterializedEventCount += materializedEventCount;
+                totalMaterializedExposureCount += materializedExposureCount;
+
+                EventReplayPlanResponse.GroupReplayPlan groupPlan = new EventReplayPlanResponse.GroupReplayPlan();
+                groupPlan.setGroupId(groupId);
+                groupPlan.setGroupName(group == null || !StringUtils.hasText(group.getName())
+                        ? groupId
+                        : group.getName());
+                groupPlan.setEventCount(eventCount);
+                groupPlan.setMaterializedEventCount(materializedEventCount);
+                groupPlan.setUnmaterializedEventCount(unmaterializedEventCount);
+                groupPlan.setExposureCount(exposureCount);
+                groupPlan.setMaterializedExposureCount(materializedExposureCount);
+                groupPlan.setUnmaterializedExposureCount(unmaterializedExposureCount);
+                groupPlan.setAffectedCount(eventCount + exposureCount);
+                groupPlan.setMaterializedCount(materializedEventCount + materializedExposureCount);
+                groupPlan.setUnmaterializedCount(unmaterializedEventCount + unmaterializedExposureCount);
+                groups.add(groupPlan);
+            }
+        }
+
+        return new ReplayPlanCounts(
+                totalEventCount,
+                totalExposureCount,
+                totalMaterializedEventCount,
+                totalMaterializedExposureCount,
+                groups);
+    }
+
+    private EventReplayPlanResponse buildReplayPlanResponse(String experimentId, EventReplayScope replayScope,
+                                                            ReplayPlanCounts counts) {
+        EventReplayPlanResponse response = new EventReplayPlanResponse();
+        response.setExperimentId(experimentId);
+        response.setStartTime(replayScope.startTime());
+        response.setEndTime(replayScope.endTime());
+        response.setEventTypes(replayScope.eventTypes());
+        response.setIncludeEvents(replayScope.includeEvents());
+        response.setIncludeExposures(replayScope.includeExposures());
+        response.setFullDerivedReplay(replayScope.fullDerivedReplay());
+        response.setReplayMode(replayScope.replayMode());
+        response.setMessage(replayScope.fullDerivedReplay()
+                ? "当前计划等价于全量派生重放，可使用 /events/replay 执行"
+                : "当前计划会执行筛选范围复制型 replay，不会清空 Redis/MAB 派生数据");
+        applyReplayPlanCounts(response, counts);
+        return response;
+    }
+
+    private void applyReplayPlanCounts(EventReplayPlanResponse response, ReplayPlanCounts counts) {
+        long totalUnmaterializedEventCount = counts.eventCount() - counts.materializedEventCount();
+        long totalUnmaterializedExposureCount = counts.exposureCount() - counts.materializedExposureCount();
+        response.setGroupCount((long) counts.groups().size());
+        response.setEventCount(counts.eventCount());
+        response.setMaterializedEventCount(counts.materializedEventCount());
+        response.setUnmaterializedEventCount(totalUnmaterializedEventCount);
+        response.setExposureCount(counts.exposureCount());
+        response.setMaterializedExposureCount(counts.materializedExposureCount());
+        response.setUnmaterializedExposureCount(totalUnmaterializedExposureCount);
+        response.setAffectedCount(counts.eventCount() + counts.exposureCount());
+        response.setMaterializedCount(counts.materializedEventCount() + counts.materializedExposureCount());
+        response.setUnmaterializedCount(totalUnmaterializedEventCount + totalUnmaterializedExposureCount);
+        response.setGroups(counts.groups());
+    }
+
+    private void applyReplayPlanSegments(EventReplayPlanResponse response,
+                                         ExperimentMetadata metadata,
+                                         String experimentId,
+                                         EventReplayScope replayScope,
+                                         EventReplayPlanRequest request) {
+        int requestedSegmentCount = normalizeReplaySegmentCount(request == null ? null : request.getSegmentCount());
+        response.setRequestedSegmentCount(requestedSegmentCount);
+        if (requestedSegmentCount <= 1) {
+            response.setSegmentCount(0);
+            response.setSegmentRecoverySupported(false);
+            response.setSegmentRecoveryMessage("未请求分段巡检；如需分段恢复，请同时传入 startTime、endTime 和 segmentCount > 1");
+            response.setMaxSegmentAffectedCount(0L);
+            response.setMaxSegmentUnmaterializedCount(0L);
+            response.setSegments(List.of());
+            return;
+        }
+        if (replayScope.startTime() == null || replayScope.endTime() == null) {
+            response.setSegmentCount(0);
+            response.setSegmentRecoverySupported(false);
+            response.setSegmentRecoveryMessage("分段巡检需要同时指定 startTime 和 endTime");
+            response.setMaxSegmentAffectedCount(0L);
+            response.setMaxSegmentUnmaterializedCount(0L);
+            response.setSegments(List.of());
+            return;
+        }
+
+        List<EventReplayPlanResponse.ReplayPlanSegment> segments =
+                buildReplayPlanSegments(metadata, experimentId, replayScope, requestedSegmentCount);
+        response.setSegments(segments);
+        response.setSegmentCount(segments.size());
+        response.setSegmentRecoverySupported(!segments.isEmpty());
+        response.setSegmentRecoveryMessage(segments.isEmpty()
+                ? "当前时间范围无法生成分段"
+                : "可使用 /events/replay/materialization/repair/segments/{segmentIndex} 按分段修复缺账本");
+        response.setMaxSegmentAffectedCount(segments.stream()
+                .mapToLong(segment -> resolveLong(segment.getAffectedCount()))
+                .max()
+                .orElse(0L));
+        response.setMaxSegmentUnmaterializedCount(segments.stream()
+                .mapToLong(segment -> resolveLong(segment.getUnmaterializedCount()))
+                .max()
+                .orElse(0L));
+    }
+
+    private List<EventReplayPlanResponse.ReplayPlanSegment> buildReplayPlanSegments(
+            ExperimentMetadata metadata, String experimentId, EventReplayScope replayScope, int segmentCount) {
+        List<ReplaySegmentWindow> windows = buildReplaySegmentWindows(replayScope.startTime(),
+                replayScope.endTime(), segmentCount);
+        List<EventReplayPlanResponse.ReplayPlanSegment> segments = new ArrayList<>();
+        for (ReplaySegmentWindow window : windows) {
+            EventReplayScope segmentScope = new EventReplayScope(
+                    window.startTime(),
+                    window.endTime(),
+                    replayScope.eventTypes(),
+                    replayScope.includeEvents(),
+                    replayScope.includeExposures(),
+                    false,
+                    REPLAY_MODE_FILTERED_DERIVED_COPY);
+            ReplayPlanCounts counts = calculateReplayPlanCounts(metadata, experimentId, segmentScope);
+            EventReplayPlanResponse.ReplayPlanSegment segment = new EventReplayPlanResponse.ReplayPlanSegment();
+            segment.setSegmentIndex(window.segmentIndex());
+            segment.setSegmentKey(String.format("segment-%03d", window.segmentIndex()));
+            segment.setStartTime(window.startTime());
+            segment.setEndTime(window.endTime());
+            segment.setIncludeEvents(segmentScope.includeEvents());
+            segment.setIncludeExposures(segmentScope.includeExposures());
+            segment.setEventTypes(segmentScope.eventTypes());
+            segment.setGroupCount((long) counts.groups().size());
+            segment.setEventCount(counts.eventCount());
+            segment.setMaterializedEventCount(counts.materializedEventCount());
+            segment.setUnmaterializedEventCount(counts.unmaterializedEventCount());
+            segment.setExposureCount(counts.exposureCount());
+            segment.setMaterializedExposureCount(counts.materializedExposureCount());
+            segment.setUnmaterializedExposureCount(counts.unmaterializedExposureCount());
+            segment.setAffectedCount(counts.affectedCount());
+            segment.setMaterializedCount(counts.materializedCount());
+            segment.setUnmaterializedCount(counts.unmaterializedCount());
+            segment.setRecommendedAction(counts.unmaterializedCount() > 0L
+                    ? REPLAY_SEGMENT_ACTION_REPAIR_MATERIALIZATION
+                    : REPLAY_SEGMENT_ACTION_NONE);
+            segment.setMessage(counts.unmaterializedCount() > 0L
+                    ? "该分段存在缺账本事实，可单独执行分段修复"
+                    : "该分段账本覆盖完整，无需修复");
+            segments.add(segment);
+        }
+        return segments;
+    }
+
+    private List<ReplaySegmentWindow> buildReplaySegmentWindows(LocalDateTime startTime,
+                                                               LocalDateTime endTime,
+                                                               int segmentCount) {
+        if (startTime == null || endTime == null || endTime.isBefore(startTime)) {
+            return List.of();
+        }
+        long totalNanos = Duration.between(startTime, endTime).toNanos();
+        if (totalNanos <= 0L) {
+            return List.of(new ReplaySegmentWindow(0, startTime, endTime));
+        }
+        List<ReplaySegmentWindow> windows = new ArrayList<>();
+        LocalDateTime segmentStartTime = startTime;
+        for (int index = 0; index < segmentCount && !segmentStartTime.isAfter(endTime); index++) {
+            LocalDateTime segmentEndTime = index == segmentCount - 1
+                    ? endTime
+                    : startTime.plusNanos(resolveReplaySegmentEndOffset(totalNanos, segmentCount, index));
+            if (segmentEndTime.isAfter(endTime)) {
+                segmentEndTime = endTime;
+            }
+            if (segmentEndTime.isBefore(segmentStartTime)) {
+                segmentEndTime = segmentStartTime;
+            }
+            windows.add(new ReplaySegmentWindow(index, segmentStartTime, segmentEndTime));
+            segmentStartTime = segmentEndTime.plusNanos(1L);
+        }
+        return windows;
+    }
+
+    private long resolveReplaySegmentEndOffset(long totalNanos, int segmentCount, int segmentIndex) {
+        long segmentOrdinal = segmentIndex + 1L;
+        long baseStepNanos = totalNanos / segmentCount;
+        long remainderNanos = totalNanos % segmentCount;
+        return baseStepNanos * segmentOrdinal + Math.min(remainderNanos, segmentOrdinal);
+    }
+
+    private int normalizeReplaySegmentCount(Integer segmentCount) {
+        if (segmentCount == null) {
+            return 0;
+        }
+        if (segmentCount <= 1) {
+            return Math.max(0, segmentCount);
+        }
+        return Math.min(segmentCount, MAX_REPLAY_PLAN_SEGMENT_COUNT);
+    }
+
+    @Override
+    public EventPipelineOperationResponse repairEventMaterialization(String experimentId, EventReplayPlanRequest request,
+                                                                     String operator) {
+        EventReplayPlanResponse replayPlan = planEventReplay(experimentId, request);
+        long unmaterializedCount = resolveLong(replayPlan.getUnmaterializedCount());
+        LocalDateTime operatedAt = LocalDateTime.now();
+        String normalizedOperator = StringUtils.hasText(operator) ? operator : "system";
+        if (unmaterializedCount == 0L) {
+            return buildEventPipelineOperationResponse(
+                    experimentId,
+                    EVENT_PIPELINE_OPERATION_REPAIR_MATERIALIZATION,
+                    normalizedOperator,
+                    operatedAt,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    "当前重放计划没有缺失派生物化账本的事实，无需修复");
+        }
+        EventReplayScope replayScope = buildReplayScope(request);
+        boolean planUnmaterializedOnly = !Boolean.TRUE.equals(replayPlan.getFullDerivedReplay());
+        EventReplayJobRecord replayJob = startReplayJob(experimentId, normalizedOperator, operatedAt, replayScope,
+                replayPlan, planUnmaterializedOnly);
+        recordReplayJobSubmitted();
+        if (Boolean.TRUE.equals(replayPlan.getFullDerivedReplay())) {
+            return executeReplayJobAndBuildResponse(
+                    replayJob,
+                    EVENT_PIPELINE_OPERATION_REPAIR_MATERIALIZATION,
+                    normalizedOperator,
+                    operatedAt,
+                    "已通过全量派生重放修复缺失派生物化账本事实: unmaterializedCount="
+                            + unmaterializedCount);
+        }
+        return executeMaterializationRepairJobAndBuildResponse(
+                replayJob,
+                normalizedOperator,
+                operatedAt,
+                "已通过局部补物化修复缺失派生物化账本事实: unmaterializedCount="
+                        + unmaterializedCount
+                        + "；仅补齐缺账本事实，广义派生漂移仍需全量重放");
+    }
+
+    @Override
+    public EventPipelineOperationResponse repairEventMaterializationSegment(String experimentId,
+                                                                            EventReplayPlanRequest request,
+                                                                            int segmentIndex,
+                                                                            String operator) {
+        EventReplayPlanResponse replayPlan = planEventReplay(experimentId, request);
+        EventReplayPlanResponse.ReplayPlanSegment segment = resolveReplayPlanSegment(replayPlan, segmentIndex);
+        LocalDateTime operatedAt = LocalDateTime.now();
+        String normalizedOperator = StringUtils.hasText(operator) ? operator : "system";
+        if (resolveLong(segment.getUnmaterializedCount()) == 0L) {
+            EventPipelineOperationResponse response = buildEventPipelineOperationResponse(
+                    experimentId,
+                    EVENT_PIPELINE_OPERATION_REPAIR_MATERIALIZATION,
+                    normalizedOperator,
+                    operatedAt,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    "当前重放分段没有缺失派生物化账本的事实，无需修复: segmentIndex=" + segmentIndex);
+            applyReplayScope(response, buildSegmentReplayScope(replayPlan, segment));
+            return response;
+        }
+
+        EventReplayPlanRequest segmentRequest = buildSegmentReplayRequest(replayPlan, segment);
+        EventPipelineOperationResponse response = repairEventMaterialization(experimentId, segmentRequest,
+                normalizedOperator);
+        response.setMessage("已执行分段缺账本修复: segmentIndex="
+                + segmentIndex
+                + ", segmentKey="
+                + segment.getSegmentKey()
+                + "；"
+                + response.getMessage());
+        return response;
+    }
+
+    private EventReplayPlanResponse.ReplayPlanSegment resolveReplayPlanSegment(EventReplayPlanResponse replayPlan,
+                                                                               int segmentIndex) {
+        if (!Boolean.TRUE.equals(replayPlan.getSegmentRecoverySupported())) {
+            throw new BusinessException(ResponseCode.BAD_REQUEST,
+                    "当前重放计划不支持分段恢复，请同时传入 startTime、endTime 和 segmentCount > 1");
+        }
+        if (segmentIndex < 0 || replayPlan.getSegments() == null || segmentIndex >= replayPlan.getSegments().size()) {
+            throw new BusinessException(ResponseCode.BAD_REQUEST,
+                    "重放计划分段序号越界: segmentIndex="
+                            + segmentIndex
+                            + ", segmentCount="
+                            + resolveInteger(replayPlan.getSegmentCount()));
+        }
+        return replayPlan.getSegments().get(segmentIndex);
+    }
+
+    private EventReplayPlanRequest buildSegmentReplayRequest(EventReplayPlanResponse replayPlan,
+                                                             EventReplayPlanResponse.ReplayPlanSegment segment) {
+        EventReplayPlanRequest request = new EventReplayPlanRequest();
+        request.setStartTime(segment.getStartTime());
+        request.setEndTime(segment.getEndTime());
+        request.setEventTypes(replayPlan.getEventTypes());
+        request.setIncludeEvents(replayPlan.getIncludeEvents());
+        request.setIncludeExposures(replayPlan.getIncludeExposures());
+        return request;
+    }
+
+    private long clampMaterializedCount(long matchedCount, long materializedCount) {
+        return Math.min(Math.max(0L, materializedCount), Math.max(0L, matchedCount));
+    }
+
+    private void validateFilteredCopyReplayPlan(EventReplayScope replayScope, EventReplayPlanResponse replayPlan) {
+        if (replayScope.fullDerivedReplay()) {
+            return;
+        }
+        long maxFilteredCopyFacts = Math.max(0L, eventPipelineReplayMaxFilteredCopyFacts);
+        if (maxFilteredCopyFacts == 0L) {
+            return;
+        }
+        long affectedCount = resolveLong(replayPlan.getAffectedCount());
+        if (affectedCount > maxFilteredCopyFacts) {
+            throw new BusinessException(ResponseCode.BAD_REQUEST,
+                    "筛选范围复制型 replay 影响事实数超过上限: affectedCount="
+                            + affectedCount
+                            + ", maxFilteredCopyFacts="
+                            + maxFilteredCopyFacts
+                            + "；请缩小时间窗口/事件类型，或使用全量 replay 修复整体派生漂移");
+        }
+    }
+
+    @Override
+    public List<EventReplayJobResponse> listEventReplayJobs(String experimentId, int limit) {
+        getAccessibleExperimentMetadataOrThrow(experimentId);
+        int normalizedLimit = Math.min(MAX_REPLAY_JOB_QUERY_LIMIT, Math.max(1, limit));
+        return eventReplayJobRepository.listRecentByExperimentId(experimentId, normalizedLimit).stream()
+                .map(this::buildEventReplayJobResponse)
+                .toList();
+    }
+
+    @Override
+    public EventReplayJobResponse getEventReplayJob(String experimentId, String replayJobId) {
+        getAccessibleExperimentMetadataOrThrow(experimentId);
+        return buildEventReplayJobResponse(resolveEventReplayJobOrThrow(experimentId, replayJobId));
+    }
+
+    @Override
+    public EventPipelineOperationResponse cancelEventReplayJob(String experimentId, String replayJobId,
+                                                               String operator) {
+        getAccessibleExperimentMetadataOrThrow(experimentId);
+        EventReplayJobRecord replayJob = resolveEventReplayJobOrThrow(experimentId, replayJobId);
+        if (EventReplayJobRecord.STATUS_CANCEL_REQUESTED.equals(replayJob.getJobStatus())) {
+            EventPipelineOperationResponse response = buildCancelReplayJobResponse(replayJob, operator,
+                    LocalDateTime.now(), "事件重放任务取消已在处理中");
+            response.setReplayJobStatus(EventReplayJobRecord.STATUS_CANCEL_REQUESTED);
+            return response;
+        }
+        if (!EventReplayJobRecord.STATUS_RUNNING.equals(replayJob.getJobStatus())) {
+            throw new BusinessException(ResponseCode.CONFLICT,
+                    "只有运行中的事件重放任务可以取消: jobStatus=" + replayJob.getJobStatus());
+        }
+        LocalDateTime operatedAt = LocalDateTime.now();
+        String normalizedOperator = StringUtils.hasText(operator) ? operator : "system";
+        boolean requested = eventReplayJobRepository.requestCancellation(replayJobId,
+                REPLAY_JOB_CANCEL_REQUESTED_MESSAGE + ": operator=" + normalizedOperator);
+        if (!requested) {
+            throw new BusinessException(ResponseCode.CONFLICT, "事件重放任务状态已变化，请刷新后重试");
+        }
+        replayJob.setJobStatus(EventReplayJobRecord.STATUS_CANCEL_REQUESTED);
+        replayJob.setErrorMessage(REPLAY_JOB_CANCEL_REQUESTED_MESSAGE + ": operator=" + normalizedOperator);
+
+        return buildCancelReplayJobResponse(replayJob, normalizedOperator, operatedAt,
+                "已受理事件重放任务取消请求，任务会在一致性安全点释放互斥键");
+    }
+
+    private EventPipelineOperationResponse buildCancelReplayJobResponse(EventReplayJobRecord replayJob,
+                                                                        String operator,
+                                                                        LocalDateTime operatedAt,
+                                                                        String message) {
+        EventPipelineOperationResponse response = buildEventPipelineOperationResponse(
+                replayJob.getExperimentId(),
+                EVENT_PIPELINE_OPERATION_CANCEL_REPLAY_JOB,
+                operator,
+                operatedAt,
+                0L,
+                resolveLong(replayJob.getEventCount()),
+                resolveLong(replayJob.getExposureCount()),
+                resolveLong(replayJob.getGroupCount()),
+                resolveLong(replayJob.getMabRewardCount()),
+                message);
+        response.setReplayJobId(replayJob.getReplayJobId());
+        response.setReplayJobStatus(replayJob.getJobStatus());
+        applyReplayScope(response, replayJob);
+        return response;
+    }
+
+    private void submitReplayJob(EventReplayJobRecord replayJob) {
+        try {
+            eventReplayTaskExecutor.execute(() -> {
+                try {
+                    executeReplayJobToTerminal(replayJob);
+                } catch (RuntimeException exception) {
+                    log.warn("事件重放任务后台执行失败: replayJobId={}, experimentId={}",
+                            replayJob.getReplayJobId(), replayJob.getExperimentId(), exception);
+                }
+            });
+            recordReplayJobSubmitted();
+        } catch (RuntimeException exception) {
+            markReplayJobFailed(replayJob.getReplayJobId(), exception);
+            recordReplayJobSubmitRejected();
+            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "事件重放任务提交失败", exception);
+        }
+    }
+
+    private EventPipelineOperationResponse executeReplayJobAndBuildResponse(EventReplayJobRecord replayJob,
+                                                                            String operation,
+                                                                            String operator,
+                                                                            LocalDateTime operatedAt,
+                                                                            String successMessage) {
+        EventPipelineRebuildResult result = executeReplayJobToTerminal(replayJob);
+        if (result == null) {
+            EventPipelineOperationResponse response = buildEventPipelineOperationResponse(
+                    replayJob.getExperimentId(),
+                    operation,
+                    operator,
+                    operatedAt,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    EVENT_PIPELINE_OPERATION_CANCELLED,
+                    REPLAY_JOB_CANCELLED_MESSAGE);
+            response.setReplayJobId(replayJob.getReplayJobId());
+            response.setReplayJobStatus(EventReplayJobRecord.STATUS_CANCELLED);
+            applyReplayScope(response, replayJob);
+            return response;
+        }
+        long affectedCount = result.getEventCount() + result.getExposureCount();
+        EventPipelineOperationResponse response = buildEventPipelineOperationResponse(
+                replayJob.getExperimentId(),
+                operation,
+                operator,
+                operatedAt,
+                affectedCount,
+                result.getEventCount(),
+                result.getExposureCount(),
+                result.getGroupCount(),
+                result.getMabRewardCount(),
+                successMessage);
+        response.setReplayJobId(replayJob.getReplayJobId());
+        response.setReplayJobStatus(EventReplayJobRecord.STATUS_SUCCEEDED);
+        applyReplayScope(response, replayJob);
+        return response;
+    }
+
+    private EventPipelineOperationResponse executeMaterializationRepairJobAndBuildResponse(
+            EventReplayJobRecord replayJob, String operator, LocalDateTime operatedAt, String successMessage) {
+        EventPipelineRebuildResult result = executeMaterializationRepairJobToTerminal(replayJob);
+        if (result == null) {
+            EventPipelineOperationResponse response = buildEventPipelineOperationResponse(
+                    replayJob.getExperimentId(),
+                    EVENT_PIPELINE_OPERATION_REPAIR_MATERIALIZATION,
+                    operator,
+                    operatedAt,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    EVENT_PIPELINE_OPERATION_CANCELLED,
+                    REPLAY_JOB_CANCELLED_MESSAGE);
+            response.setReplayJobId(replayJob.getReplayJobId());
+            response.setReplayJobStatus(EventReplayJobRecord.STATUS_CANCELLED);
+            applyReplayScope(response, replayJob);
+            return response;
+        }
+        long affectedCount = result.getEventCount() + result.getExposureCount();
+        EventPipelineOperationResponse response = buildEventPipelineOperationResponse(
+                replayJob.getExperimentId(),
+                EVENT_PIPELINE_OPERATION_REPAIR_MATERIALIZATION,
+                operator,
+                operatedAt,
+                affectedCount,
+                result.getEventCount(),
+                result.getExposureCount(),
+                result.getGroupCount(),
+                result.getMabRewardCount(),
+                successMessage);
+        response.setReplayJobId(replayJob.getReplayJobId());
+        response.setReplayJobStatus(EventReplayJobRecord.STATUS_SUCCEEDED);
+        applyReplayScope(response, replayJob);
+        return response;
+    }
+
+    private EventPipelineRebuildResult executeReplayJobToTerminal(EventReplayJobRecord replayJob) {
+        long startedNanos = System.nanoTime();
+        if (isReplayJobCancellationRequested(replayJob)) {
+            markReplayJobCancelled(replayJob.getReplayJobId(), REPLAY_JOB_CANCELLED_MESSAGE);
+            recordReplayJobTerminal(EventReplayJobRecord.STATUS_CANCELLED, startedNanos);
+            return null;
+        }
+
+        EventPipelineRebuildResult result;
+        boolean stopWhenCancellationRequested = !Boolean.TRUE.equals(replayJob.getFullDerivedReplay());
+        EventReplayProgressReporter progressReporter = buildReplayProgressReporter(replayJob,
+                stopWhenCancellationRequested);
+        try {
+            if (Boolean.TRUE.equals(replayJob.getFullDerivedReplay())) {
+                result = eventInboxMaterializer.rebuildDerivedData(replayJob.getExperimentId(),
+                        replayJob.getReplayJobId(), progressReporter);
+            } else {
+                result = eventInboxMaterializer.copyReplayDerivedData(
+                        replayJob.getExperimentId(),
+                        replayJob.getScopeStartTime(),
+                        replayJob.getScopeEndTime(),
+                        replayJob.getEventTypes(),
+                        Boolean.TRUE.equals(replayJob.getIncludeEvents()),
+                        Boolean.TRUE.equals(replayJob.getIncludeExposures()),
+                        replayJob.getReplayJobId(),
+                        progressReporter);
+            }
+        } catch (RuntimeException exception) {
+            markReplayJobFailed(replayJob.getReplayJobId(), exception);
+            recordReplayJobTerminal(EventReplayJobRecord.STATUS_FAILED, startedNanos);
+            throw exception;
+        }
+
+        long affectedCount = result.getEventCount() + result.getExposureCount();
+        boolean succeeded = eventReplayJobRepository.markSucceeded(replayJob.getReplayJobId(), affectedCount,
+                result.getEventCount(), result.getExposureCount(), result.getGroupCount(),
+                result.getMabRewardCount(), LocalDateTime.now());
+        if (succeeded) {
+            recordReplayJobTerminal(EventReplayJobRecord.STATUS_SUCCEEDED, startedNanos);
+            return result;
+        }
+        if (isReplayJobCancellationRequested(replayJob)) {
+            String cancellationMessage = Boolean.TRUE.equals(replayJob.getFullDerivedReplay())
+                    ? REPLAY_JOB_CANCELLED_MESSAGE + "，派生数据已完成一致性重建"
+                    : REPLAY_JOB_CANCELLED_MESSAGE + "，筛选范围事实已完成复制型补派生";
+            markReplayJobCancelled(replayJob.getReplayJobId(), cancellationMessage);
+            recordReplayJobTerminal(EventReplayJobRecord.STATUS_CANCELLED, startedNanos);
+            return null;
+        }
+        BusinessException exception = new BusinessException(ResponseCode.CONFLICT, "事件重放任务状态已变化，无法标记成功");
+        markReplayJobFailed(replayJob.getReplayJobId(), exception);
+        recordReplayJobTerminal(EventReplayJobRecord.STATUS_FAILED, startedNanos);
+        throw exception;
+    }
+
+    private EventPipelineRebuildResult executeMaterializationRepairJobToTerminal(EventReplayJobRecord replayJob) {
+        long startedNanos = System.nanoTime();
+        if (isReplayJobCancellationRequested(replayJob)) {
+            markReplayJobCancelled(replayJob.getReplayJobId(), REPLAY_JOB_CANCELLED_MESSAGE);
+            recordReplayJobTerminal(EventReplayJobRecord.STATUS_CANCELLED, startedNanos);
+            return null;
+        }
+
+        EventPipelineRebuildResult result;
+        EventReplayProgressReporter progressReporter = buildReplayProgressReporter(replayJob, true);
+        try {
+            result = eventInboxMaterializer.repairUnmaterializedDerivedData(
+                    replayJob.getExperimentId(),
+                    replayJob.getScopeStartTime(),
+                    replayJob.getScopeEndTime(),
+                    replayJob.getEventTypes(),
+                    Boolean.TRUE.equals(replayJob.getIncludeEvents()),
+                    Boolean.TRUE.equals(replayJob.getIncludeExposures()),
+                    replayJob.getReplayJobId(),
+                    progressReporter);
+        } catch (RuntimeException exception) {
+            markReplayJobFailed(replayJob.getReplayJobId(), exception);
+            recordReplayJobTerminal(EventReplayJobRecord.STATUS_FAILED, startedNanos);
+            throw exception;
+        }
+
+        long affectedCount = result.getEventCount() + result.getExposureCount();
+        boolean succeeded = eventReplayJobRepository.markSucceeded(replayJob.getReplayJobId(), affectedCount,
+                result.getEventCount(), result.getExposureCount(), result.getGroupCount(),
+                result.getMabRewardCount(), LocalDateTime.now());
+        if (succeeded) {
+            recordReplayJobTerminal(EventReplayJobRecord.STATUS_SUCCEEDED, startedNanos);
+            return result;
+        }
+        if (isReplayJobCancellationRequested(replayJob)) {
+            markReplayJobCancelled(replayJob.getReplayJobId(),
+                    REPLAY_JOB_CANCELLED_MESSAGE + "，缺账本事实已完成一致性补物化");
+            recordReplayJobTerminal(EventReplayJobRecord.STATUS_CANCELLED, startedNanos);
+            return null;
+        }
+        BusinessException exception = new BusinessException(ResponseCode.CONFLICT, "事件重放任务状态已变化，无法标记成功");
+        markReplayJobFailed(replayJob.getReplayJobId(), exception);
+        recordReplayJobTerminal(EventReplayJobRecord.STATUS_FAILED, startedNanos);
+        throw exception;
+    }
+
+    private boolean isReplayJobCancellationRequested(EventReplayJobRecord replayJob) {
+        EventReplayJobRecord latestJob = eventReplayJobRepository.findByExperimentIdAndReplayJobId(
+                replayJob.getExperimentId(), replayJob.getReplayJobId());
+        if (latestJob == null) {
+            return false;
+        }
+        return EventReplayJobRecord.STATUS_CANCEL_REQUESTED.equals(latestJob.getJobStatus())
+                || EventReplayJobRecord.STATUS_CANCELLED.equals(latestJob.getJobStatus());
+    }
+
+    private EventReplayProgressReporter buildReplayProgressReporter(EventReplayJobRecord replayJob,
+                                                                    boolean stopWhenCancellationRequested) {
+        return result -> {
+            updateReplayJobProgress(replayJob.getReplayJobId(), result);
+            return !stopWhenCancellationRequested || !isReplayJobCancellationRequested(replayJob);
+        };
+    }
+
+    private void updateReplayJobProgress(String replayJobId, EventPipelineRebuildResult result) {
+        if (result == null) {
+            return;
+        }
+        try {
+            eventReplayJobRepository.updateProgress(
+                    replayJobId,
+                    result.getEventCount() + result.getExposureCount(),
+                    result.getEventCount(),
+                    result.getExposureCount(),
+                    result.getGroupCount(),
+                    result.getMabRewardCount());
+        } catch (RuntimeException exception) {
+            log.warn("更新事件重放任务进度失败: replayJobId={}", replayJobId, exception);
+        }
+    }
+
+    private void markReplayJobCancelled(String replayJobId, String message) {
+        try {
+            eventReplayJobRepository.markCancelled(replayJobId, message, LocalDateTime.now());
+        } catch (RuntimeException exception) {
+            log.warn("标记事件重放任务取消状态失败: replayJobId={}", replayJobId, exception);
+        }
+    }
+
+    private List<String> normalizeReplayEventTypes(List<String> eventTypes) {
+        if (eventTypes == null || eventTypes.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return eventTypes.stream()
+                .filter(StringUtils::hasText)
+                .map(eventType -> eventType.trim().toUpperCase())
+                .distinct()
+                .toList();
+    }
+
+    private EventReplayJobRecord resolveEventReplayJobOrThrow(String experimentId, String replayJobId) {
+        if (!StringUtils.hasText(replayJobId)) {
+            throw new BusinessException(ResponseCode.BAD_REQUEST, "事件重放任务ID不能为空");
+        }
+        EventReplayJobRecord replayJob = eventReplayJobRepository.findByExperimentIdAndReplayJobId(experimentId,
+                replayJobId);
+        if (replayJob == null) {
+            throw new BusinessException(ResponseCode.NOT_FOUND, "事件重放任务不存在");
+        }
+        return replayJob;
+    }
+
+    private EventReplayScope buildReplayScope(EventReplayPlanRequest request) {
+        EventReplayPlanRequest normalizedRequest = request == null ? new EventReplayPlanRequest() : request;
+        boolean includeEvents = normalizedRequest.getIncludeEvents() == null
+                || Boolean.TRUE.equals(normalizedRequest.getIncludeEvents());
+        boolean includeExposures = normalizedRequest.getIncludeExposures() == null
+                || Boolean.TRUE.equals(normalizedRequest.getIncludeExposures());
+        if (!includeEvents && !includeExposures) {
+            throw new BusinessException(ResponseCode.BAD_REQUEST, "至少需要包含事件或曝光事实");
+        }
+        if (normalizedRequest.getStartTime() != null
+                && normalizedRequest.getEndTime() != null
+                && normalizedRequest.getEndTime().isBefore(normalizedRequest.getStartTime())) {
+            throw new BusinessException(ResponseCode.BAD_REQUEST, "重放计划结束时间不能早于开始时间");
+        }
+        List<String> eventTypes = normalizeReplayEventTypes(normalizedRequest.getEventTypes());
+        if (!includeEvents && !eventTypes.isEmpty()) {
+            throw new BusinessException(ResponseCode.BAD_REQUEST, "不包含事件事实时不能指定事件类型筛选");
+        }
+        boolean fullDerivedReplay = includeEvents
+                && includeExposures
+                && normalizedRequest.getStartTime() == null
+                && normalizedRequest.getEndTime() == null
+                && eventTypes.isEmpty();
+        String replayMode = fullDerivedReplay
+                ? REPLAY_MODE_FULL_DERIVED_REBUILD
+                : REPLAY_MODE_FILTERED_DERIVED_COPY;
+        return new EventReplayScope(normalizedRequest.getStartTime(), normalizedRequest.getEndTime(), eventTypes,
+                includeEvents, includeExposures, fullDerivedReplay, replayMode);
+    }
+
+    private EventReplayScope buildSegmentReplayScope(EventReplayPlanResponse replayPlan,
+                                                     EventReplayPlanResponse.ReplayPlanSegment segment) {
+        return new EventReplayScope(
+                segment.getStartTime(),
+                segment.getEndTime(),
+                replayPlan.getEventTypes() == null ? List.of() : replayPlan.getEventTypes(),
+                !Boolean.FALSE.equals(replayPlan.getIncludeEvents()),
+                !Boolean.FALSE.equals(replayPlan.getIncludeExposures()),
+                false,
+                REPLAY_MODE_FILTERED_DERIVED_COPY);
+    }
+
+    private EventReplayJobRecord startReplayJob(String experimentId, String operator, LocalDateTime startedAt,
+                                                EventReplayScope replayScope, EventReplayPlanResponse replayPlan,
+                                                boolean planUnmaterializedOnly) {
+        long timeoutMinutes = Math.max(1L, eventPipelineReplayJobTimeoutMinutes);
+        LocalDateTime staleBefore = startedAt.minusMinutes(timeoutMinutes);
+        eventReplayJobRepository.expireStaleRunningJobs(experimentId, staleBefore, startedAt,
+                "重放任务超过 " + timeoutMinutes + " 分钟未完成，已被新任务接管");
+
+        EventReplayJobRecord replayJob = new EventReplayJobRecord();
+        replayJob.setReplayJobId(REPLAY_JOB_ID_PREFIX + UUID.randomUUID().toString().replace("-", ""));
+        replayJob.setExperimentId(experimentId);
+        replayJob.setOperator(operator);
+        replayJob.setJobStatus(EventReplayJobRecord.STATUS_RUNNING);
+        replayJob.setActiveKey(experimentId);
+        replayJob.setReplayMode(replayScope.replayMode());
+        replayJob.setScopeStartTime(replayScope.startTime());
+        replayJob.setScopeEndTime(replayScope.endTime());
+        replayJob.setEventTypes(replayScope.eventTypes());
+        replayJob.setIncludeEvents(replayScope.includeEvents());
+        replayJob.setIncludeExposures(replayScope.includeExposures());
+        replayJob.setFullDerivedReplay(replayScope.fullDerivedReplay());
+        applyReplayJobPlan(replayJob, replayPlan, planUnmaterializedOnly);
+        replayJob.setAffectedCount(0L);
+        replayJob.setEventCount(0L);
+        replayJob.setExposureCount(0L);
+        replayJob.setGroupCount(0L);
+        replayJob.setMabRewardCount(0L);
+        replayJob.setStartedAt(startedAt);
+
+        if (!eventReplayJobRepository.createRunningJob(replayJob)) {
+            throw new BusinessException(ResponseCode.CONFLICT,
+                    "当前实验已有事件重放任务正在运行，请等待完成后再重试");
+        }
+        return replayJob;
+    }
+
+    private void applyReplayJobPlan(EventReplayJobRecord replayJob, EventReplayPlanResponse replayPlan,
+                                    boolean planUnmaterializedOnly) {
+        if (replayPlan == null) {
+            replayJob.setPlannedAffectedCount(0L);
+            replayJob.setPlannedEventCount(0L);
+            replayJob.setPlannedExposureCount(0L);
+            replayJob.setPlannedGroupCount(0L);
+            return;
+        }
+        long plannedEventCount = planUnmaterializedOnly
+                ? resolveLong(replayPlan.getUnmaterializedEventCount())
+                : resolveLong(replayPlan.getEventCount());
+        long plannedExposureCount = planUnmaterializedOnly
+                ? resolveLong(replayPlan.getUnmaterializedExposureCount())
+                : resolveLong(replayPlan.getExposureCount());
+        replayJob.setPlannedEventCount(plannedEventCount);
+        replayJob.setPlannedExposureCount(plannedExposureCount);
+        replayJob.setPlannedAffectedCount(plannedEventCount + plannedExposureCount);
+        replayJob.setPlannedGroupCount(resolvePlannedGroupCount(replayPlan, planUnmaterializedOnly));
+    }
+
+    private long resolvePlannedGroupCount(EventReplayPlanResponse replayPlan, boolean planUnmaterializedOnly) {
+        if (replayPlan.getGroups() == null || replayPlan.getGroups().isEmpty()) {
+            return resolveLong(replayPlan.getGroupCount());
+        }
+        return replayPlan.getGroups().stream()
+                .filter(group -> shouldCountPlannedReplayGroup(replayPlan, group, planUnmaterializedOnly))
+                .count();
+    }
+
+    private boolean shouldCountPlannedReplayGroup(EventReplayPlanResponse replayPlan,
+                                                  EventReplayPlanResponse.GroupReplayPlan group,
+                                                  boolean planUnmaterializedOnly) {
+        if (!planUnmaterializedOnly && Boolean.TRUE.equals(replayPlan.getFullDerivedReplay())) {
+            return true;
+        }
+        long plannedFacts = planUnmaterializedOnly
+                ? resolveLong(group.getUnmaterializedCount())
+                : resolveLong(group.getAffectedCount());
+        return plannedFacts > 0L;
+    }
+
+    private void applyReplayScope(EventPipelineOperationResponse response, EventReplayJobRecord replayJob) {
+        response.setReplayMode(replayJob.getReplayMode());
+        response.setScopeStartTime(replayJob.getScopeStartTime());
+        response.setScopeEndTime(replayJob.getScopeEndTime());
+        response.setEventTypes(replayJob.getEventTypes());
+        response.setIncludeEvents(replayJob.getIncludeEvents());
+        response.setIncludeExposures(replayJob.getIncludeExposures());
+        response.setFullDerivedReplay(replayJob.getFullDerivedReplay());
+    }
+
+    private void applyReplayScope(EventPipelineOperationResponse response, EventReplayScope replayScope) {
+        response.setReplayMode(replayScope.replayMode());
+        response.setScopeStartTime(replayScope.startTime());
+        response.setScopeEndTime(replayScope.endTime());
+        response.setEventTypes(replayScope.eventTypes());
+        response.setIncludeEvents(replayScope.includeEvents());
+        response.setIncludeExposures(replayScope.includeExposures());
+        response.setFullDerivedReplay(replayScope.fullDerivedReplay());
+    }
+
+    private void markReplayJobFailed(String replayJobId, RuntimeException exception) {
+        try {
+            eventReplayJobRepository.markFailed(replayJobId, truncateErrorMessage(exception.getMessage()),
+                    LocalDateTime.now());
+        } catch (RuntimeException markException) {
+            log.warn("标记事件重放任务失败状态失败: replayJobId={}", replayJobId, markException);
+        }
+    }
+
+    private void recordReplayJobSubmitted() {
+        if (eventReplayMetrics != null) {
+            eventReplayMetrics.recordSubmitted();
+        }
+    }
+
+    private void recordReplayJobSubmitRejected() {
+        if (eventReplayMetrics != null) {
+            eventReplayMetrics.recordSubmitRejected();
+        }
+    }
+
+    private void recordReplayJobTerminal(String status, long startedNanos) {
+        if (eventReplayMetrics != null) {
+            eventReplayMetrics.recordTerminal(status, System.nanoTime() - startedNanos);
+        }
+    }
+
+    private String truncateErrorMessage(String message) {
+        if (!StringUtils.hasText(message)) {
+            return "事件重放失败";
+        }
+        return message.length() > 1024 ? message.substring(0, 1024) : message;
+    }
+
+    private EventReplayJobResponse buildEventReplayJobResponse(EventReplayJobRecord record) {
+        EventReplayJobResponse response = new EventReplayJobResponse();
+        response.setReplayJobId(record.getReplayJobId());
+        response.setExperimentId(record.getExperimentId());
+        response.setOperator(record.getOperator());
+        response.setJobStatus(record.getJobStatus());
+        response.setActiveKey(record.getActiveKey());
+        response.setReplayMode(record.getReplayMode());
+        response.setScopeStartTime(record.getScopeStartTime());
+        response.setScopeEndTime(record.getScopeEndTime());
+        response.setEventTypes(record.getEventTypes());
+        response.setIncludeEvents(record.getIncludeEvents());
+        response.setIncludeExposures(record.getIncludeExposures());
+        response.setFullDerivedReplay(record.getFullDerivedReplay());
+        response.setPlannedAffectedCount(resolveLong(record.getPlannedAffectedCount()));
+        response.setPlannedEventCount(resolveLong(record.getPlannedEventCount()));
+        response.setPlannedExposureCount(resolveLong(record.getPlannedExposureCount()));
+        response.setPlannedGroupCount(resolveLong(record.getPlannedGroupCount()));
+        response.setProgressPercent(calculateReplayProgressPercent(record));
+        response.setAffectedCount(resolveLong(record.getAffectedCount()));
+        response.setEventCount(resolveLong(record.getEventCount()));
+        response.setExposureCount(resolveLong(record.getExposureCount()));
+        response.setGroupCount(resolveLong(record.getGroupCount()));
+        response.setMabRewardCount(resolveLong(record.getMabRewardCount()));
+        response.setErrorMessage(record.getErrorMessage());
+        response.setStartedAt(record.getStartedAt());
+        response.setFinishedAt(record.getFinishedAt());
+        return response;
+    }
+
+    private int calculateReplayProgressPercent(EventReplayJobRecord record) {
+        long plannedAffectedCount = resolveLong(record.getPlannedAffectedCount());
+        if (plannedAffectedCount <= 0L) {
+            return 100;
+        }
+        long affectedCount = Math.max(0L, resolveLong(record.getAffectedCount()));
+        long progressPercent = Math.round((affectedCount * 100.0d) / plannedAffectedCount);
+        return (int) Math.min(100L, Math.max(0L, progressPercent));
+    }
+
+    private record EventReplayScope(LocalDateTime startTime, LocalDateTime endTime, List<String> eventTypes,
+                                    boolean includeEvents, boolean includeExposures, boolean fullDerivedReplay,
+                                    String replayMode) {
+    }
+
+    private record ReplayPlanCounts(long eventCount, long exposureCount, long materializedEventCount,
+                                    long materializedExposureCount,
+                                    List<EventReplayPlanResponse.GroupReplayPlan> groups) {
+
+        private long unmaterializedEventCount() {
+            return eventCount - materializedEventCount;
+        }
+
+        private long unmaterializedExposureCount() {
+            return exposureCount - materializedExposureCount;
+        }
+
+        private long affectedCount() {
+            return eventCount + exposureCount;
+        }
+
+        private long materializedCount() {
+            return materializedEventCount + materializedExposureCount;
+        }
+
+        private long unmaterializedCount() {
+            return unmaterializedEventCount() + unmaterializedExposureCount();
+        }
+    }
+
+    private record ReplaySegmentWindow(int segmentIndex, LocalDateTime startTime, LocalDateTime endTime) {
+    }
+
+    private void waitBeforeNextDrainPoll() {
+        long idleWaitMs = Math.max(1L, eventPipelineDrainIdleWaitMs);
+        try {
+            Thread.sleep(idleWaitMs);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private ExperimentMetadata getAccessibleExperimentMetadata(String experimentId) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata != null) {
+            ApiKeyContextHolder.assertCanAccess(metadata);
+        }
+        return metadata;
+    }
+
+    private ExperimentMetadata getAccessibleExperimentMetadataOrThrow(String experimentId) {
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
+        if (metadata == null) {
+            throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
+        }
+        return metadata;
+    }
+
+    private Map<String, Long> buildEventInboxStatusCounts(String experimentId) {
+        Map<String, Long> statusCounts = new HashMap<>();
+        List<EventInboxStatusCountEntity> countEntities =
+                eventInboxRepository.countByExperimentIdGroupByStatus(experimentId);
+        if (countEntities == null) {
+            return statusCounts;
+        }
+        for (EventInboxStatusCountEntity countEntity : countEntities) {
+            if (countEntity == null || !StringUtils.hasText(countEntity.getStatus())) {
+                continue;
+            }
+            statusCounts.put(countEntity.getStatus(),
+                    countEntity.getEventCount() == null ? 0L : countEntity.getEventCount());
+        }
+        return statusCounts;
+    }
+
+    private long getStatusCount(Map<String, Long> statusCounts, String status) {
+        return statusCounts.getOrDefault(status, 0L);
+    }
+
+    private long resolveLong(Long value) {
+        return value == null ? 0L : value;
+    }
+
+    private int resolveInteger(Integer value) {
+        return value == null ? 0 : value;
+    }
+
+    private long resolveMaxPendingSeconds(String experimentId, LocalDateTime generatedAt, long unfinishedCount) {
+        if (unfinishedCount <= 0) {
+            return 0L;
+        }
+        LocalDateTime oldestAcceptedAt = eventInboxRepository.selectOldestUnfinishedAcceptedAt(experimentId);
+        if (oldestAcceptedAt == null) {
+            return 0L;
+        }
+        return Math.max(0L, Duration.between(oldestAcceptedAt, generatedAt).getSeconds());
+    }
+
+    private boolean isPipelineHealthy(long retryCount, long deadCount, long rejectedCount, long maxPendingSeconds) {
+        return retryCount == 0L
+                && deadCount == 0L
+                && rejectedCount == 0L
+                && maxPendingSeconds <= MAX_HEALTHY_PENDING_SECONDS;
+    }
+
+    private String resolvePipelineStatus(long totalCount, long pendingCount, long processingCount, long retryCount,
+                                         long deadCount, long rejectedCount) {
+        if (totalCount == 0L) {
+            return PIPELINE_STATUS_NO_DATA;
+        }
+        if (deadCount > 0L) {
+            return PIPELINE_STATUS_DEAD;
+        }
+        if (retryCount > 0L) {
+            return PIPELINE_STATUS_RETRY;
+        }
+        if (rejectedCount > 0L) {
+            return PIPELINE_STATUS_REJECTED;
+        }
+        if (pendingCount + processingCount > 0L) {
+            return PIPELINE_STATUS_PENDING;
+        }
+        return PIPELINE_STATUS_DONE;
+    }
+
+    private EventPipelineOperationResponse buildEventPipelineOperationResponse(
+            String experimentId,
+            String operation,
+            String operator,
+            LocalDateTime operatedAt,
+            long affectedCount,
+            long eventCount,
+            long exposureCount,
+            long groupCount,
+            long mabRewardCount,
+            String message) {
+        return buildEventPipelineOperationResponse(
+                experimentId,
+                operation,
+                operator,
+                operatedAt,
+                affectedCount,
+                eventCount,
+                exposureCount,
+                groupCount,
+                mabRewardCount,
+                EVENT_PIPELINE_OPERATION_SUCCESS,
+                message);
+    }
+
+    private EventPipelineOperationResponse buildEventPipelineOperationResponse(
+            String experimentId,
+            String operation,
+            String operator,
+            LocalDateTime operatedAt,
+            long affectedCount,
+            long eventCount,
+            long exposureCount,
+            long groupCount,
+            long mabRewardCount,
+            String status,
+            String message) {
+        EventPipelineOperationResponse response = new EventPipelineOperationResponse();
+        response.setExperimentId(experimentId);
+        response.setOperation(operation);
+        response.setOperator(StringUtils.hasText(operator) ? operator : "system");
+        response.setStatus(status);
+        response.setAffectedCount(affectedCount);
+        response.setEventCount(eventCount);
+        response.setExposureCount(exposureCount);
+        response.setGroupCount(groupCount);
+        response.setMabRewardCount(mabRewardCount);
+        response.setMessage(message);
+        response.setOperatedAt(operatedAt);
+        return response;
     }
     
     /**
@@ -551,7 +1898,7 @@ public class AnalysisServiceImpl implements AnalysisService {
      */
     @Override
     public Map<String, Object> compareGroups(String experimentId) {
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         Statistics statistics = getStatistics(experimentId);
         if (statistics == null) {
             Map<String, Object> error = new HashMap<>();
@@ -686,7 +2033,7 @@ public class AnalysisServiceImpl implements AnalysisService {
             error.put("error", "实验不存在或没有统计数据");
             return error;
         }
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         MetricDefinition primaryMetricDefinition = metadata != null
                 ? resolvePrimaryMetric(resolveMetricDefinitions(metadata)) : null;
         Statistics.GroupStatistics variantGroupStats = statistics.getGroupStatistics().get(variantGroupId);
@@ -840,12 +2187,14 @@ public class AnalysisServiceImpl implements AnalysisService {
     
     @Override
     public Map<String, Object> getBayesianAnalysis(String experimentId) {
+        getAccessibleExperimentMetadataOrThrow(experimentId);
         return bayesianAnalysisService.getBayesianAnalysis(experimentId);
     }
     
     @Override
     public Map<String, Object> shouldEarlyStop(String experimentId, String variantGroupId, 
                                               String baselineGroupId, Double winRateThreshold) {
+        getAccessibleExperimentMetadataOrThrow(experimentId);
         double threshold = winRateThreshold != null ? winRateThreshold : 0.95;
         Map<String, Object> result = bayesianAnalysisService.shouldEarlyStop(experimentId, variantGroupId,
                 baselineGroupId, threshold);
@@ -934,7 +2283,7 @@ public class AnalysisServiceImpl implements AnalysisService {
     public Map<String, Object> exportExperimentReport(String experimentId) {
         Map<String, Object> report = new HashMap<>();
         
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         if (metadata == null) {
             report.put("error", "实验不存在");
             return report;
@@ -997,7 +2346,7 @@ public class AnalysisServiceImpl implements AnalysisService {
 
     @Override
     public ExperimentReportSnapshot createReportSnapshot(String experimentId, String generatedBy) {
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         if (metadata == null) {
             throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
         }
@@ -1027,7 +2376,7 @@ public class AnalysisServiceImpl implements AnalysisService {
 
     @Override
     public List<ExperimentReportSnapshot> listReportSnapshots(String experimentId) {
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         if (metadata == null) {
             throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
         }
@@ -1110,7 +2459,7 @@ public class AnalysisServiceImpl implements AnalysisService {
         timeline.put("metricType", metricType);
         timeline.put("granularity", granularity);
         
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         if (metadata == null) {
             timeline.put("error", "实验不存在");
             return timeline;
@@ -1279,7 +2628,7 @@ public class AnalysisServiceImpl implements AnalysisService {
         
         try {
             // 获取实验数据
-            ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+            ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
             if (metadata == null) {
                 result.put("error", "实验不存在");
                 result.put("success", false);
@@ -1590,95 +2939,35 @@ public class AnalysisServiceImpl implements AnalysisService {
         log.info("API启用状态: {}", tongYiConfig.isEnabled());
         log.info("API Key: {}", maskApiKey(tongYiConfig.getApiKey()));
         log.info("模型名称: {}", tongYiConfig.getModel());
+        log.info("模型调用协议: {}", tongYiConfig.getApiMode());
+        log.info("回退模型: {}", tongYiConfig.getFallbackModel());
         log.info("超时设置: {} 毫秒", tongYiConfig.getTimeout());
         log.info("Prompt长度: {} 字符", prompt != null ? prompt.length() : 0);
         log.info("=====================================");
-        
-        ensureTongYiAvailableForAnalysis();
-        
+
         long startTime = System.currentTimeMillis();
-        
+
         // 打印Prompt内容（前500字符）
         if (prompt != null && prompt.length() > 0) {
             String promptPreview = prompt.length() > 500 ? prompt.substring(0, 500) + "..." : prompt;
             log.info("Prompt预览:\n{}", promptPreview);
         }
-        
+
         // 使用 CompletableFuture 添加超时保护
         try {
-            java.util.concurrent.CompletableFuture<String> future = 
-                    java.util.concurrent.CompletableFuture.supplyAsync(() -> {
-                try {
-                    log.info("正在创建Generation实例...");
-                    Generation gen = new Generation();
-                    
-                    Message systemMsg = Message.builder()
-                            .role(Role.SYSTEM.getValue())
-                            .content("你是一位资深的A/B测试数据分析专家，擅长从实验数据中提取洞察并给出专业建议。")
-                            .build();
-                    
-                    Message userMsg = Message.builder()
-                            .role(Role.USER.getValue())
-                            .content(prompt)
-                            .build();
-                    
-                    log.info("正在构建GenerationParam...");
-                    GenerationParam param = GenerationParam.builder()
-                            .apiKey(tongYiConfig.getApiKey())
-                            .model(tongYiConfig.getModel())
-                            .messages(Arrays.asList(systemMsg, userMsg))
-                            .resultFormat("text")
-                            .build();
-                    
-                    log.info("正在发送请求到通义API（{}）...", tongYiConfig.getModel());
-                    long apiStartTime = System.currentTimeMillis();
-                    
-                    GenerationResult result = gen.call(param);
-                    
-                    long apiElapsed = System.currentTimeMillis() - apiStartTime;
-                    log.info("通义API响应完成，耗时: {} 毫秒", apiElapsed);
-                    
-                    if (result == null) {
-                        log.warn("通义API返回null");
-                        return null;
-                    }
-                    
-                    if (result.getOutput() == null) {
-                        log.warn("通义API返回的output为null，requestId={}", result.getRequestId());
-                        return null;
-                    }
-                    
-                    String text = result.getOutput().getText();
-                    if (StringUtils.hasText(text)) {
-                        log.info("通义API返回成功，requestId={}，响应长度={} 字符", 
-                                result.getRequestId(), text.length());
-                        // 打印响应预览
-                        String responsePreview = text.length() > 300 ? text.substring(0, 300) + "..." : text;
-                        log.info("响应预览:\n{}", responsePreview);
-                        return text;
-                    }
-                    
-                    log.warn("通义API返回空文本，requestId={}", result.getRequestId());
-                    return null;
-                    
-                } catch (com.alibaba.dashscope.exception.ApiException e) {
-                    log.error("通义API异常 - 状态: {}, 错误信息: {}", 
-                            e.getStatus(), e.getMessage());
-                    return null;
-                } catch (Exception e) {
-                    log.error("调用通义API发生异常: {} - {}", e.getClass().getSimpleName(), e.getMessage());
-                    e.printStackTrace();
-                    return null;
-                }
-            });
-            
+            java.util.concurrent.CompletableFuture<String> future =
+                    java.util.concurrent.CompletableFuture.supplyAsync(() -> textGenerationClient().generateText(
+                            "你是一位资深的A/B测试数据分析专家，擅长从实验数据中提取洞察并给出专业建议。",
+                            prompt,
+                            "通义实验分析"));
+
             // 设置5分钟（300秒）超时
             log.info("等待通义API响应，超时时间: 5分钟...");
             String result = future.get(300, java.util.concurrent.TimeUnit.SECONDS);
-            
+
             long elapsed = System.currentTimeMillis() - startTime;
-            
-            if (result != null) {
+
+            if (StringUtils.hasText(result)) {
                 log.info("========== 通义API调用成功 ==========");
                 log.info("总耗时: {} 毫秒 ({} 秒)", elapsed, elapsed / 1000);
                 log.info("响应长度: {} 字符", result.length());
@@ -1702,6 +2991,9 @@ public class AnalysisServiceImpl implements AnalysisService {
             throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义AI分析超时");
         } catch (java.util.concurrent.ExecutionException e) {
             Throwable cause = e.getCause();
+            if (cause instanceof BusinessException businessException) {
+                throw businessException;
+            }
             log.error("========== 通义API执行异常 ==========");
             log.error("异常类型: {}", cause != null ? cause.getClass().getName() : e.getClass().getName());
             log.error("异常信息: {}", cause != null ? cause.getMessage() : e.getMessage());
@@ -1848,50 +3140,24 @@ public class AnalysisServiceImpl implements AnalysisService {
      * 调用通义千问进行实验设计
      */
     private String callTongYiForDesign(String prompt) {
-        ensureTongYiAvailableForAnalysis();
-        
         try {
-            Generation gen = new Generation();
-            
-            Message systemMsg = Message.builder()
-                    .role(Role.SYSTEM.getValue())
-                    .content("你是一位资深的A/B测试实验设计专家，擅长设计科学严谨的实验方案。")
-                    .build();
-            
-            Message userMsg = Message.builder()
-                    .role(Role.USER.getValue())
-                    .content(prompt)
-                    .build();
-            
-            GenerationParam param = GenerationParam.builder()
-                    .apiKey(tongYiConfig.getApiKey())
-                    .model(tongYiConfig.getModel())
-                    .messages(Arrays.asList(systemMsg, userMsg))
-                    .resultFormat("text")
-                    .build();
-            
-            GenerationResult result = gen.call(param);
-            
-            if (result != null && result.getOutput() != null && 
-                StringUtils.hasText(result.getOutput().getText())) {
-                return result.getOutput().getText();
-            }
-            
-            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义AI实验设计返回空结果");
-            
+            return textGenerationClient().generateText(
+                    "你是一位资深的A/B测试实验设计专家，擅长设计科学严谨的实验方案。",
+                    prompt,
+                    "通义实验设计");
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception e) {
             log.error("调用通义API进行实验设计失败", e);
             throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义AI实验设计失败: " + e.getMessage());
         }
     }
 
-    private void ensureTongYiAvailableForAnalysis() {
-        if (!tongYiConfig.isEnabled()) {
-            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "通义AI未启用，无法执行真实AI流程");
+    private TongYiTextGenerationClient textGenerationClient() {
+        if (tongYiTextGenerationClient != null) {
+            return tongYiTextGenerationClient;
         }
-        if (!StringUtils.hasText(tongYiConfig.getApiKey())) {
-            throw new BusinessException(ResponseCode.SERVICE_UNAVAILABLE, "未配置 TONGYI_API_KEY，无法执行真实AI流程");
-        }
+        return new TongYiTextGenerationClient(tongYiConfig);
     }
     
     /**
@@ -1933,6 +3199,7 @@ public class AnalysisServiceImpl implements AnalysisService {
     
     @Override
     public Map<String, Object> autoGraduateDecision(String experimentId) {
+        getAccessibleExperimentMetadataOrThrow(experimentId);
         AIDecisionService aiDecisionService = aiDecisionServiceProvider.getObject();
         AIGraduationDecisionResponse response = aiDecisionService.decideGraduation(experimentId);
         return buildAutoGraduateBridgeResult(experimentId, response);
@@ -1948,6 +3215,7 @@ public class AnalysisServiceImpl implements AnalysisService {
         result.put("confidence", response.getConfidence());
         result.put("riskFlags", response.getRiskFlags());
         result.put("summary", response.getSummary());
+        result.put("evidence", response.getEvidence());
         result.put("success", true);
         return result;
     }
@@ -1958,7 +3226,7 @@ public class AnalysisServiceImpl implements AnalysisService {
         result.put("experimentId", experimentId);
         
         try {
-            ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+            ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
             if (metadata == null) {
                 result.put("error", "实验不存在");
                 return result;
@@ -2073,7 +3341,7 @@ public class AnalysisServiceImpl implements AnalysisService {
 
     @Override
     public Map<String, Object> detectSRM(String experimentId) {
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         if (metadata == null || metadata.getGroups() == null || metadata.getGroups().size() < 2) {
             Map<String, Object> err = new HashMap<>();
             err.put("error", "实验不存在或实验组数量不足");
@@ -2121,7 +3389,7 @@ public class AnalysisServiceImpl implements AnalysisService {
         double alphaVal   = alpha != null ? alpha : DEFAULT_GATE_ALPHA;
         double betaVal    = beta  != null ? beta  : 0.20;
         Statistics statistics = getStatistics(experimentId);
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         MetricDefinition primaryMetricDefinition = metadata != null
                 ? resolvePrimaryMetric(resolveMetricDefinitions(metadata)) : null;
         MetricDefinition inferenceMetricDefinition = resolveRateMetricForInference(primaryMetricDefinition);

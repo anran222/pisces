@@ -20,6 +20,16 @@ import java.util.Map;
 public class ExperimentResponse extends Experiment {
     
     /**
+     * 配置版本
+     */
+    private Long configVersion;
+
+    /**
+     * 所属流量分层 ID
+     */
+    private String layerId;
+
+    /**
      * 实验组列表
      */
     private Map<String, GroupResponse> groups;
@@ -65,6 +75,26 @@ public class ExperimentResponse extends Experiment {
     private LocalDateTime conclusionUpdatedAt;
 
     /**
+     * 当前人工结论绑定的配置版本
+     */
+    private Long conclusionConfigVersion;
+
+    /**
+     * 当前人工结论绑定的报告快照版本
+     */
+    private Integer conclusionReportSnapshotVersion;
+
+    /**
+     * 当前人工结论操作人
+     */
+    private String conclusionOperator;
+
+    /**
+     * 当前人工结论备注
+     */
+    private String conclusionComment;
+
+    /**
      * 系统建议结论状态（由报告快照推导）
      */
     private ExperimentMetadata.ConclusionStatus suggestedConclusionStatus;
@@ -73,6 +103,26 @@ public class ExperimentResponse extends Experiment {
      * 系统建议结论状态更新时间（由报告快照推导）
      */
     private LocalDateTime suggestedConclusionUpdatedAt;
+
+    /**
+     * 实验启动审批状态
+     */
+    private ExperimentMetadata.ApprovalStatus approvalStatus;
+
+    /**
+     * 审批操作人
+     */
+    private String approvalOperator;
+
+    /**
+     * 审批备注
+     */
+    private String approvalComment;
+
+    /**
+     * 审批状态更新时间
+     */
+    private LocalDateTime approvalUpdatedAt;
     
     @Data
     public static class GroupResponse {

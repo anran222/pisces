@@ -85,6 +85,10 @@ class ExperimentDemoServiceImplTest {
         verify(experimentService, times(2)).createExperiment(any(ExperimentCreateRequest.class));
         verify(experimentService).startExperiment("exp_pass");
         verify(experimentService).startExperiment("exp_fail");
+        verify(analysisService).drainEventPipeline("exp_pass", "demo-generator");
+        verify(analysisService).drainEventPipeline("exp_fail", "demo-generator");
+        verify(analysisService).replayEventPipeline("exp_pass", "demo-generator");
+        verify(analysisService).replayEventPipeline("exp_fail", "demo-generator");
         verify(trafficService, times(400)).assignGroup(anyString(), anyString(), anyMap());
         verify(dataService, atLeastOnce()).reportExposure(eq("exp_pass"), anyString(), anyMap());
         verify(dataService, atLeastOnce()).reportEvent(eq("exp_pass"), anyString(), eq("PRODUCT_VIEW"), anyString(), anyMap());
@@ -153,6 +157,7 @@ class ExperimentDemoServiceImplTest {
         assertThatThrownBy(() -> experimentDemoService.generateUsedPhoneDemo())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("达标实验");
+        verify(experimentService).deleteExperiment("exp_pass");
     }
 
     @Test
@@ -250,6 +255,32 @@ class ExperimentDemoServiceImplTest {
         assertThatThrownBy(() -> experimentDemoService.generateUsedPhoneDemo())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("未达标实验");
+        verify(experimentService).deleteExperiment("exp_pass");
+        verify(experimentService).deleteExperiment("exp_fail");
+    }
+
+    @Test
+    void generateUsedPhoneDemoShouldUseLocalDecisionWhenAiUnavailableForQualifiedDemo() {
+        when(experimentService.listExperiments()).thenReturn(List.of());
+        when(experimentService.createExperiment(any(ExperimentCreateRequest.class)))
+                .thenReturn(experiment("exp_pass", "二手手机售卖实验 [USED_PHONE_DEMO_PASS]"))
+                .thenReturn(experiment("exp_fail", "二手手机售卖实验 [USED_PHONE_DEMO_FAIL]"));
+        when(trafficService.assignGroup(anyString(), anyString(), anyMap()))
+                .thenAnswer(invocation -> String.valueOf(invocation.<Map<String, Object>>getArgument(2)
+                        .get("demoAssignedGroup")));
+        when(analysisService.getStatistics("exp_pass")).thenReturn(statistics("exp_pass", "D", 0.70, 0.82));
+        when(analysisService.getStatistics("exp_fail")).thenReturn(statistics("exp_fail", "D", 0.70, 0.705));
+        when(analysisService.shouldEarlyStop("exp_pass", "D", "A", 0.95)).thenReturn(Map.of("canStop", true));
+        when(analysisService.shouldEarlyStop("exp_fail", "D", "A", 0.95)).thenReturn(Map.of("canStop", false));
+        mockDemoGraduation("exp_pass", "CONTINUE", "PASS", null, List.of("AI_UNAVAILABLE"));
+        mockDemoGraduation("exp_fail", "CONTINUE", "PASS", null, List.of("AI_UNAVAILABLE"));
+
+        ExperimentDemoService.ExperimentDemoResult result = experimentDemoService.generateUsedPhoneDemo();
+
+        assertThat(result.getQualifiedExperiment().getCanGraduate()).isTrue();
+        assertThat(result.getQualifiedExperiment().getAiDecision()).isEqualTo("GRADUATE");
+        assertThat(result.getQualifiedExperiment().getAiSummary()).contains("本地确定性结论");
+        assertThat(result.getUnqualifiedExperiment().getCanGraduate()).isFalse();
     }
 
     @Test
@@ -280,6 +311,11 @@ class ExperimentDemoServiceImplTest {
     }
 
     private void mockDemoGraduation(String experimentId, String decision, String guardrailStatus, String summary) {
+        mockDemoGraduation(experimentId, decision, guardrailStatus, summary, List.of());
+    }
+
+    private void mockDemoGraduation(String experimentId, String decision, String guardrailStatus, String summary,
+                                    List<String> riskFlags) {
         ExperimentDecisionContext context = new ExperimentDecisionContext();
         context.setExperimentId(experimentId);
         context.setExperimentName("demo-" + experimentId);
@@ -289,6 +325,7 @@ class ExperimentDemoServiceImplTest {
         response.setDecision(decision);
         response.setGuardrailStatus(guardrailStatus);
         response.setSummary(summary);
+        response.setRiskFlags(riskFlags);
         when(aiDecisionService.decideGraduation(eq(context))).thenReturn(response);
     }
 

@@ -13,5 +13,6 @@ CREATE TABLE IF NOT EXISTS pisces_experiment_exposure (
     UNIQUE KEY uk_exposure_id (exposure_id),
     UNIQUE KEY uk_exposure_idempotency (idempotency_key),
     KEY idx_exposure_exp_group (experiment_id, group_id),
+    KEY idx_exposure_replay_scope (experiment_id, group_id, exposed_at),
     KEY idx_exposure_exp_visitor (experiment_id, visitor_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pisces实验曝光事实表';

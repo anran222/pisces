@@ -2,6 +2,7 @@ package com.pisces.service.service.impl;
 
 import com.pisces.common.model.ExperimentDecisionContext;
 import com.pisces.common.model.GroupConfigFieldDefinition;
+import com.pisces.common.model.Statistics;
 import com.pisces.common.request.AIDesignRequest;
 import com.pisces.common.response.AIDesignResponse;
 import com.pisces.common.response.AIDiagnosisResponse;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -282,9 +284,7 @@ class AIDecisionServiceImplTest {
                 decisionGuardrailEvaluator,
                 tongYiTextGenerationClient,
                 groupConfigSchemaValidator);
-        ExperimentDecisionContext context = new ExperimentDecisionContext();
-        context.setExperimentId("exp_001");
-        context.setExperimentName("新客首单优惠");
+        ExperimentDecisionContext context = decisionContextWithStatistics("exp_001");
         AIDiagnosisResponse expected = new AIDiagnosisResponse();
         expected.setDecisionType(DecisionType.DIAGNOSIS.getCode());
         expected.setGuardrailStatus(GuardrailStatus.PASS.getCode());
@@ -307,6 +307,14 @@ class AIDecisionServiceImplTest {
         assertSame(expected, response);
         assertThat(response.getGuardrailStatus()).isEqualTo(GuardrailStatus.BLOCKED.getCode());
         assertThat(response.getRecommendedActions().get(0).getExecutionMode()).isEqualTo("MANUAL_ONLY");
+        assertThat(response.getEvidence().getExperimentId()).isEqualTo("exp_001");
+        assertThat(response.getEvidence().getAnalysisReady()).isFalse();
+        assertThat(response.getEvidence().getHasSrm()).isTrue();
+        assertThat(response.getEvidence().getBlockingIssues()).containsExactly("样本量不足");
+        assertThat(response.getEvidence().getPrimaryMetricKey()).isEqualTo("PAYMENT_RATE");
+        assertThat(response.getEvidence().getLatestReportSnapshotVersion()).isEqualTo(7);
+        assertThat(response.getEvidence().getGroupMetricSnapshots())
+                .containsExactly("variant_a(实验组A): PAYMENT_RATE=0.31");
     }
 
     @Test
@@ -319,9 +327,7 @@ class AIDecisionServiceImplTest {
                 decisionGuardrailEvaluator,
                 tongYiTextGenerationClient,
                 groupConfigSchemaValidator);
-        ExperimentDecisionContext context = new ExperimentDecisionContext();
-        context.setExperimentId("exp_001");
-        context.setExperimentName("新客首单优惠");
+        ExperimentDecisionContext context = decisionContextWithStatistics("exp_001");
         AIGraduationDecisionResponse expected = new AIGraduationDecisionResponse();
         expected.setDecisionType(DecisionType.GRADUATION.getCode());
         expected.setGuardrailStatus(GuardrailStatus.PASS.getCode());
@@ -340,6 +346,14 @@ class AIDecisionServiceImplTest {
         assertSame(expected, response);
         assertThat(response.getGuardrailStatus()).isEqualTo(GuardrailStatus.BLOCKED.getCode());
         assertThat(response.getDecision()).isEqualTo("CONTINUE");
+        assertThat(response.getEvidence().getAnalysisReady()).isFalse();
+        assertThat(response.getEvidence().getSampleSizeReached()).isFalse();
+        assertThat(response.getEvidence().getRequiredSampleSizePerGroup()).isEqualTo(1000L);
+        assertThat(response.getEvidence().getBreachedGuardrails()).containsExactly("MARGIN_DROP");
+        assertThat(response.getEvidence().getLatestReportConclusionStatus()).isEqualTo("GRADUATED");
+        assertThat(response.getEvidence().getLatestReportBreachedGuardrails()).containsExactly("MARGIN_DROP");
+        assertThat(response.getEvidence().getDataQualityFacts())
+                .containsExactly("analysisReady=false", "blockingIssues=[样本量不足]");
     }
 
     @Test
@@ -372,6 +386,8 @@ class AIDecisionServiceImplTest {
         assertThat(response.getRiskFlags()).contains("SRM", "AI_UNAVAILABLE");
         assertThat(response.getRecommendedActions()).hasSize(1);
         assertThat(response.getRecommendedActions().get(0).getExecutionMode()).isEqualTo("MANUAL_ONLY");
+        assertThat(response.getEvidence().getExperimentId()).isEqualTo("exp_001");
+        assertThat(response.getEvidence().getBlockingIssues()).isEmpty();
     }
 
     @Test
@@ -403,6 +419,7 @@ class AIDecisionServiceImplTest {
         assertThat(response.getDecision()).isEqualTo("CONTINUE");
         assertThat(response.getGuardrailStatus()).isEqualTo(GuardrailStatus.PASS.getCode());
         assertThat(response.getRiskFlags()).contains("ANALYSIS_NOT_READY", "AI_UNAVAILABLE");
+        assertThat(response.getEvidence().getExperimentId()).isEqualTo("exp_001");
     }
 
     private GroupConfigFieldDefinition schemaField(String key,
@@ -415,5 +432,53 @@ class AIDecisionServiceImplTest {
         fieldDefinition.setValueType(valueType);
         fieldDefinition.setRequired(required);
         return fieldDefinition;
+    }
+
+    private ExperimentDecisionContext decisionContextWithStatistics(String experimentId) {
+        Statistics.ExperimentSummary summary = new Statistics.ExperimentSummary();
+        summary.setPrimaryMetricKey("PAYMENT_RATE");
+        summary.setBestPerformingGroup("variant_a");
+        summary.setBestPrimaryMetricValue(0.31D);
+        summary.setTotalAssignments(1200L);
+        summary.setTotalExposures(1100L);
+        summary.setTotalEvents(342L);
+        summary.setTotalVisitors(980L);
+        summary.setBreachedGuardrails(List.of("MARGIN_DROP"));
+
+        Statistics.DataQualityCheck dataQualityCheck = new Statistics.DataQualityCheck();
+        dataQualityCheck.setAnalysisReady(false);
+        dataQualityCheck.setHasSrm(true);
+        dataQualityCheck.setSrmPValue(0.001D);
+        dataQualityCheck.setSampleSizeReached(false);
+        dataQualityCheck.setRequiredSampleSizePerGroup(1000L);
+        dataQualityCheck.setBlockingIssues(List.of("样本量不足"));
+        dataQualityCheck.setWarnings(List.of("曝光数据延迟"));
+
+        Statistics statistics = new Statistics();
+        statistics.setExperimentId(experimentId);
+        statistics.setExperimentName("新客首单优惠");
+        statistics.setExperimentStatus("RUNNING");
+        statistics.setSummary(summary);
+        statistics.setDataQualityCheck(dataQualityCheck);
+
+        ExperimentDecisionContext context = new ExperimentDecisionContext();
+        context.setExperimentId(experimentId);
+        context.setExperimentName("新客首单优惠");
+        context.setExperimentStatus("RUNNING");
+        context.setStatistics(statistics);
+        context.setStatisticsFacts(List.of("primaryMetricKey=PAYMENT_RATE"));
+        context.setGroupMetricSnapshots(List.of("variant_a(实验组A): PAYMENT_RATE=0.31"));
+        context.setDataQualityFacts(List.of("analysisReady=false", "blockingIssues=[样本量不足]"));
+        context.setLatestReportSnapshotVersion(7);
+        context.setLatestReportGeneratedAt(LocalDateTime.of(2026, 3, 21, 10, 0));
+        context.setLatestReportConclusionStatus("GRADUATED");
+        context.setLatestReportAnalysisReady(false);
+        context.setLatestReportHasSrm(true);
+        context.setLatestReportPrimaryMetricKey("PAYMENT_RATE");
+        context.setLatestReportBestPerformingGroup("variant_a");
+        context.setLatestReportWinningVariant("variant_a");
+        context.setLatestReportBreachedGuardrails(List.of("MARGIN_DROP"));
+        context.setReportSnapshotFacts(List.of("latestReportSnapshotVersion=7", "latestReportConclusionStatus=GRADUATED"));
+        return context;
     }
 }

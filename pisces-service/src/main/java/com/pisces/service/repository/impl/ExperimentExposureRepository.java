@@ -29,7 +29,18 @@ public class ExperimentExposureRepository implements com.pisces.service.reposito
 
     @Override
     public void save(ExperimentExposure exposure) {
-        experimentExposureMapper.insert(buildExperimentExposureEntity(exposure));
+        saveIfAbsent(exposure);
+    }
+
+    @Override
+    public boolean saveIfAbsent(ExperimentExposure exposure) {
+        return experimentExposureMapper.insertIgnore(buildExperimentExposureEntity(exposure)) > 0;
+    }
+
+    @Override
+    public ExperimentExposure findByIdempotencyKey(String idempotencyKey) {
+        ExperimentExposureEntity entity = experimentExposureMapper.selectByIdempotencyKey(idempotencyKey);
+        return entity == null ? null : buildExperimentExposure(entity);
     }
 
     @Override
@@ -38,8 +49,65 @@ public class ExperimentExposureRepository implements com.pisces.service.reposito
     }
 
     @Override
+    public long countByReplayScope(String experimentId, String groupId, LocalDateTime startTime,
+                                   LocalDateTime endTime) {
+        return experimentExposureMapper.countByReplayScope(experimentId, groupId, startTime, endTime);
+    }
+
+    @Override
+    public List<ExperimentExposure> listByReplayScope(String experimentId, String groupId,
+                                                      LocalDateTime startTime, LocalDateTime endTime) {
+        return experimentExposureMapper.selectByReplayScope(experimentId, groupId, startTime, endTime)
+                .stream()
+                .map(this::buildExperimentExposure)
+                .toList();
+    }
+
+    @Override
+    public List<ExperimentExposure> listByReplayScopeBatch(String experimentId, String groupId,
+                                                           LocalDateTime startTime, LocalDateTime endTime,
+                                                           long offset, int limit) {
+        return experimentExposureMapper.selectByReplayScopeBatch(experimentId, groupId, startTime, endTime,
+                        offset, limit)
+                .stream()
+                .map(this::buildExperimentExposure)
+                .toList();
+    }
+
+    @Override
+    public List<ExperimentExposure> listUnmaterializedByReplayScope(String experimentId, String groupId,
+                                                                    LocalDateTime startTime,
+                                                                    LocalDateTime endTime) {
+        return experimentExposureMapper.selectUnmaterializedByReplayScope(experimentId, groupId, startTime, endTime)
+                .stream()
+                .map(this::buildExperimentExposure)
+                .toList();
+    }
+
+    @Override
+    public List<ExperimentExposure> listUnmaterializedByReplayScopeBatch(String experimentId, String groupId,
+                                                                         LocalDateTime startTime,
+                                                                         LocalDateTime endTime,
+                                                                         long offset, int limit) {
+        return experimentExposureMapper.selectUnmaterializedByReplayScopeBatch(experimentId, groupId, startTime,
+                        endTime, offset, limit)
+                .stream()
+                .map(this::buildExperimentExposure)
+                .toList();
+    }
+
+    @Override
     public List<ExperimentExposure> listByExperimentIdAndGroupId(String experimentId, String groupId) {
         return experimentExposureMapper.selectByExperimentIdAndGroupId(experimentId, groupId).stream()
+                .map(this::buildExperimentExposure)
+                .toList();
+    }
+
+    @Override
+    public List<ExperimentExposure> listByExperimentIdAndGroupIdBatch(String experimentId, String groupId,
+                                                                      long offset, int limit) {
+        return experimentExposureMapper.selectByExperimentIdAndGroupIdBatch(experimentId, groupId, offset, limit)
+                .stream()
                 .map(this::buildExperimentExposure)
                 .toList();
     }

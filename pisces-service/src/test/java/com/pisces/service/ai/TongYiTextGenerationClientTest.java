@@ -1,6 +1,7 @@
 package com.pisces.service.ai;
 
 import com.alibaba.dashscope.aigc.generation.GenerationOutput;
+import com.alibaba.dashscope.aigc.generation.GenerationParam;
 import com.alibaba.dashscope.aigc.generation.GenerationResult;
 import com.alibaba.dashscope.common.Message;
 import com.pisces.common.enums.ResponseCode;
@@ -77,6 +78,90 @@ class TongYiTextGenerationClientTest {
     }
 
     @Test
+    void shouldUseLatestProductionDashScopeModelByDefault() {
+        TongYiConfig tongYiConfig = new TongYiConfig();
+        tongYiConfig.setEnabled(true);
+        tongYiConfig.setApiKey("test-api-key");
+        CapturingTongYiTextGenerationClient client = new CapturingTongYiTextGenerationClient(tongYiConfig);
+        client.dashScopeResult = newGenerationResultWithText("生产模型返回");
+
+        String text = client.generateText("system", "user", "AI诊断");
+
+        assertThat(text).isEqualTo("生产模型返回");
+        assertThat(client.dashScopeModel).isEqualTo("qwen3.7-max");
+        assertThat(client.dashScopeBaseUrl).isEqualTo("https://dashscope.aliyuncs.com/api/v1");
+        assertThat(client.openAiModel).isNull();
+        assertThat(client.getLastInvocationSummary())
+                .extracting(
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::primaryModel,
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::selectedModel,
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::selectedApiMode,
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::fallbackUsed)
+                .containsExactly("qwen3.7-max", "qwen3.7-max", "dashscope", false);
+    }
+
+    @Test
+    void shouldUseTokenPlanPreviewModelWhenExplicitlyConfigured() {
+        TongYiConfig tongYiConfig = new TongYiConfig();
+        tongYiConfig.setEnabled(true);
+        tongYiConfig.setApiKey("test-api-key");
+        tongYiConfig.setModel(TongYiConfig.PREVIEW_TEXT_MODEL);
+        tongYiConfig.setApiMode(TongYiConfig.OPENAI_COMPATIBLE_API_MODE);
+        tongYiConfig.setBaseUrl(TongYiConfig.TOKEN_PLAN_COMPATIBLE_BASE_URL);
+        CapturingTongYiTextGenerationClient client = new CapturingTongYiTextGenerationClient(tongYiConfig);
+        client.openAiResponseBody = """
+                {"choices":[{"message":{"content":"预览模型返回"}}]}
+                """;
+
+        String text = client.generateText("system", "user", "AI诊断");
+
+        assertThat(text).isEqualTo("预览模型返回");
+        assertThat(client.openAiModel).isEqualTo("qwen3.8-max-preview");
+        assertThat(client.openAiBaseUrl).isEqualTo("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1");
+        assertThat(client.dashScopeCalled).isFalse();
+        assertThat(client.getLastInvocationSummary())
+                .extracting(
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::primaryModel,
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::selectedModel,
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::selectedApiMode,
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::fallbackUsed)
+                .containsExactly("qwen3.8-max-preview", "qwen3.8-max-preview", "openai-compatible", false);
+    }
+
+    @Test
+    void shouldFallbackToProductionDashScopeModelWhenPreviewModelFails() {
+        TongYiConfig tongYiConfig = new TongYiConfig();
+        tongYiConfig.setEnabled(true);
+        tongYiConfig.setApiKey("test-api-key");
+        tongYiConfig.setModel(TongYiConfig.PREVIEW_TEXT_MODEL);
+        tongYiConfig.setApiMode(TongYiConfig.OPENAI_COMPATIBLE_API_MODE);
+        tongYiConfig.setBaseUrl(TongYiConfig.TOKEN_PLAN_COMPATIBLE_BASE_URL);
+        CapturingTongYiTextGenerationClient client = new CapturingTongYiTextGenerationClient(tongYiConfig);
+        client.openAiException = new IllegalStateException("preview access denied");
+        client.dashScopeResult = newGenerationResultWithText("稳定模型返回");
+
+        String text = client.generateText("system", "user", "AI诊断");
+
+        assertThat(text).isEqualTo("稳定模型返回");
+        assertThat(client.openAiModel).isEqualTo("qwen3.8-max-preview");
+        assertThat(client.dashScopeModel).isEqualTo("qwen3.7-max");
+        assertThat(client.dashScopeBaseUrl).isEqualTo("https://dashscope.aliyuncs.com/api/v1");
+        assertThat(client.getLastInvocationSummary())
+                .extracting(
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::primaryModel,
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::selectedModel,
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::selectedApiMode,
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::fallbackUsed,
+                        TongYiTextGenerationClient.TextGenerationInvocationSummary::attemptedModels)
+                .containsExactly(
+                        "qwen3.8-max-preview",
+                        "qwen3.7-max",
+                        "dashscope",
+                        true,
+                        java.util.List.of("qwen3.8-max-preview", "qwen3.7-max"));
+    }
+
+    @Test
     void shouldExtractTextFromMessageChoiceOutput() {
         TongYiConfig tongYiConfig = new TongYiConfig();
         tongYiConfig.setEnabled(true);
@@ -98,6 +183,15 @@ class TongYiTextGenerationClientTest {
         assertThat(text).isEqualTo("生成的标题内容");
     }
 
+    private GenerationResult newGenerationResultWithText(String text) {
+        GenerationOutput output = new GenerationOutput();
+        output.setText(text);
+
+        GenerationResult result = newGenerationResult();
+        result.setOutput(output);
+        return result;
+    }
+
     private GenerationResult newGenerationResult() {
         try {
             Constructor<GenerationResult> constructor = GenerationResult.class.getDeclaredConstructor();
@@ -116,6 +210,41 @@ class TongYiTextGenerationClientTest {
             return constructor.newInstance(output);
         } catch (Exception exception) {
             throw new IllegalStateException("无法构造 GenerationOutput.Choice 测试对象", exception);
+        }
+    }
+
+    private static class CapturingTongYiTextGenerationClient extends TongYiTextGenerationClient {
+
+        private String openAiResponseBody;
+        private Exception openAiException;
+        private String openAiModel;
+        private String openAiBaseUrl;
+        private GenerationResult dashScopeResult;
+        private boolean dashScopeCalled;
+        private String dashScopeModel;
+        private String dashScopeBaseUrl;
+
+        private CapturingTongYiTextGenerationClient(TongYiConfig tongYiConfig) {
+            super(tongYiConfig);
+        }
+
+        @Override
+        String executeOpenAiCompatible(
+                String model, String baseUrl, String systemPrompt, String userPrompt) throws Exception {
+            this.openAiModel = model;
+            this.openAiBaseUrl = baseUrl;
+            if (openAiException != null) {
+                throw openAiException;
+            }
+            return openAiResponseBody;
+        }
+
+        @Override
+        GenerationResult executeGeneration(GenerationParam param, String baseHttpUrl) {
+            this.dashScopeCalled = true;
+            this.dashScopeModel = param.getModel();
+            this.dashScopeBaseUrl = baseHttpUrl;
+            return dashScopeResult;
         }
     }
 }

@@ -1,0 +1,558 @@
+{
+  "afterStatistics": {
+    "analysisReady": true,
+    "blockingIssues": [],
+    "experimentId": "exp_price_001",
+    "summary": {
+      "totalAssignments": 120,
+      "totalEvents": 80,
+      "totalExposures": 40,
+      "totalVisitors": 110
+    }
+  },
+  "afterStatus": {
+    "deadCount": 0,
+    "doneCount": 120,
+    "experimentId": "exp_price_001",
+    "generatedAt": "2026-07-30T06:00:05Z",
+    "healthy": true,
+    "maxPendingSeconds": 0,
+    "pendingCount": 0,
+    "processingCount": 0,
+    "rejectedCount": 0,
+    "retryCount": 0,
+    "status": "DONE",
+    "totalCount": 120,
+    "unfinishedCount": 0
+  },
+  "apiBaseUrl": "http://localhost:9990/api",
+  "beforeStatistics": {
+    "analysisReady": true,
+    "blockingIssues": [],
+    "experimentId": "exp_price_001",
+    "summary": {
+      "totalAssignments": 120,
+      "totalEvents": 80,
+      "totalExposures": 40,
+      "totalVisitors": 110
+    }
+  },
+  "beforeStatus": {
+    "deadCount": 0,
+    "doneCount": 120,
+    "experimentId": "exp_price_001",
+    "generatedAt": "2026-07-30T06:00:00Z",
+    "healthy": true,
+    "maxPendingSeconds": 0,
+    "pendingCount": 0,
+    "processingCount": 0,
+    "rejectedCount": 0,
+    "retryCount": 0,
+    "status": "DONE",
+    "totalCount": 120,
+    "unfinishedCount": 0
+  },
+  "executeReplay": false,
+  "experimentId": "exp_price_001",
+  "gates": [
+    {
+      "actual": true,
+      "details": {
+        "baseCode": 200,
+        "baseMessage": "success",
+        "error": null,
+        "httpStatus": 200,
+        "method": "GET",
+        "ok": true,
+        "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/event-pipeline"
+      },
+      "name": "before_status_request_success",
+      "status": "PASS",
+      "threshold": true
+    },
+    {
+      "actual": true,
+      "details": {
+        "reason": "PISCES_EVENT_REPLAY_REQUIRE_HEALTHY_BEFORE=false"
+      },
+      "name": "before_pipeline_healthy",
+      "status": "SKIP",
+      "threshold": true
+    },
+    {
+      "actual": true,
+      "details": {
+        "baseCode": 200,
+        "baseMessage": "success",
+        "error": null,
+        "httpStatus": 200,
+        "method": "GET",
+        "ok": true,
+        "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/statistics"
+      },
+      "name": "before_statistics_request_success",
+      "status": "PASS",
+      "threshold": true
+    },
+    {
+      "actual": true,
+      "details": {
+        "baseCode": 200,
+        "baseMessage": "success",
+        "error": null,
+        "httpStatus": 200,
+        "method": "POST",
+        "ok": true,
+        "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/events/replay/plan"
+      },
+      "name": "replay_plan_request_success",
+      "status": "PASS",
+      "threshold": true
+    },
+    {
+      "actual": 120.0,
+      "details": {
+        "reason": "PISCES_EVENT_REPLAY_MAX_AFFECTED_PLAN is unset"
+      },
+      "name": "replay_plan_affected_count",
+      "status": "SKIP",
+      "threshold": null
+    },
+    {
+      "actual": 2.0,
+      "details": {
+        "reason": "PISCES_EVENT_REPLAY_REPAIR_MATERIALIZATION=true; threshold is checked after repair."
+      },
+      "name": "replay_plan_unmaterialized_count",
+      "status": "SKIP",
+      "threshold": "<= 0"
+    },
+    {
+      "actual": {
+        "maxSegmentUnmaterializedCount": 2,
+        "segmentCount": 2,
+        "segmentRecoverySupported": true
+      },
+      "name": "replay_plan_segments_generated",
+      "status": "PASS",
+      "threshold": {
+        "segmentCount": "> 0",
+        "segmentRecoverySupported": true
+      }
+    },
+    {
+      "actual": true,
+      "details": {
+        "baseCode": 200,
+        "baseMessage": "success",
+        "error": null,
+        "httpStatus": 200,
+        "method": "POST",
+        "ok": true,
+        "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/events/replay/materialization/repair/segments/1?operator=event-replay-audit"
+      },
+      "name": "repair_materialization_request_success",
+      "status": "PASS",
+      "threshold": true
+    },
+    {
+      "actual": {
+        "operation": "REPAIR_MATERIALIZATION",
+        "status": "SUCCESS"
+      },
+      "name": "repair_materialization_operation_success",
+      "status": "PASS",
+      "threshold": {
+        "operation": "REPAIR_MATERIALIZATION",
+        "status": "SUCCESS"
+      }
+    },
+    {
+      "actual": true,
+      "details": {
+        "baseCode": 200,
+        "baseMessage": "success",
+        "error": null,
+        "httpStatus": 200,
+        "method": "POST",
+        "ok": true,
+        "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/events/replay/plan"
+      },
+      "name": "post_repair_replay_plan_request_success",
+      "status": "PASS",
+      "threshold": true
+    },
+    {
+      "actual": 0.0,
+      "name": "post_repair_replay_plan_unmaterialized_count",
+      "status": "PASS",
+      "threshold": "<= 0"
+    },
+    {
+      "actual": false,
+      "details": {
+        "reason": "Set PISCES_EVENT_REPLAY_EXECUTE=true to rebuild derived data."
+      },
+      "name": "replay_execution",
+      "status": "SKIP",
+      "threshold": true
+    },
+    {
+      "actual": true,
+      "details": {
+        "baseCode": 200,
+        "baseMessage": "success",
+        "error": null,
+        "httpStatus": 200,
+        "method": "GET",
+        "ok": true,
+        "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/event-pipeline"
+      },
+      "name": "after_status_request_success",
+      "status": "PASS",
+      "threshold": true
+    },
+    {
+      "actual": true,
+      "name": "after_pipeline_healthy",
+      "status": "PASS",
+      "threshold": true
+    },
+    {
+      "actual": 0.0,
+      "name": "after_unfinished_count",
+      "status": "PASS",
+      "threshold": "<= 0"
+    },
+    {
+      "actual": 0.0,
+      "name": "after_retry_count",
+      "status": "PASS",
+      "threshold": "<= 0"
+    },
+    {
+      "actual": 0.0,
+      "name": "after_dead_count",
+      "status": "PASS",
+      "threshold": "<= 0"
+    },
+    {
+      "actual": 0.0,
+      "name": "after_rejected_count",
+      "status": "PASS",
+      "threshold": "<= 0"
+    },
+    {
+      "actual": 0.0,
+      "name": "after_max_pending_seconds",
+      "status": "PASS",
+      "threshold": "<= 300"
+    },
+    {
+      "actual": true,
+      "details": {
+        "baseCode": 200,
+        "baseMessage": "success",
+        "error": null,
+        "httpStatus": 200,
+        "method": "GET",
+        "ok": true,
+        "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/statistics"
+      },
+      "name": "after_statistics_request_success",
+      "status": "PASS",
+      "threshold": true
+    },
+    {
+      "actual": {
+        "after": 120.0,
+        "before": 120.0
+      },
+      "name": "statistics_totalAssignments_not_decreased",
+      "status": "PASS",
+      "threshold": "after >= before"
+    },
+    {
+      "actual": {
+        "after": 40.0,
+        "before": 40.0
+      },
+      "name": "statistics_totalExposures_not_decreased",
+      "status": "PASS",
+      "threshold": "after >= before"
+    },
+    {
+      "actual": {
+        "after": 80.0,
+        "before": 80.0
+      },
+      "name": "statistics_totalEvents_not_decreased",
+      "status": "PASS",
+      "threshold": "after >= before"
+    }
+  ],
+  "generatedAt": "2026-07-30T06:00:06Z",
+  "operator": "event-replay-audit",
+  "repairMaterialization": true,
+  "repairSegmentIndex": 1,
+  "replayScopeRequest": {
+    "endTime": "2026-07-30T01:00:00",
+    "eventTypes": [
+      "PAY_SUCCESS"
+    ],
+    "includeEvents": true,
+    "includeExposures": true,
+    "segmentCount": 2,
+    "startTime": "2026-07-30T00:00:00"
+  },
+  "repairMaterializationOperation": {
+    "affectedCount": 60,
+    "eventCount": 40,
+    "experimentId": "exp_price_001",
+    "exposureCount": 20,
+    "groupCount": 2,
+    "mabRewardCount": 40,
+    "message": "分段 segment-001 缺失派生物化账本已修复",
+    "operatedAt": "2026-07-30T06:00:03Z",
+    "operation": "REPAIR_MATERIALIZATION",
+    "operator": "event-replay-audit",
+    "status": "SUCCESS"
+  },
+  "replayJob": null,
+  "replayJobPollSummary": null,
+  "replayOperation": null,
+  "replayPlan": {
+    "affectedCount": 120,
+    "eventCount": 80,
+    "experimentId": "exp_price_001",
+    "exposureCount": 40,
+    "fullDerivedReplay": false,
+    "generatedAt": "2026-07-30T06:00:02Z",
+    "groupCount": 2,
+    "groups": [
+      {
+        "affectedCount": 60,
+        "eventCount": 40,
+        "exposureCount": 20,
+        "groupId": "control",
+        "groupName": "对照组",
+        "materializedCount": 60,
+        "materializedEventCount": 40,
+        "materializedExposureCount": 20,
+        "unmaterializedCount": 0,
+        "unmaterializedEventCount": 0,
+        "unmaterializedExposureCount": 0
+      },
+      {
+        "affectedCount": 60,
+        "eventCount": 40,
+        "exposureCount": 20,
+        "groupId": "variant",
+        "groupName": "实验组",
+        "materializedCount": 58,
+        "materializedEventCount": 39,
+        "materializedExposureCount": 19,
+        "unmaterializedCount": 2,
+        "unmaterializedEventCount": 1,
+        "unmaterializedExposureCount": 1
+      }
+    ],
+    "materializedCount": 118,
+    "materializedEventCount": 79,
+    "materializedExposureCount": 39,
+    "maxSegmentAffectedCount": 60,
+    "maxSegmentUnmaterializedCount": 2,
+    "replayMode": "FILTERED_DERIVED_COPY_REPLAY",
+    "requestedSegmentCount": 2,
+    "segmentCount": 2,
+    "segmentRecoverySupported": true,
+    "segments": [
+      {
+        "affectedCount": 60,
+        "endTime": "2026-07-30T00:30:00",
+        "eventCount": 40,
+        "exposureCount": 20,
+        "materializedCount": 60,
+        "recommendedAction": "NONE",
+        "segmentIndex": 0,
+        "segmentKey": "segment-000",
+        "startTime": "2026-07-30T00:00:00",
+        "unmaterializedCount": 0
+      },
+      {
+        "affectedCount": 60,
+        "endTime": "2026-07-30T01:00:00",
+        "eventCount": 40,
+        "exposureCount": 20,
+        "materializedCount": 58,
+        "recommendedAction": "REPAIR_MATERIALIZATION_SEGMENT",
+        "segmentIndex": 1,
+        "segmentKey": "segment-001",
+        "startTime": "2026-07-30T00:30:00.000000001",
+        "unmaterializedCount": 2
+      }
+    ],
+    "unmaterializedCount": 2,
+    "unmaterializedEventCount": 1,
+    "unmaterializedExposureCount": 1
+  },
+  "replayPlanAfterRepair": {
+    "affectedCount": 120,
+    "eventCount": 80,
+    "experimentId": "exp_price_001",
+    "exposureCount": 40,
+    "fullDerivedReplay": false,
+    "generatedAt": "2026-07-30T06:00:04Z",
+    "groupCount": 2,
+    "groups": [
+      {
+        "affectedCount": 60,
+        "eventCount": 40,
+        "exposureCount": 20,
+        "groupId": "control",
+        "groupName": "对照组",
+        "materializedCount": 60,
+        "materializedEventCount": 40,
+        "materializedExposureCount": 20,
+        "unmaterializedCount": 0,
+        "unmaterializedEventCount": 0,
+        "unmaterializedExposureCount": 0
+      },
+      {
+        "affectedCount": 60,
+        "eventCount": 40,
+        "exposureCount": 20,
+        "groupId": "variant",
+        "groupName": "实验组",
+        "materializedCount": 60,
+        "materializedEventCount": 40,
+        "materializedExposureCount": 20,
+        "unmaterializedCount": 0,
+        "unmaterializedEventCount": 0,
+        "unmaterializedExposureCount": 0
+      }
+    ],
+    "materializedCount": 120,
+    "materializedEventCount": 80,
+    "materializedExposureCount": 40,
+    "maxSegmentAffectedCount": 60,
+    "maxSegmentUnmaterializedCount": 0,
+    "replayMode": "FILTERED_DERIVED_COPY_REPLAY",
+    "requestedSegmentCount": 2,
+    "segmentCount": 2,
+    "segmentRecoverySupported": true,
+    "segments": [
+      {
+        "affectedCount": 60,
+        "endTime": "2026-07-30T00:30:00",
+        "eventCount": 40,
+        "exposureCount": 20,
+        "materializedCount": 60,
+        "recommendedAction": "NONE",
+        "segmentIndex": 0,
+        "segmentKey": "segment-000",
+        "startTime": "2026-07-30T00:00:00",
+        "unmaterializedCount": 0
+      },
+      {
+        "affectedCount": 60,
+        "endTime": "2026-07-30T01:00:00",
+        "eventCount": 40,
+        "exposureCount": 20,
+        "materializedCount": 60,
+        "recommendedAction": "NONE",
+        "segmentIndex": 1,
+        "segmentKey": "segment-001",
+        "startTime": "2026-07-30T00:30:00.000000001",
+        "unmaterializedCount": 0
+      }
+    ],
+    "unmaterializedCount": 0,
+    "unmaterializedEventCount": 0,
+    "unmaterializedExposureCount": 0
+  },
+  "requests": {
+    "afterStatistics": {
+      "baseCode": 200,
+      "baseMessage": "success",
+      "error": null,
+      "httpStatus": 200,
+      "method": "GET",
+      "ok": true,
+      "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/statistics"
+    },
+    "afterStatus": {
+      "baseCode": 200,
+      "baseMessage": "success",
+      "error": null,
+      "httpStatus": 200,
+      "method": "GET",
+      "ok": true,
+      "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/event-pipeline"
+    },
+    "beforeStatistics": {
+      "baseCode": 200,
+      "baseMessage": "success",
+      "error": null,
+      "httpStatus": 200,
+      "method": "GET",
+      "ok": true,
+      "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/statistics"
+    },
+    "beforeStatus": {
+      "baseCode": 200,
+      "baseMessage": "success",
+      "error": null,
+      "httpStatus": 200,
+      "method": "GET",
+      "ok": true,
+      "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/event-pipeline"
+    },
+    "repairMaterialization": {
+      "baseCode": 200,
+      "baseMessage": "success",
+      "error": null,
+      "httpStatus": 200,
+      "method": "POST",
+      "ok": true,
+      "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/events/replay/materialization/repair/segments/1?operator=event-replay-audit"
+    },
+    "replay": null,
+    "replayJob": null,
+    "replayPlan": {
+      "baseCode": 200,
+      "baseMessage": "success",
+      "error": null,
+      "httpStatus": 200,
+      "method": "POST",
+      "ok": true,
+      "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/events/replay/plan"
+    },
+    "replayPlanAfterRepair": {
+      "baseCode": 200,
+      "baseMessage": "success",
+      "error": null,
+      "httpStatus": 200,
+      "method": "POST",
+      "ok": true,
+      "url": "http://localhost:9990/api/analysis/experiment/exp_price_001/events/replay/plan"
+    },
+    "retryDead": null
+  },
+  "retryDeadFirst": false,
+  "retryOperation": null,
+  "status": "PASS",
+  "summaryType": "pisces-event-pipeline-replay-audit",
+  "summaryVersion": 1,
+  "thresholds": {
+    "maxDeadAfter": 0,
+    "maxPendingSeconds": 300,
+    "maxRejectedAfter": 0,
+    "maxRetryAfter": 0,
+    "maxUnfinishedAfter": 0,
+    "maxUnmaterializedPlan": 0,
+    "minRebuiltFacts": 0,
+    "replayJobPollIntervalSeconds": 2,
+    "replayJobTimeoutSeconds": 300
+  }
+}

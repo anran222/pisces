@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.ExperimentApprovalVoteMapper">
+
+    <resultMap id="experimentApprovalVoteEntityResultMap"
+               type="com.pisces.service.entity.ExperimentApprovalVoteEntity">
+        <id column="id" property="id"/>
+        <result column="experiment_id" property="experimentId"/>
+        <result column="approval_type" property="approvalType"/>
+        <result column="draft_version" property="draftVersion"/>
+        <result column="approval_status" property="approvalStatus"/>
+        <result column="approval_operator" property="approvalOperator"/>
+        <result column="approval_comment" property="approvalComment"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <insert id="upsert" parameterType="com.pisces.service.entity.ExperimentApprovalVoteEntity">
+        INSERT INTO pisces_experiment_approval_vote
+            (experiment_id, approval_type, draft_version, approval_status, approval_operator, approval_comment)
+        VALUES
+            (#{entity.experimentId}, #{entity.approvalType}, #{entity.draftVersion}, #{entity.approvalStatus},
+             #{entity.approvalOperator}, #{entity.approvalComment})
+        ON DUPLICATE KEY UPDATE
+            approval_status = VALUES(approval_status),
+            approval_comment = VALUES(approval_comment),
+            updated_at = CURRENT_TIMESTAMP
+    </insert>
+
+    <select id="listByApprovalTask" resultMap="experimentApprovalVoteEntityResultMap">
+        SELECT id, experiment_id, approval_type, draft_version, approval_status, approval_operator,
+               approval_comment, created_at, updated_at
+        FROM pisces_experiment_approval_vote
+        WHERE experiment_id = #{experimentId}
+          AND approval_type = #{approvalType}
+          AND draft_version = #{draftVersion}
+        ORDER BY updated_at ASC, id ASC
+    </select>
+</mapper>

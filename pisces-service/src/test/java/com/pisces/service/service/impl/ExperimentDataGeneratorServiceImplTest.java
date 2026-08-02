@@ -74,11 +74,11 @@ class ExperimentDataGeneratorServiceImplTest {
     }
 
     @Test
-    void generateDataForExistingExperimentShouldUseConfiguredEventDefinitions() {
+    void generateDataForExistingExperimentShouldSupportConfiguredGroupsAndEventDefinitions() {
         ExperimentMetadata metadata = new ExperimentMetadata();
         Map<String, ExperimentGroup> groups = new LinkedHashMap<>();
-        groups.put("A", group("A"));
-        groups.put("B", group("B"));
+        groups.put("control", group("control"));
+        groups.put("trust_value", group("trust_value"));
         metadata.setGroups(groups);
         metadata.setEventDefinitions(List.of(
                 eventDefinition("PRODUCT_VIEW", true),
@@ -90,7 +90,7 @@ class ExperimentDataGeneratorServiceImplTest {
 
         AtomicInteger sequence = new AtomicInteger();
         when(trafficService.assignGroup(eq("exp_existing"), anyString()))
-                .thenAnswer(invocation -> sequence.getAndIncrement() % 2 == 0 ? "A" : "B");
+                .thenAnswer(invocation -> sequence.getAndIncrement() % 2 == 0 ? "control" : "trust_value");
 
         experimentDataGeneratorService.generateDataForExistingExperiment("exp_existing", 1, 2);
 

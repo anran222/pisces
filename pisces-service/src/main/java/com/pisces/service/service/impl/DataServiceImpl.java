@@ -1,22 +1,26 @@
 package com.pisces.service.service.impl;
 
+import com.pisces.common.enums.ResponseCode;
 import com.pisces.common.model.Event;
 import com.pisces.common.model.ExperimentEventFact;
 import com.pisces.common.model.ExperimentExposure;
 import com.pisces.common.model.ExperimentMetadata;
-import com.pisces.common.model.MetricDefinition;
+import com.pisces.service.exception.BusinessException;
+import com.pisces.service.event.EventInboxConstants;
+import com.pisces.service.event.EventInboxRecord;
+import com.pisces.service.repository.EventInboxRepository;
 import com.pisces.service.repository.ExperimentAssignmentRepository;
 import com.pisces.service.repository.ExperimentEventRepository;
 import com.pisces.service.repository.ExperimentExposureRepository;
+import com.pisces.service.security.ApiKeyContextHolder;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.DataService;
 import com.pisces.service.service.IdentityService;
-import com.pisces.service.service.MultiArmedBanditService;
 import com.pisces.service.service.TrafficService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
@@ -24,7 +28,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 
 /**
  * 数据收集服务实现
@@ -35,9 +38,6 @@ public class DataServiceImpl implements DataService {
     
     @Autowired
     private TrafficService trafficService;
-    
-    @Autowired(required = false)
-    private MultiArmedBanditService mabService;
 
     @Autowired(required = false)
     private IdentityService identityService;
@@ -53,19 +53,9 @@ public class DataServiceImpl implements DataService {
 
     @Autowired
     private ExperimentEventRepository experimentEventRepository;
-    
+
     @Autowired
-    private RedisTemplate<String, Object> redisTemplate;
-    
-    // Redis Key前缀
-    private static final String EVENT_STORE_PREFIX = "pisces:event:store:";  // 事件存储
-    private static final String EVENT_COUNTER_PREFIX = "pisces:event:counter:";  // 事件计数器
-    private static final String VISITOR_SET_PREFIX = "pisces:visitor:set:";  // 访客集合
-    private static final String EXPOSURE_STORE_PREFIX = "pisces:exposure:store:";
-    private static final String EXPOSURE_SET_PREFIX = "pisces:exposure:set:";
-    
-    // 数据过期时间（天）
-    private static final long DATA_EXPIRE_DAYS = 90;
+    private EventInboxRepository eventInboxRepository;
     
     /**
      * 上报事件（使用visitorId，可以是userId、设备ID、会话ID等）
@@ -74,86 +64,44 @@ public class DataServiceImpl implements DataService {
     @Override
     public void reportEvent(String experimentId, String visitorId, String eventType,
                            String eventName, Map<String, Object> properties) {
+        assertCanAccessExperiment(experimentId);
         String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
         String groupId = trafficService.getUserGroup(experimentId, canonicalVisitorId);
+        String normalizedEventType = normalizeEventType(eventType);
+        LocalDateTime eventTime = resolveEventTimestamp(properties);
+        EventInboxRecord inboxRecord = buildEventInboxRecord(experimentId, canonicalVisitorId, groupId,
+                normalizedEventType, eventName, properties, eventTime);
         if (groupId == null) {
+            inboxRecord.setStatus(EventInboxConstants.STATUS_REJECTED);
+            inboxRecord.setLastError("访客不在实验中");
+            inboxRecord.setProcessedAt(eventTime);
+            eventInboxRepository.saveIfAbsent(inboxRecord);
             log.warn("访客 {} 不在实验 {} 中", canonicalVisitorId, experimentId);
             return;
         }
-        String normalizedEventType = normalizeEventType(eventType);
-
-        Event event = new Event();
-        event.setEventId("evt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8));
-        event.setExperimentId(experimentId);
-        event.setUserId(canonicalVisitorId);
-        event.setGroupId(groupId);
-        event.setEventType(normalizedEventType);
-        event.setEventName(eventName);
-        event.setProperties(properties);
-        event.setTimestamp(resolveEventTimestamp(properties));
-
-        experimentEventRepository.save(buildExperimentEventFact(event, properties));
-
-        String eventStoreKey = EVENT_STORE_PREFIX + experimentId + ":" + groupId;
-        redisTemplate.opsForList().rightPush(eventStoreKey, event);
-        redisTemplate.expire(eventStoreKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
-
-        updateEventCounter(experimentId, groupId, normalizedEventType);
-
-        String visitorSetKey = VISITOR_SET_PREFIX + experimentId + ":" + groupId;
-        redisTemplate.opsForSet().add(visitorSetKey, canonicalVisitorId);
-        redisTemplate.expire(visitorSetKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
-
-        if (mabService != null && shouldUpdateMabReward(experimentId, normalizedEventType)) {
-            try {
-                boolean success = true;
-                if (properties != null && properties.containsKey("mabSuccess")) {
-                    Object flag = properties.get("mabSuccess");
-                    if (flag instanceof Boolean) {
-                        success = (Boolean) flag;
-                    } else {
-                        success = Boolean.parseBoolean(String.valueOf(flag));
-                    }
-                }
-                mabService.updateReward(experimentId, groupId, success);
-                log.debug("更新MAB奖励: 实验={}, 组={}, 成功={}", experimentId, groupId, success);
-            } catch (Exception e) {
-                log.warn("更新MAB奖励失败: 实验={}, 组={}", experimentId, groupId, e);
-            }
-        }
-        
-        log.debug("上报事件: 实验={}, 访客={}, 组={}, 事件={}", 
-                experimentId, canonicalVisitorId, groupId, eventName);
+        eventInboxRepository.saveIfAbsent(inboxRecord);
+        log.debug("受理事件: 实验={}, 访客={}, 组={}, 事件={}",
+                experimentId, canonicalVisitorId, groupId, normalizedEventType);
     }
 
     @Override
     public void reportExposure(String experimentId, String visitorId, Map<String, Object> properties) {
+        assertCanAccessExperiment(experimentId);
         String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
         String groupId = trafficService.getUserGroup(experimentId, canonicalVisitorId);
+        LocalDateTime exposedAt = resolveEventTimestamp(properties);
+        EventInboxRecord inboxRecord = buildExposureInboxRecord(experimentId, canonicalVisitorId, groupId,
+                properties, exposedAt);
         if (groupId == null) {
+            inboxRecord.setStatus(EventInboxConstants.STATUS_REJECTED);
+            inboxRecord.setLastError("访客不在实验中");
+            inboxRecord.setProcessedAt(exposedAt);
+            eventInboxRepository.saveIfAbsent(inboxRecord);
             log.warn("访客 {} 不在实验 {} 中，无法记录曝光", canonicalVisitorId, experimentId);
             return;
         }
-
-        ExperimentExposure exposure = new ExperimentExposure();
-        exposure.setExposureId("expo_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8));
-        exposure.setExperimentId(experimentId);
-        exposure.setVisitorId(canonicalVisitorId);
-        exposure.setGroupId(groupId);
-        exposure.setProperties(properties);
-        exposure.setExposedAt(resolveEventTimestamp(properties));
-        exposure.setScene(resolveExposureScene(properties));
-        exposure.setIdempotencyKey(buildExposureIdempotencyKey(experimentId, canonicalVisitorId, groupId));
-
-        experimentExposureRepository.save(exposure);
-
-        String exposureStoreKey = EXPOSURE_STORE_PREFIX + experimentId + ":" + groupId;
-        redisTemplate.opsForList().rightPush(exposureStoreKey, exposure);
-        redisTemplate.expire(exposureStoreKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
-
-        String exposureSetKey = EXPOSURE_SET_PREFIX + experimentId + ":" + groupId;
-        redisTemplate.opsForSet().add(exposureSetKey, canonicalVisitorId);
-        redisTemplate.expire(exposureSetKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
+        eventInboxRepository.saveIfAbsent(inboxRecord);
+        log.debug("受理曝光: 实验={}, 访客={}, 组={}", experimentId, canonicalVisitorId, groupId);
     }
 
     private LocalDateTime resolveEventTimestamp(Map<String, Object> properties) {
@@ -181,15 +129,6 @@ public class DataServiceImpl implements DataService {
         return LocalDateTime.now();
     }
 
-    /**
-     * 更新事件计数器（使用Redis Hash）
-     */
-    private void updateEventCounter(String experimentId, String groupId, String eventType) {
-        String counterKey = EVENT_COUNTER_PREFIX + experimentId + ":" + groupId;
-        redisTemplate.opsForHash().increment(counterKey, eventType, 1);
-        redisTemplate.expire(counterKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
-    }
-    
     /**
      * 获取事件计数
      */
@@ -264,6 +203,9 @@ public class DataServiceImpl implements DataService {
         long totalConversions = 0;
 
         var metadata = configService.getExperimentConfig(experimentId);
+        if (metadata != null) {
+            ApiKeyContextHolder.assertCanAccess(metadata);
+        }
         if (metadata != null && metadata.getGroups() != null) {
             for (String groupId : metadata.getGroups().keySet()) {
                 totalVisitors += getVisitorCount(experimentId, groupId);
@@ -296,18 +238,64 @@ public class DataServiceImpl implements DataService {
         return identityService != null ? identityService.resolveCanonicalId(visitorId) : visitorId;
     }
 
-    private ExperimentEventFact buildExperimentEventFact(Event event, Map<String, Object> properties) {
-        ExperimentEventFact eventFact = new ExperimentEventFact();
-        eventFact.setEventId(event.getEventId());
-        eventFact.setExperimentId(event.getExperimentId());
-        eventFact.setVisitorId(event.getUserId());
-        eventFact.setGroupId(event.getGroupId());
-        eventFact.setEventType(event.getEventType());
-        eventFact.setEventName(event.getEventName());
-        eventFact.setClientEventId(resolveClientEventId(properties));
-        eventFact.setProperties(properties);
-        eventFact.setEventTime(event.getTimestamp());
-        return eventFact;
+    private void assertCanAccessExperiment(String experimentId) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata == null) {
+            throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
+        }
+        ApiKeyContextHolder.assertCanAccess(metadata);
+    }
+
+    private EventInboxRecord buildEventInboxRecord(String experimentId, String visitorId, String groupId,
+                                                   String eventType, String eventName,
+                                                   Map<String, Object> properties, LocalDateTime eventTime) {
+        String inboxId = buildInboxId();
+        String clientEventId = resolveClientEventId(properties);
+        EventInboxRecord record = buildBaseInboxRecord(experimentId, visitorId, groupId, properties, eventTime);
+        record.setInboxId(inboxId);
+        record.setEventKind(EventInboxConstants.KIND_EVENT);
+        record.setEventType(eventType);
+        record.setEventName(eventName);
+        record.setClientEventId(clientEventId);
+        record.setIdempotencyKey(buildEventIdempotencyKey(experimentId, clientEventId, inboxId));
+        return record;
+    }
+
+    private EventInboxRecord buildExposureInboxRecord(String experimentId, String visitorId, String groupId,
+                                                      Map<String, Object> properties, LocalDateTime exposedAt) {
+        String inboxId = buildInboxId();
+        EventInboxRecord record = buildBaseInboxRecord(experimentId, visitorId, groupId, properties, exposedAt);
+        record.setInboxId(inboxId);
+        record.setEventKind(EventInboxConstants.KIND_EXPOSURE);
+        record.setScene(resolveExposureScene(properties));
+        record.setIdempotencyKey(buildExposureInboxIdempotencyKey(experimentId, visitorId, groupId, inboxId));
+        return record;
+    }
+
+    private EventInboxRecord buildBaseInboxRecord(String experimentId, String visitorId, String groupId,
+                                                  Map<String, Object> properties, LocalDateTime eventTime) {
+        EventInboxRecord record = new EventInboxRecord();
+        record.setExperimentId(experimentId);
+        record.setVisitorId(visitorId);
+        record.setGroupId(groupId);
+        record.setProperties(properties);
+        record.setStatus(EventInboxConstants.STATUS_PENDING);
+        record.setRetryCount(0);
+        record.setNextRetryAt(LocalDateTime.now());
+        record.setEventTime(eventTime);
+        record.setAcceptedAt(LocalDateTime.now());
+        return record;
+    }
+
+    private String buildInboxId() {
+        return "inbox_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+    }
+
+    private String buildEventIdempotencyKey(String experimentId, String clientEventId, String inboxId) {
+        if (StringUtils.hasText(clientEventId)) {
+            return EventInboxConstants.KIND_EVENT + ":" + experimentId + ":" + clientEventId;
+        }
+        return EventInboxConstants.KIND_EVENT + ":" + experimentId + ":" + inboxId;
     }
 
     private Event buildEvent(ExperimentEventFact eventFact) {
@@ -327,31 +315,12 @@ public class DataServiceImpl implements DataService {
         return eventType == null ? null : eventType.trim().toUpperCase();
     }
 
-    private boolean shouldUpdateMabReward(String experimentId, String eventType) {
-        if (Event.EVENT_TYPE_CONVERT.equals(eventType)) {
-            return true;
-        }
-
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
-        if (metadata == null || metadata.getMetricDefinitions() == null) {
-            return false;
-        }
-
-        for (MetricDefinition metricDefinition : metadata.getMetricDefinitions()) {
-            if (!Boolean.TRUE.equals(metricDefinition.getPrimaryMetric())) {
-                continue;
-            }
-            return Objects.equals(metricDefinition.getNumeratorEventType(), eventType);
-        }
-
-        return false;
-    }
-
     private String resolveClientEventId(Map<String, Object> properties) {
         if (properties == null || !properties.containsKey("clientEventId")) {
             return null;
         }
-        return String.valueOf(properties.get("clientEventId"));
+        String clientEventId = String.valueOf(properties.get("clientEventId")).trim();
+        return StringUtils.hasText(clientEventId) ? clientEventId : null;
     }
 
     private String resolveExposureScene(Map<String, Object> properties) {
@@ -361,7 +330,11 @@ public class DataServiceImpl implements DataService {
         return String.valueOf(properties.get("scene"));
     }
 
-    private String buildExposureIdempotencyKey(String experimentId, String visitorId, String groupId) {
-        return experimentId + ":" + visitorId + ":" + groupId;
+    private String buildExposureInboxIdempotencyKey(String experimentId, String visitorId, String groupId,
+                                                    String inboxId) {
+        if (StringUtils.hasText(groupId)) {
+            return EventInboxConstants.KIND_EXPOSURE + ":" + experimentId + ":" + visitorId + ":" + groupId;
+        }
+        return EventInboxConstants.KIND_EXPOSURE + ":" + experimentId + ":" + visitorId + ":" + inboxId;
     }
 }

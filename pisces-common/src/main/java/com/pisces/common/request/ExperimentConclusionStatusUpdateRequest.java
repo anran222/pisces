@@ -18,7 +18,22 @@ public class ExperimentConclusionStatusUpdateRequest extends BaseRequest {
     private String conclusionStatus;
 
     /**
+     * 人工结论基于的当前配置版本
+     */
+    private Long expectedConfigVersion;
+
+    /**
+     * 人工结论基于的报告快照版本
+     */
+    private Integer reportSnapshotVersion;
+
+    /**
      * 操作人
      */
     private String operator;
+
+    /**
+     * 结论备注
+     */
+    private String comment;
 }

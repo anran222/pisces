@@ -8,6 +8,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentCaptor.forClass;
@@ -105,6 +106,17 @@ class VariantControllerTest {
     void shouldGenerateStructuredTextVariantsThroughAggregateEndpoint() throws Exception {
         when(variantGenerationService.generateTextVariants(anyString(), eq(3)))
                 .thenReturn(List.of("文案A", "文案B", "文案C"));
+        when(variantGenerationService.getLastTextGenerationMetadata())
+                .thenReturn(Map.of(
+                        "provider", "tongyi",
+                        "primaryModel", "qwen3.8-max-preview",
+                        "selectedModel", "qwen3.7-max",
+                        "selectedApiMode", "dashscope",
+                        "fallbackUsed", true,
+                        "fallbackModel", "qwen3.7-max",
+                        "attemptedModels", List.of("qwen3.8-max-preview", "qwen3.7-max"),
+                        "modelStrategy", "production-dashscope-qwen3.7-max-with-token-plan-preview-opt-in"
+                ));
 
         mockMvc.perform(post("/variants/generate")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -123,10 +135,21 @@ class VariantControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.variantType").value("TEXT"))
                 .andExpect(jsonPath("$.data.count").value(3))
-                .andExpect(jsonPath("$.data.variants[0]").value("文案A"));
+                .andExpect(jsonPath("$.data.variants[0]").value("文案A"))
+                .andExpect(jsonPath("$.data.aiProvider").value("tongyi"))
+                .andExpect(jsonPath("$.data.aiPrimaryModel").value("qwen3.8-max-preview"))
+                .andExpect(jsonPath("$.data.aiModel").value("qwen3.7-max"))
+                .andExpect(jsonPath("$.data.aiApiMode").value("dashscope"))
+                .andExpect(jsonPath("$.data.aiFallbackUsed").value(true))
+                .andExpect(jsonPath("$.data.aiFallbackModel").value("qwen3.7-max"))
+                .andExpect(jsonPath("$.data.aiAttemptedModels[0]").value("qwen3.8-max-preview"))
+                .andExpect(jsonPath("$.data.aiAttemptedModels[1]").value("qwen3.7-max"))
+                .andExpect(jsonPath("$.data.aiModelStrategy").value(
+                        "production-dashscope-qwen3.7-max-with-token-plan-preview-opt-in"));
 
         var promptCaptor = forClass(String.class);
         verify(variantGenerationService).generateTextVariants(promptCaptor.capture(), eq(3));
+        verify(variantGenerationService).getLastTextGenerationMetadata();
         assertThat(promptCaptor.getValue())
                 .contains("变体类型: TEXT")
                 .contains("生成目标: 请为二手手机详情页生成3个文案变体")

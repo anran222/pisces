@@ -58,9 +58,13 @@ public class ExperimentDemoServiceImpl implements ExperimentDemoService {
     private static final String GRADUATE_DECISION = "GRADUATE";
     private static final String DECISION_KEY = "decision";
     private static final String GUARDRAIL_STATUS_KEY = "guardrailStatus";
+    private static final String RISK_FLAGS_KEY = "riskFlags";
     private static final String SUMMARY_KEY = "summary";
     private static final String DEFAULT_AI_SUMMARY = "AI暂未返回明确毕业结论";
+    private static final String AI_UNAVAILABLE_RISK_FLAG = "AI_UNAVAILABLE";
+    private static final String PASS_GUARDRAIL_STATUS = "PASS";
     private static final String DEFAULT_PRIMARY_METRIC_KEY = PAYMENT_RATE_METRIC;
+    private static final String DEMO_GENERATOR_OPERATOR = "demo-generator";
     private static final String PASS_DEMO_DECISION_HINT =
             "这是固定达标演示实验。请优先依据当前主指标和最佳组表现给出演示性毕业建议，不要因为样本量门槛而保守返回 CONTINUE。";
     private static final String FAIL_DEMO_DECISION_HINT =
@@ -87,10 +91,16 @@ public class ExperimentDemoServiceImpl implements ExperimentDemoService {
     public ExperimentDemoResult generateUsedPhoneDemo() {
         cleanupHistoricalDemoExperiments();
 
+        List<String> createdExperimentIds = new ArrayList<>();
         ExperimentDemoResult result = new ExperimentDemoResult();
-        result.setQualifiedExperiment(runDemoCase(usedPhonePassProfile()));
-        result.setUnqualifiedExperiment(runDemoCase(usedPhoneFailProfile()));
-        return result;
+        try {
+            result.setQualifiedExperiment(runDemoCase(usedPhonePassProfile(), createdExperimentIds));
+            result.setUnqualifiedExperiment(runDemoCase(usedPhoneFailProfile(), createdExperimentIds));
+            return result;
+        } catch (RuntimeException exception) {
+            cleanupCreatedDemoExperiments(createdExperimentIds, exception);
+            throw exception;
+        }
     }
 
     private void cleanupHistoricalDemoExperiments() {
@@ -104,11 +114,25 @@ public class ExperimentDemoServiceImpl implements ExperimentDemoService {
         }
     }
 
-    private ExperimentCaseResult runDemoCase(DemoProfile profile) {
+    private ExperimentCaseResult runDemoCase(DemoProfile profile, List<String> createdExperimentIds) {
         Experiment experiment = experimentService.createExperiment(newUsedPhoneExperimentRequest(profile));
+        createdExperimentIds.add(experiment.getId());
         experimentService.startExperiment(experiment.getId());
         writeDemoFacts(experiment.getId(), profile);
+        analysisService.drainEventPipeline(experiment.getId(), DEMO_GENERATOR_OPERATOR);
+        analysisService.replayEventPipeline(experiment.getId(), DEMO_GENERATOR_OPERATOR);
         return validateAndBuildResult(experiment, profile);
+    }
+
+    private void cleanupCreatedDemoExperiments(List<String> createdExperimentIds, RuntimeException originalException) {
+        for (String experimentId : createdExperimentIds) {
+            try {
+                experimentService.deleteExperiment(experimentId);
+            } catch (RuntimeException cleanupException) {
+                originalException.addSuppressed(cleanupException);
+                log.warn("清理失败的演示实验失败: experimentId={}", experimentId, cleanupException);
+            }
+        }
     }
 
     private ExperimentCreateRequest newUsedPhoneExperimentRequest(DemoProfile profile) {
@@ -283,11 +307,34 @@ public class ExperimentDemoServiceImpl implements ExperimentDemoService {
         ExperimentDecisionContext context = experimentDecisionContextBuilder.buildForExperiment(experimentId);
         context.setDecisionHints(List.of(resolveDemoDecisionHint(profile)));
         AIGraduationDecisionResponse response = aiDecisionService.decideGraduation(context);
+        if (shouldUseLocalDemoDecision(profile, response)) {
+            Map<String, Object> localDecision = buildLocalDemoDecision(profile, response);
+            log.info("示例实验AI不可用，使用本地演示判断: experimentId={}, decision={}", experimentId, localDecision);
+            return localDecision;
+        }
         Map<String, Object> decision = new LinkedHashMap<>();
         decision.put(DECISION_KEY, response.getDecision());
         decision.put(GUARDRAIL_STATUS_KEY, response.getGuardrailStatus());
+        decision.put(RISK_FLAGS_KEY, response.getRiskFlags());
         decision.put(SUMMARY_KEY, response.getSummary());
         log.info("示例实验外部毕业判断返回: experimentId={}, decision={}", experimentId, decision);
+        return decision;
+    }
+
+    private boolean shouldUseLocalDemoDecision(DemoProfile profile, AIGraduationDecisionResponse response) {
+        return response != null
+                && response.getRiskFlags() != null
+                && response.getRiskFlags().contains(AI_UNAVAILABLE_RISK_FLAG)
+                && profile.isQualified();
+    }
+
+    private Map<String, Object> buildLocalDemoDecision(DemoProfile profile, AIGraduationDecisionResponse response) {
+        Map<String, Object> decision = new LinkedHashMap<>();
+        decision.put(DECISION_KEY, profile.isQualified() ? GRADUATE_DECISION : "CONTINUE");
+        decision.put(GUARDRAIL_STATUS_KEY, stringValue(response.getGuardrailStatus()) != null
+                ? response.getGuardrailStatus() : PASS_GUARDRAIL_STATUS);
+        decision.put(RISK_FLAGS_KEY, response.getRiskFlags());
+        decision.put(SUMMARY_KEY, "AI毕业决策不可用，已基于固定演示数据使用本地确定性结论");
         return decision;
     }
 

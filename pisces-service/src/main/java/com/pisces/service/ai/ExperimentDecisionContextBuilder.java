@@ -1,7 +1,9 @@
 package com.pisces.service.ai;
 
 import com.pisces.common.model.ExperimentDecisionContext;
+import com.pisces.common.model.ExperimentReportSnapshot;
 import com.pisces.common.model.Statistics;
+import com.pisces.service.conclusion.ExperimentConclusionStatusPolicy;
 import com.pisces.service.service.AnalysisService;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -39,6 +41,7 @@ public class ExperimentDecisionContextBuilder {
         context.setStatisticsFacts(buildStatisticsFacts(statistics));
         context.setGroupMetricSnapshots(buildGroupMetricSnapshots(statistics));
         context.setDataQualityFacts(buildDataQualityFacts(statistics));
+        bindLatestReportSnapshot(context);
         return context;
     }
 
@@ -114,6 +117,49 @@ public class ExperimentDecisionContextBuilder {
         appendFact(facts, "sampleSizeReached", dataQualityCheck.getSampleSizeReached());
         appendFact(facts, "blockingIssues", dataQualityCheck.getBlockingIssues());
         appendFact(facts, "warnings", dataQualityCheck.getWarnings());
+        return facts;
+    }
+
+    private void bindLatestReportSnapshot(ExperimentDecisionContext context) {
+        if (context == null || !StringUtils.hasText(context.getExperimentId())) {
+            return;
+        }
+        ExperimentReportSnapshot latestSnapshot = ExperimentConclusionStatusPolicy.resolveLatestSnapshot(
+                analysisService.listReportSnapshots(context.getExperimentId()));
+        if (latestSnapshot == null) {
+            context.setLatestReportBreachedGuardrails(Collections.emptyList());
+            context.setReportSnapshotFacts(Collections.emptyList());
+            return;
+        }
+        context.setLatestReportSnapshotVersion(latestSnapshot.getSnapshotVersion());
+        context.setLatestReportGeneratedAt(latestSnapshot.getGeneratedAt());
+        context.setLatestReportConclusionStatus(latestSnapshot.getConclusionStatus() == null
+                ? null : latestSnapshot.getConclusionStatus().name());
+        context.setLatestReportAnalysisReady(latestSnapshot.getAnalysisReady());
+        context.setLatestReportHasSrm(latestSnapshot.getHasSrm());
+        context.setLatestReportPrimaryMetricKey(latestSnapshot.getPrimaryMetricKey());
+        context.setLatestReportBestPerformingGroup(latestSnapshot.getBestPerformingGroup());
+        context.setLatestReportWinningVariant(latestSnapshot.getWinningVariant());
+        context.setLatestReportBreachedGuardrails(latestSnapshot.getBreachedGuardrails() == null
+                ? Collections.emptyList() : latestSnapshot.getBreachedGuardrails());
+        context.setReportSnapshotFacts(buildReportSnapshotFacts(latestSnapshot));
+    }
+
+    private List<String> buildReportSnapshotFacts(ExperimentReportSnapshot snapshot) {
+        if (snapshot == null) {
+            return Collections.emptyList();
+        }
+        List<String> facts = new ArrayList<>();
+        appendFact(facts, "latestReportSnapshotVersion", snapshot.getSnapshotVersion());
+        appendFact(facts, "latestReportGeneratedAt", snapshot.getGeneratedAt());
+        appendFact(facts, "latestReportConclusionStatus",
+                snapshot.getConclusionStatus() == null ? null : snapshot.getConclusionStatus().name());
+        appendFact(facts, "latestReportAnalysisReady", snapshot.getAnalysisReady());
+        appendFact(facts, "latestReportHasSrm", snapshot.getHasSrm());
+        appendFact(facts, "latestReportPrimaryMetricKey", snapshot.getPrimaryMetricKey());
+        appendFact(facts, "latestReportBestPerformingGroup", snapshot.getBestPerformingGroup());
+        appendFact(facts, "latestReportWinningVariant", snapshot.getWinningVariant());
+        appendFact(facts, "latestReportBreachedGuardrails", snapshot.getBreachedGuardrails());
         return facts;
     }
 

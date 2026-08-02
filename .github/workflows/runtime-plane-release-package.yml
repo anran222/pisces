@@ -1,0 +1,76 @@
+name: Runtime Plane Release Package
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/runtime-plane-release-package.yml"
+      - "docs/observability/**"
+      - "docs/operations/**"
+      - "pisces-api/**"
+      - "pisces-common/**"
+      - "pisces-sdk-java/**"
+      - "pisces-sdk-js/**"
+      - "pisces-service/**"
+      - "scripts/event-pipeline-replay-audit.sh"
+      - "scripts/runtime-plane-*.sh"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - ".github/workflows/runtime-plane-release-package.yml"
+      - "docs/observability/**"
+      - "docs/operations/**"
+      - "pisces-api/**"
+      - "pisces-common/**"
+      - "pisces-sdk-java/**"
+      - "pisces-sdk-js/**"
+      - "pisces-service/**"
+      - "scripts/event-pipeline-replay-audit.sh"
+      - "scripts/runtime-plane-*.sh"
+  workflow_dispatch:
+
+jobs:
+  runtime-plane-release-package:
+    name: Runtime Plane Release Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install release check tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y prometheus ruby
+
+      - name: Run runtime plane release package check
+        env:
+          PISCES_RELEASE_PACKAGE_RUN_TESTS: 'true'
+          PISCES_RELEASE_PACKAGE_REQUIRE_PROMTOOL: 'true'
+          PISCES_RELEASE_PACKAGE_REQUIRE_RUBY: 'true'
+          PISCES_RELEASE_PACKAGE_REPORT_FILE: target/pisces-runtime-release-package-check/report.json
+        run: bash scripts/runtime-plane-release-package-check.sh
+
+      - name: Upload release package report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-plane-release-package-report
+          path: target/pisces-runtime-release-package-check/
+          if-no-files-found: ignore

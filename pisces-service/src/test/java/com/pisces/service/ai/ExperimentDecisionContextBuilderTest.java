@@ -1,12 +1,18 @@
 package com.pisces.service.ai;
 
 import com.pisces.common.model.ExperimentDecisionContext;
+import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.common.model.ExperimentReportSnapshot;
 import com.pisces.common.model.Statistics;
 import com.pisces.service.service.AnalysisService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.verify;
@@ -52,6 +58,42 @@ class ExperimentDecisionContextBuilderTest {
     }
 
     @Test
+    void buildForExperimentShouldBindLatestReportSnapshotFacts() {
+        Statistics statistics = new Statistics();
+        statistics.setExperimentId("exp_001");
+        statistics.setExperimentName("新客首单优惠");
+        statistics.setExperimentStatus("RUNNING");
+        ExperimentReportSnapshot oldSnapshot = reportSnapshot(1, LocalDateTime.of(2026, 3, 20, 10, 0));
+        ExperimentReportSnapshot latestSnapshot = reportSnapshot(3, LocalDateTime.of(2026, 3, 21, 10, 0));
+        latestSnapshot.setConclusionStatus(ExperimentMetadata.ConclusionStatus.GRADUATED);
+        latestSnapshot.setAnalysisReady(true);
+        latestSnapshot.setHasSrm(false);
+        latestSnapshot.setPrimaryMetricKey("PAYMENT_RATE");
+        latestSnapshot.setBestPerformingGroup("variant_a");
+        latestSnapshot.setWinningVariant("variant_a");
+        latestSnapshot.setBreachedGuardrails(List.of("MARGIN_DROP"));
+
+        when(analysisService.getStatistics("exp_001")).thenReturn(statistics);
+        when(analysisService.listReportSnapshots("exp_001")).thenReturn(List.of(oldSnapshot, latestSnapshot));
+
+        ExperimentDecisionContextBuilder builder = new ExperimentDecisionContextBuilder(analysisService);
+        ExperimentDecisionContext context = builder.buildForExperiment("exp_001");
+
+        assertThat(context.getLatestReportSnapshotVersion()).isEqualTo(3);
+        assertThat(context.getLatestReportGeneratedAt()).isEqualTo(LocalDateTime.of(2026, 3, 21, 10, 0));
+        assertThat(context.getLatestReportConclusionStatus()).isEqualTo("GRADUATED");
+        assertThat(context.getLatestReportAnalysisReady()).isTrue();
+        assertThat(context.getLatestReportHasSrm()).isFalse();
+        assertThat(context.getLatestReportPrimaryMetricKey()).isEqualTo("PAYMENT_RATE");
+        assertThat(context.getLatestReportBestPerformingGroup()).isEqualTo("variant_a");
+        assertThat(context.getLatestReportWinningVariant()).isEqualTo("variant_a");
+        assertThat(context.getLatestReportBreachedGuardrails()).containsExactly("MARGIN_DROP");
+        assertThat(context.getReportSnapshotFacts())
+                .contains("latestReportSnapshotVersion=3", "latestReportConclusionStatus=GRADUATED");
+        verify(analysisService).listReportSnapshots("exp_001");
+    }
+
+    @Test
     void buildForExperimentShouldNotInjectDemoHintsByExperimentName() {
         Statistics statistics = new Statistics();
         statistics.setExperimentId("exp_demo_fail");
@@ -85,7 +127,15 @@ class ExperimentDecisionContextBuilderTest {
         Statistics.GroupStatistics winningGroup = new Statistics.GroupStatistics();
         winningGroup.setGroupId("D");
         winningGroup.setGroupName("实验组");
-        winningGroup.setMetricValues(java.util.Map.of("PAYMENT_RATE", 0.76D));
-        return java.util.Map.of("D", winningGroup);
+        winningGroup.setMetricValues(Map.of("PAYMENT_RATE", 0.76D));
+        return Map.of("D", winningGroup);
+    }
+
+    private ExperimentReportSnapshot reportSnapshot(Integer snapshotVersion, LocalDateTime generatedAt) {
+        ExperimentReportSnapshot snapshot = new ExperimentReportSnapshot();
+        snapshot.setExperimentId("exp_001");
+        snapshot.setSnapshotVersion(snapshotVersion);
+        snapshot.setGeneratedAt(generatedAt);
+        return snapshot;
     }
 }

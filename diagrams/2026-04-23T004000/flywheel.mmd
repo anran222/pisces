@@ -1,0 +1,17 @@
+flowchart LR
+    A([业务假设]) --> B([AI 设计])
+    B --> C([人工审阅])
+    C --> D([启动实验])
+    D --> E([AI 诊断])
+    E --> F([人工判断])
+    F --> G([AI 毕业决策])
+    G --> H([人工发布])
+    H -.->|下一轮迭代| A
+
+    classDef ai fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+    classDef human fill:#fef3c7,stroke:#d97706,color:#78350f;
+    classDef start fill:#d1fae5,stroke:#059669,color:#064e3b;
+    class A start;
+    class B,E,G ai;
+    class C,F,H human;
+    class D start;

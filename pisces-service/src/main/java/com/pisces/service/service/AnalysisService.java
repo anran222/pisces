@@ -2,6 +2,11 @@ package com.pisces.service.service;
 
 import com.pisces.common.model.ExperimentReportSnapshot;
 import com.pisces.common.model.Statistics;
+import com.pisces.common.request.EventReplayPlanRequest;
+import com.pisces.common.response.EventPipelineOperationResponse;
+import com.pisces.common.response.EventPipelineStatusResponse;
+import com.pisces.common.response.EventReplayPlanResponse;
+import com.pisces.common.response.EventReplayJobResponse;
 
 import java.util.List;
 import java.util.Map;
@@ -15,6 +20,115 @@ public interface AnalysisService {
      * 获取实验统计数据
      */
     Statistics getStatistics(String experimentId);
+
+    /**
+     * 获取事件管道状态
+     *
+     * @param experimentId 实验ID
+     * @return 事件管道状态
+     */
+    EventPipelineStatusResponse getEventPipelineStatus(String experimentId);
+
+    /**
+     * 重新投递实验死信事件
+     *
+     * @param experimentId 实验ID
+     * @param operator 操作人
+     * @return 操作结果
+     */
+    EventPipelineOperationResponse retryDeadEvents(String experimentId, String operator);
+
+    /**
+     * 同步物化实验事件管道待处理记录
+     *
+     * @param experimentId 实验ID
+     * @param operator 操作人
+     * @return 操作结果
+     */
+    EventPipelineOperationResponse drainEventPipeline(String experimentId, String operator);
+
+    /**
+     * 重放事实表并重建事件管道派生数据
+     *
+     * @param experimentId 实验ID
+     * @param operator 操作人
+     * @return 操作结果
+     */
+    EventPipelineOperationResponse replayEventPipeline(String experimentId, String operator);
+
+    /**
+     * 按请求范围重放事实表并重建事件管道派生数据。
+     * 等价全量范围会清空并重建派生数据；筛选范围执行复制型 replay，不清空现有 Redis/MAB 派生数据。
+     *
+     * @param experimentId 实验ID
+     * @param request 重放范围请求
+     * @param operator 操作人
+     * @return 操作结果
+     */
+    EventPipelineOperationResponse replayEventPipeline(String experimentId, EventReplayPlanRequest request,
+                                                       String operator);
+
+    /**
+     * 生成事件重放计划，不修改派生数据
+     *
+     * @param experimentId 实验ID
+     * @param request 计划请求
+     * @return 事件重放计划
+     */
+    EventReplayPlanResponse planEventReplay(String experimentId, EventReplayPlanRequest request);
+
+    /**
+     * 按重放计划修复缺失的派生物化账本。
+     *
+     * @param experimentId 实验ID
+     * @param request 计划请求
+     * @param operator 操作人
+     * @return 操作结果
+     */
+    EventPipelineOperationResponse repairEventMaterialization(String experimentId, EventReplayPlanRequest request,
+                                                              String operator);
+
+    /**
+     * 按重放计划中的时间分段修复缺失的派生物化账本。
+     *
+     * @param experimentId 实验ID
+     * @param request 带 segmentCount 的计划请求
+     * @param segmentIndex 分段序号，0 基
+     * @param operator 操作人
+     * @return 操作结果
+     */
+    EventPipelineOperationResponse repairEventMaterializationSegment(String experimentId,
+                                                                     EventReplayPlanRequest request,
+                                                                     int segmentIndex,
+                                                                     String operator);
+
+    /**
+     * 查询最近的事件重放任务
+     *
+     * @param experimentId 实验ID
+     * @param limit 返回数量上限
+     * @return 事件重放任务列表
+     */
+    List<EventReplayJobResponse> listEventReplayJobs(String experimentId, int limit);
+
+    /**
+     * 查询单个事件重放任务详情。
+     *
+     * @param experimentId 实验ID
+     * @param replayJobId 重放任务ID
+     * @return 事件重放任务
+     */
+    EventReplayJobResponse getEventReplayJob(String experimentId, String replayJobId);
+
+    /**
+     * 取消运行中的事件重放任务。
+     *
+     * @param experimentId 实验ID
+     * @param replayJobId 重放任务ID
+     * @param operator 操作人
+     * @return 操作结果
+     */
+    EventPipelineOperationResponse cancelEventReplayJob(String experimentId, String replayJobId, String operator);
     
     /**
      * 对比实验组

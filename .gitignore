@@ -36,10 +36,21 @@ build/
 ### macOS ###
 .DS_Store
 
+### Local environment ###
+.env
+.env.*
+*.local.env
+config/*.env
+!*.env.example
+!config/*.env.example
+
 ### docs ###
-docs/
+docs/*
+!docs/observability/
+!docs/observability/**
+!docs/operations/
+!docs/operations/**
 
 ### claude code ###
 .claude/
 .worktrees/
-

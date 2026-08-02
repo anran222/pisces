@@ -15,6 +15,7 @@
 - `pisces-common/src/main/java/com/pisces/common/request/VariantCandidateGenerateRequest.java`
 - `pisces-common/src/main/java/com/pisces/common/response/ExperimentResponse.java`
 - `pisces-common/src/main/java/com/pisces/common/response/AIDesignResponse.java`
+- `pisces-common/src/main/java/com/pisces/common/response/AIDecisionEvidenceResponse.java`
 - `pisces-common/src/main/java/com/pisces/common/response/AIDiagnosisResponse.java`
 - `pisces-common/src/main/java/com/pisces/common/response/AIGraduationDecisionResponse.java`
 

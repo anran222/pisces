@@ -4,7 +4,9 @@ import com.pisces.common.response.BaseResponse;
 import com.pisces.common.enums.ResponseCode;
 import com.pisces.common.request.VariantCandidateGenerateRequest;
 import com.pisces.common.response.VariantCandidateGenerateResponse;
+import com.pisces.service.annotation.ApiKeyScopeRequired;
 import com.pisces.service.annotation.NoTokenRequired;
+import com.pisces.service.security.ApiKeyScope;
 import com.pisces.service.service.VariantGenerationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -26,6 +28,7 @@ import java.util.stream.Collectors;
  */
 @RestController
 @RequestMapping("/variants")
+@ApiKeyScopeRequired(ApiKeyScope.MANAGEMENT)
 @NoTokenRequired
 @RequiredArgsConstructor
 public class VariantController {
@@ -84,7 +87,24 @@ public class VariantController {
         response.setVariantType(normalizedVariantType);
         response.setVariants(variants);
         response.setCount(variants.size());
+        if ("TEXT".equals(normalizedVariantType)) {
+            applyTextGenerationMetadata(response, variantGenerationService.getLastTextGenerationMetadata());
+        }
         return BaseResponse.of(GENERATE_SUCCESS_MESSAGE, response);
+    }
+
+    private void applyTextGenerationMetadata(VariantCandidateGenerateResponse response, Map<String, Object> metadata) {
+        if (metadata == null || metadata.isEmpty()) {
+            return;
+        }
+        response.setAiProvider(asString(metadata.get("provider")));
+        response.setAiModel(asString(metadata.get("selectedModel")));
+        response.setAiApiMode(asString(metadata.get("selectedApiMode")));
+        response.setAiFallbackUsed(asBoolean(metadata.get("fallbackUsed")));
+        response.setAiPrimaryModel(asString(metadata.get("primaryModel")));
+        response.setAiFallbackModel(asString(metadata.get("fallbackModel")));
+        response.setAiAttemptedModels(asStringList(metadata.get("attemptedModels")));
+        response.setAiModelStrategy(asString(metadata.get("modelStrategy")));
     }
 
     private List<String> dispatchGenerateVariants(String normalizedVariantType,
@@ -158,5 +178,28 @@ public class VariantController {
 
     private boolean hasTextValue(Object value) {
         return value instanceof String text && StringUtils.hasText(text);
+    }
+
+    private String asString(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private Boolean asBoolean(Object value) {
+        if (value instanceof Boolean booleanValue) {
+            return booleanValue;
+        }
+        if (value instanceof String stringValue && StringUtils.hasText(stringValue)) {
+            return Boolean.valueOf(stringValue);
+        }
+        return null;
+    }
+
+    private List<String> asStringList(Object value) {
+        if (value instanceof List<?> values) {
+            return values.stream()
+                    .map(String::valueOf)
+                    .collect(Collectors.toList());
+        }
+        return null;
     }
 }

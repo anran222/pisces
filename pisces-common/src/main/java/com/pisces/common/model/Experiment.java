@@ -45,6 +45,16 @@ public class Experiment implements Serializable {
      * 创建人
      */
     private String creator;
+
+    /**
+     * 所属应用ID
+     */
+    private String appId;
+
+    /**
+     * 归属人
+     */
+    private String owner;
     
     /**
      * 创建时间
@@ -66,4 +76,3 @@ public class Experiment implements Serializable {
         STOPPED     // 已停止
     }
 }
-

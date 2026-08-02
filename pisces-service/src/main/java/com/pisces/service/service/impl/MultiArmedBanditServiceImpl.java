@@ -1,15 +1,19 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.service.security.ApiKeyContextHolder;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.MultiArmedBanditService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -30,6 +34,10 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
     private static final String BETA_PARAMS_PREFIX = "pisces:mab:beta:";  // Beta分布参数
     private static final String UCB_STATS_PREFIX = "pisces:mab:ucb:";  // UCB统计信息
     private static final String TOTAL_TRIALS_PREFIX = "pisces:mab:trials:";  // 总实验次数
+    private static final String REWARD_OBSERVATION_PREFIX = "pisces:mab:reward-observation:";
+    private static final String REWARD_OUTCOME_SUCCESS = "SUCCESS";
+    private static final String REWARD_OUTCOME_FAILURE = "FAILURE";
+    private static final int ALLOCATION_PROBABILITY_SIMULATIONS = 10000;
     
     // 数据过期时间（天）
     private static final long DATA_EXPIRE_DAYS = 90;
@@ -81,7 +89,7 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
     
     @Override
     public String selectGroupByThompsonSampling(String experimentId, String visitorId) {
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         if (metadata == null || metadata.getGroups() == null || metadata.getGroups().isEmpty()) {
             return null;
         }
@@ -141,7 +149,7 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
     
     @Override
     public String selectGroupByUCB(String experimentId, String visitorId) {
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         if (metadata == null || metadata.getGroups() == null || metadata.getGroups().isEmpty()) {
             return null;
         }
@@ -260,25 +268,87 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
     
     @Override
     public void updateReward(String experimentId, String groupId, boolean success) {
-        // 更新Beta分布参数（用于Thompson Sampling）
-        BetaParams params = getBetaParams(experimentId, groupId);
-        if (success) {
-            params.alpha++;
-        } else {
-            params.beta++;
+        getAccessibleExperimentMetadata(experimentId);
+        applyRewardDelta(experimentId, groupId, success ? 1 : 0, success ? 0 : 1);
+
+        log.debug("更新奖励: experimentId={}, groupId={}, success={}", experimentId, groupId, success);
+    }
+
+    @Override
+    public boolean recordRewardObservation(String experimentId, String groupId, String observationId,
+                                           boolean success) {
+        getAccessibleExperimentMetadata(experimentId);
+        if (!StringUtils.hasText(observationId)) {
+            applyRewardDelta(experimentId, groupId, success ? 1 : 0, success ? 0 : 1);
+            log.debug("奖励观测键为空，降级为直接更新奖励: experimentId={}, groupId={}, success={}",
+                    experimentId, groupId, success);
+            return true;
         }
+
+        String normalizedObservationId = observationId.trim();
+        String observationKey = REWARD_OBSERVATION_PREFIX + experimentId + ":" + groupId;
+        Object existingOutcomeObject = redisTemplate.opsForHash().get(observationKey, normalizedObservationId);
+        String existingOutcome = existingOutcomeObject != null ? String.valueOf(existingOutcomeObject) : null;
+
+        if (!StringUtils.hasText(existingOutcome)) {
+            saveRewardObservationOutcome(observationKey, normalizedObservationId, success);
+            applyRewardDelta(experimentId, groupId, success ? 1 : 0, success ? 0 : 1);
+            log.debug("记录MAB奖励观测: experimentId={}, groupId={}, observationId={}, success={}",
+                    experimentId, groupId, normalizedObservationId, success);
+            return true;
+        }
+
+        if (REWARD_OUTCOME_SUCCESS.equals(existingOutcome)) {
+            return false;
+        }
+        if (REWARD_OUTCOME_FAILURE.equals(existingOutcome)) {
+            if (!success) {
+                return false;
+            }
+            saveRewardObservationOutcome(observationKey, normalizedObservationId, true);
+            applyRewardDelta(experimentId, groupId, 1, -1);
+            log.debug("升级MAB奖励观测为成功: experimentId={}, groupId={}, observationId={}",
+                    experimentId, groupId, normalizedObservationId);
+            return true;
+        }
+
+        log.warn("MAB奖励观测状态未知，跳过统计更新: experimentId={}, groupId={}, observationId={}, outcome={}",
+                experimentId, groupId, normalizedObservationId, existingOutcome);
+        return false;
+    }
+
+    private void saveRewardObservationOutcome(String observationKey, String observationId, boolean success) {
+        redisTemplate.opsForHash().put(observationKey, observationId,
+                success ? REWARD_OUTCOME_SUCCESS : REWARD_OUTCOME_FAILURE);
+        redisTemplate.expire(observationKey, DATA_EXPIRE_DAYS, TimeUnit.DAYS);
+    }
+
+    private void applyRewardDelta(String experimentId, String groupId, int successDelta, int failureDelta) {
+        if (successDelta == 0 && failureDelta == 0) {
+            return;
+        }
+
+        BetaParams params = getBetaParams(experimentId, groupId);
+        params.alpha = Math.max(1, params.alpha + successDelta);
+        params.beta = Math.max(1, params.beta + failureDelta);
         saveBetaParams(experimentId, groupId, params);
         
         // 更新UCB统计信息
         UCBStats stats = getUCBStats(experimentId, groupId);
-        stats.updateReward(success);
+        if (successDelta > 0) {
+            stats.successes += successDelta;
+        } else if (successDelta < 0) {
+            stats.successes = Math.max(0L, stats.successes + successDelta);
+        }
+        if (stats.trials > 0) {
+            stats.averageReward = (double) stats.successes / stats.trials;
+        }
         saveUCBStats(experimentId, groupId, stats);
-        
-        log.debug("更新奖励: experimentId={}, groupId={}, success={}", experimentId, groupId, success);
     }
     
     @Override
     public Map<String, Integer> getBetaParameters(String experimentId, String groupId) {
+        getAccessibleExperimentMetadata(experimentId);
         BetaParams params = getBetaParams(experimentId, groupId);
         Map<String, Integer> result = new HashMap<>();
         result.put("alpha", params.alpha);
@@ -288,6 +358,7 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
     
     @Override
     public Map<String, Object> getGroupStatistics(String experimentId, String groupId) {
+        getAccessibleExperimentMetadata(experimentId);
         UCBStats stats = getUCBStats(experimentId, groupId);
         Map<String, Object> result = new HashMap<>();
         result.put("trials", stats.trials);
@@ -301,8 +372,6 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
      * 使用近似方法：通过Gamma分布采样
      */
     private double sampleFromBeta(int alpha, int beta) {
-        // 简化实现：使用Gamma分布的近似
-        // 实际应用中可以使用Apache Commons Math库的BetaDistribution
         double gammaAlpha = sampleFromGamma(alpha);
         double gammaBeta = sampleFromGamma(beta);
         double sum = gammaAlpha + gammaBeta;
@@ -310,47 +379,74 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
     }
     
     /**
-     * 从Gamma分布中采样（简化实现）
-     * 实际应用中应使用专业的统计库
+     * 从 Gamma 分布中采样。
+     * 使用 Marsaglia-Tsang 方法，避免采样成本随 alpha/beta 线性增长。
      */
-    private double sampleFromGamma(int shape) {
-        // 简化实现：使用Box-Muller变换生成正态分布，然后转换为Gamma分布
-        // 这里使用更简单的近似方法
-        if (shape <= 0) {
+    private double sampleFromGamma(double shape) {
+        if (shape <= 0.0D) {
             return 0.0;
         }
-        
-        // 使用中心极限定理近似
-        double sum = 0.0;
-        for (int i = 0; i < shape; i++) {
-            sum += -Math.log(Math.random());
+
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+        if (shape < 1.0D) {
+            return sampleFromGamma(shape + 1.0D) * Math.pow(random.nextDouble(), 1.0D / shape);
         }
-        return sum;
+
+        double d = shape - 1.0D / 3.0D;
+        double c = 1.0D / Math.sqrt(9.0D * d);
+        while (true) {
+            double x = random.nextGaussian();
+            double v = 1.0D + c * x;
+            if (v <= 0.0D) {
+                continue;
+            }
+            v = v * v * v;
+            double u = random.nextDouble();
+            double xSquared = x * x;
+            if (u < 1.0D - 0.0331D * xSquared * xSquared) {
+                return d * v;
+            }
+            if (Math.log(u) < 0.5D * xSquared + d * (1.0D - v + Math.log(v))) {
+                return d * v;
+            }
+        }
     }
     
     @Override
     public Map<String, Double> getAllocationProbabilities(String experimentId) {
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         if (metadata == null || metadata.getGroups() == null || metadata.getGroups().isEmpty()) {
             return new HashMap<>();
         }
-        
-        // 使用蒙特卡洛模拟计算各组被选中的概率
-        int numSimulations = 10000;
-        Map<String, Integer> selectionCounts = new HashMap<>();
-        
+
+        return calculateAllocationProbabilities(loadBetaParams(experimentId, metadata));
+    }
+
+    private Map<String, BetaParams> loadBetaParams(String experimentId, ExperimentMetadata metadata) {
+        Map<String, BetaParams> betaParamsByGroup = new LinkedHashMap<>();
         for (String groupId : metadata.getGroups().keySet()) {
+            betaParamsByGroup.put(groupId, getBetaParams(experimentId, groupId));
+        }
+        return betaParamsByGroup;
+    }
+
+    private Map<String, Double> calculateAllocationProbabilities(Map<String, BetaParams> betaParamsByGroup) {
+        // 使用蒙特卡洛模拟计算各组被选中的概率
+        Map<String, Integer> selectionCounts = new HashMap<>();
+
+        for (String groupId : betaParamsByGroup.keySet()) {
             selectionCounts.put(groupId, 0);
         }
-        
-        for (int i = 0; i < numSimulations; i++) {
+
+        for (int i = 0; i < ALLOCATION_PROBABILITY_SIMULATIONS; i++) {
             String bestGroup = null;
             double maxSample = -1.0;
-            
-            for (String groupId : metadata.getGroups().keySet()) {
-                BetaParams params = getBetaParams(experimentId, groupId);
+
+            for (Map.Entry<String, BetaParams> entry : betaParamsByGroup.entrySet()) {
+                String groupId = entry.getKey();
+                BetaParams params = entry.getValue();
                 double sample = sampleFromBeta(params.alpha, params.beta);
-                
+
                 if (sample > maxSample) {
                     maxSample = sample;
                     bestGroup = groupId;
@@ -365,7 +461,7 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
         // 转换为概率
         Map<String, Double> probabilities = new HashMap<>();
         for (Map.Entry<String, Integer> entry : selectionCounts.entrySet()) {
-            probabilities.put(entry.getKey(), (double) entry.getValue() / numSimulations);
+            probabilities.put(entry.getKey(), (double) entry.getValue() / ALLOCATION_PROBABILITY_SIMULATIONS);
         }
         
         return probabilities;
@@ -373,21 +469,24 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
     
     @Override
     public Map<String, Object> getMABSummary(String experimentId) {
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         if (metadata == null || metadata.getGroups() == null || metadata.getGroups().isEmpty()) {
             return new HashMap<>();
         }
         
         Map<String, Object> summary = new HashMap<>();
         summary.put("experimentId", experimentId);
+
+        Map<String, BetaParams> betaParamsByGroup = loadBetaParams(experimentId, metadata);
         
         // 获取分配概率
-        Map<String, Double> probabilities = getAllocationProbabilities(experimentId);
+        Map<String, Double> probabilities = calculateAllocationProbabilities(betaParamsByGroup);
         summary.put("allocationProbabilities", probabilities);
         
         // 获取每个组的详细统计
         Map<String, Object> groupDetails = new HashMap<>();
-        long totalTrials = getTotalTrials(experimentId);
+        long ucbSelectionTrials = getTotalTrials(experimentId);
+        long totalObservedRewards = 0L;
         
         double maxProbability = 0.0;
         String leadingGroup = null;
@@ -396,16 +495,26 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
             Map<String, Object> groupDetail = new HashMap<>();
             
             // Beta参数
-            BetaParams params = getBetaParams(experimentId, groupId);
+            BetaParams params = betaParamsByGroup.getOrDefault(groupId, new BetaParams());
             groupDetail.put("alpha", params.alpha);
             groupDetail.put("beta", params.beta);
-            groupDetail.put("successRate", (double) (params.alpha - 1) / (params.alpha + params.beta - 2));
+            int observedTrials = params.alpha + params.beta - 2;
+            int observedSuccesses = params.alpha - 1;
+            int observedFailures = params.beta - 1;
+            totalObservedRewards += observedTrials;
+            groupDetail.put("observedRewardCount", observedTrials);
+            groupDetail.put("observedSuccesses", observedSuccesses);
+            groupDetail.put("observedFailures", observedFailures);
+            double observedSuccessRate = observedTrials > 0 ? (double) observedSuccesses / observedTrials : 0.0D;
+            groupDetail.put("successRate", observedSuccessRate);
             
             // UCB统计
             UCBStats stats = getUCBStats(experimentId, groupId);
-            groupDetail.put("trials", stats.trials);
-            groupDetail.put("successes", stats.successes);
-            groupDetail.put("averageReward", stats.averageReward);
+            groupDetail.put("ucbTrials", stats.trials);
+            groupDetail.put("ucbSuccesses", stats.successes);
+            groupDetail.put("trials", Math.max(stats.trials, observedTrials));
+            groupDetail.put("successes", Math.max(stats.successes, observedSuccesses));
+            groupDetail.put("averageReward", stats.trials > 0 ? stats.averageReward : observedSuccessRate);
             
             // 分配概率
             Double probability = probabilities.get(groupId);
@@ -420,7 +529,9 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
         }
         
         summary.put("groupDetails", groupDetails);
-        summary.put("totalTrials", totalTrials);
+        summary.put("totalTrials", Math.max(ucbSelectionTrials, totalObservedRewards));
+        summary.put("ucbSelectionTrials", ucbSelectionTrials);
+        summary.put("totalObservedRewards", totalObservedRewards);
         summary.put("leadingGroup", leadingGroup);
         summary.put("leadingGroupProbability", maxProbability);
         
@@ -443,7 +554,7 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
     
     @Override
     public void resetMABData(String experimentId) {
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
         if (metadata == null || metadata.getGroups() == null) {
             return;
         }
@@ -459,7 +570,20 @@ public class MultiArmedBanditServiceImpl implements MultiArmedBanditService {
         // 重置总实验次数
         String trialsKey = TOTAL_TRIALS_PREFIX + experimentId;
         redisTemplate.delete(trialsKey);
+
+        // 重置奖励观测去重状态
+        for (String groupId : metadata.getGroups().keySet()) {
+            redisTemplate.delete(REWARD_OBSERVATION_PREFIX + experimentId + ":" + groupId);
+        }
         
         log.info("重置MAB数据: experimentId={}", experimentId);
+    }
+
+    private ExperimentMetadata getAccessibleExperimentMetadata(String experimentId) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata != null) {
+            ApiKeyContextHolder.assertCanAccess(metadata);
+        }
+        return metadata;
     }
 }

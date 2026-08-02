@@ -3,6 +3,8 @@ package com.pisces.sdk;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pisces.sdk.exception.PiscesSdkException;
 import com.pisces.sdk.model.ExperimentConfig;
+import com.pisces.sdk.model.PiscesClientMetricsSnapshot;
+import com.pisces.sdk.model.TrafficAssignResponse;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
@@ -13,6 +15,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -92,6 +95,72 @@ class PiscesClientTest {
     }
 
     @Test
+    void shouldRetryTransientHttpFailureWhenConfigured() throws Exception {
+        try (HttpTestServer server = HttpTestServer.start()) {
+            server.queueResponse(500, """
+                    {"code":500,"message":"系统异常","data":null,"timestamp":1}
+                    """);
+            server.queueResponse(200, """
+                    {"code":200,"message":"操作成功","data":"group_a","timestamp":1}
+                    """);
+            PiscesClient client = PiscesClient.builder()
+                    .baseUrl(server.baseUrl())
+                    .maxRetries(1)
+                    .retryInitialBackoffMillis(0)
+                    .retryMaxBackoffMillis(0)
+                    .retryBackoffJitterRatio(0D)
+                    .build();
+
+            String groupId = client.assignGroup("exp_assign", "visitor_123", Map.of("city", "shanghai"));
+            PiscesClientMetricsSnapshot metrics = client.getMetricsSnapshot();
+
+            assertEquals("group_a", groupId);
+            assertEquals(2, server.getRequestCount());
+            assertEquals(2L, metrics.getRequestAttemptCount());
+            assertEquals(1L, metrics.getRequestSuccessCount());
+            assertEquals(1L, metrics.getRequestFailureCount());
+            assertEquals(1L, metrics.getRetryCount());
+        }
+    }
+
+    @Test
+    void shouldAssignGroupWithTrace() throws Exception {
+        try (HttpTestServer server = HttpTestServer.start()) {
+            server.respondWith(200, """
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{
+                        "experimentId":"exp_assign",
+                        "visitorId":"visitor_123",
+                        "canonicalVisitorId":"visitor_123",
+                        "groupId":"group_a",
+                        "assigned":true,
+                        "reason":"ALLOCATED",
+                        "source":"NEW_ASSIGNMENT",
+                        "strategy":"HASH",
+                        "configVersion":2
+                      },
+                      "timestamp":1
+                    }
+                    """);
+            PiscesClient client = PiscesClient.builder().baseUrl(server.baseUrl()).build();
+
+            TrafficAssignResponse response =
+                    client.assignGroupWithTrace("exp_assign", "visitor_123", Map.of("city", "shanghai"));
+
+            assertEquals("group_a", response.getGroupId());
+            assertEquals("NEW_ASSIGNMENT", response.getSource());
+            assertEquals("ALLOCATED", response.getReason());
+            assertEquals("HASH", response.getStrategy());
+            assertEquals(2L, response.getConfigVersion());
+            assertEquals("/api/traffic/assign/trace", server.getLastPath());
+            assertEquals("exp_assign", server.getLastRequestBodyAsMap().get("experimentId"));
+            assertEquals(Map.of("city", "shanghai"), server.getLastRequestBodyAsMap().get("attributes"));
+        }
+    }
+
+    @Test
     void shouldGetExperimentConfig() throws Exception {
         try (HttpTestServer server = HttpTestServer.start()) {
             server.respondWith(200, """
@@ -102,6 +171,7 @@ class PiscesClientTest {
                         "id":"exp_001",
                         "name":"价格实验",
                         "status":"RUNNING",
+                        "configVersion":3,
                         "eventDefinitions":[
                           {
                             "key":"PRODUCT_VIEW",
@@ -150,14 +220,282 @@ class PiscesClientTest {
 
             ExperimentConfig experiment = client.getExperiment("exp_001");
 
-            assertEquals("/api/experiments/exp_001", server.getLastPath());
+            assertEquals("/api/runtime/experiments/exp_001/config", server.getLastPath());
             assertEquals("GET", server.getLastMethod());
             assertEquals("exp_001", experiment.getId());
             assertEquals("价格实验", experiment.getName());
+            assertEquals(3L, experiment.getConfigVersion());
             assertEquals("PRODUCT_VIEW", experiment.getEventDefinitions().get(0).getKey());
             assertEquals("PAYMENT_RATE", experiment.getMetricDefinitions().get(0).getKey());
             assertEquals("mainTitle", experiment.getGroupConfigSchema().get(0).getKey());
             assertEquals("100", experiment.getGroups().get("group_a").getConfig().get("price"));
+        }
+    }
+
+    @Test
+    void shouldCacheExperimentConfigWithinTtl() throws Exception {
+        try (HttpTestServer server = HttpTestServer.start()) {
+            server.queueResponse(200, """
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{"id":"exp_001","name":"价格实验","status":"RUNNING","configVersion":3},
+                      "timestamp":1
+                    }
+                    """);
+            PiscesClient client = PiscesClient.builder()
+                    .baseUrl(server.baseUrl())
+                    .experimentCacheTtlMillis(60_000)
+                    .build();
+
+            ExperimentConfig first = client.getExperiment("exp_001");
+            ExperimentConfig second = client.getExperiment("exp_001");
+
+            assertEquals("exp_001", first.getId());
+            assertEquals("exp_001", second.getId());
+            assertEquals(1, server.getRequestCount());
+            PiscesClientMetricsSnapshot metrics = client.getMetricsSnapshot();
+            assertEquals(1L, metrics.getExperimentCacheHitCount());
+            assertEquals(1L, metrics.getExperimentCacheMissCount());
+            assertEquals(1L, metrics.getRequestAttemptCount());
+
+            client.resetMetrics();
+            assertEquals(0L, client.getMetricsSnapshot().getRequestAttemptCount());
+        }
+    }
+
+    @Test
+    void shouldReturnStaleExperimentConfigWhenRefreshFailsAndFallbackEnabled() throws Exception {
+        try (HttpTestServer server = HttpTestServer.start()) {
+            server.queueResponse(200, """
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{"id":"exp_001","name":"价格实验","status":"RUNNING","configVersion":3},
+                      "timestamp":1
+                    }
+                    """);
+            server.queueResponse(500, """
+                    {"code":500,"message":"系统异常","data":null,"timestamp":1}
+                    """);
+            PiscesClient client = PiscesClient.builder()
+                    .baseUrl(server.baseUrl())
+                    .experimentCacheTtlMillis(1)
+                    .allowStaleExperimentConfig(true)
+                    .build();
+
+            ExperimentConfig fresh = client.getExperiment("exp_001");
+            Thread.sleep(5);
+            ExperimentConfig stale = client.getExperiment("exp_001");
+
+            assertEquals("exp_001", fresh.getId());
+            assertEquals("exp_001", stale.getId());
+            assertEquals(2, server.getRequestCount());
+            assertEquals(1L, client.getMetricsSnapshot().getStaleExperimentConfigFallbackCount());
+        }
+    }
+
+    @Test
+    void shouldExtendExperimentCacheWhenExpiredVersionIsUnchanged() throws Exception {
+        try (HttpTestServer server = HttpTestServer.start()) {
+            server.queueResponse(200, """
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{"id":"exp_001","name":"价格实验","status":"RUNNING","configVersion":3},
+                      "timestamp":1
+                    }
+                    """);
+            server.queueResponse(200, """
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{
+                        "experimentId":"exp_001",
+                        "knownVersion":3,
+                        "currentVersion":3,
+                        "changed":false,
+                        "status":"RUNNING"
+                      },
+                      "timestamp":1
+                    }
+                    """);
+            PiscesClient client = PiscesClient.builder()
+                    .baseUrl(server.baseUrl())
+                    .experimentCacheTtlMillis(1)
+                    .build();
+
+            ExperimentConfig first = client.getExperiment("exp_001");
+            Thread.sleep(5);
+            ExperimentConfig second = client.getExperiment("exp_001");
+
+            assertEquals("exp_001", first.getId());
+            assertEquals("exp_001", second.getId());
+            assertEquals(2, server.getRequestCount());
+            assertEquals("/api/runtime/experiments/exp_001/config/version", server.getLastPath());
+            assertEquals("knownVersion=3", server.getLastQuery());
+        }
+    }
+
+    @Test
+    void shouldAppendConfigVersionLongPollMillisWhenCheckingExpiredCacheVersion() throws Exception {
+        try (HttpTestServer server = HttpTestServer.start()) {
+            server.queueResponse(200, """
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{"id":"exp_001","name":"价格实验","status":"RUNNING","configVersion":3},
+                      "timestamp":1
+                    }
+                    """);
+            server.queueResponse(200, """
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{
+                        "experimentId":"exp_001",
+                        "knownVersion":3,
+                        "currentVersion":3,
+                        "changed":false,
+                        "status":"RUNNING"
+                      },
+                      "timestamp":1
+                    }
+                    """);
+            PiscesClient client = PiscesClient.builder()
+                    .baseUrl(server.baseUrl())
+                    .experimentCacheTtlMillis(1)
+                    .configVersionLongPollMillis(250)
+                    .build();
+
+            client.getExperiment("exp_001");
+            Thread.sleep(5);
+            client.getExperiment("exp_001");
+
+            assertEquals(2, server.getRequestCount());
+            assertEquals("/api/runtime/experiments/exp_001/config/version", server.getLastPath());
+            assertEquals("knownVersion=3&waitMillis=250", server.getLastQuery());
+        }
+    }
+
+    @Test
+    void shouldRefreshExperimentConfigWhenAssignmentVersionDiffers() throws Exception {
+        try (HttpTestServer server = HttpTestServer.start()) {
+            server.queueResponse(200, """
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{"id":"exp_001","name":"价格实验","status":"RUNNING","configVersion":1},
+                      "timestamp":1
+                    }
+                    """);
+            server.queueResponse(200, """
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{
+                        "experimentId":"exp_001",
+                        "visitorId":"visitor_001",
+                        "groupId":"group_b",
+                        "assigned":true,
+                        "reason":"ALLOCATED",
+                        "source":"NEW_ASSIGNMENT",
+                        "strategy":"HASH",
+                        "configVersion":2
+                      },
+                      "timestamp":1
+                    }
+                    """);
+            server.queueResponse(200, """
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{
+                        "id":"exp_001",
+                        "name":"价格实验",
+                        "status":"RUNNING",
+                        "configVersion":2,
+                        "groups":{
+                          "group_b":{
+                            "id":"group_b",
+                            "name":"实验组",
+                            "trafficRatio":0.5,
+                            "config":{"discount":"20%"}
+                          }
+                        }
+                      },
+                      "timestamp":1
+                    }
+                    """);
+            PiscesClient client = PiscesClient.builder()
+                    .baseUrl(server.baseUrl())
+                    .experimentCacheTtlMillis(60_000)
+                    .build();
+
+            client.getExperiment("exp_001");
+            Map<String, Object> groupConfig = client.getGroupConfig("exp_001", "visitor_001");
+
+            assertEquals("20%", groupConfig.get("discount"));
+            assertEquals(3, server.getRequestCount());
+            assertEquals("/api/runtime/experiments/exp_001/config", server.getLastPath());
+        }
+    }
+
+    @Test
+    void shouldUseStaleGroupConfigWhenAssignmentVersionDiffersAndRefreshFails() throws Exception {
+        try (HttpTestServer server = HttpTestServer.start()) {
+            server.queueResponse(200, """
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{
+                        "id":"exp_001",
+                        "name":"价格实验",
+                        "status":"RUNNING",
+                        "configVersion":1,
+                        "groups":{
+                          "group_b":{
+                            "id":"group_b",
+                            "name":"实验组",
+                            "trafficRatio":0.5,
+                            "config":{"discount":"15%"}
+                          }
+                        }
+                      },
+                      "timestamp":1
+                    }
+                    """);
+            server.queueResponse(200, """
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{
+                        "experimentId":"exp_001",
+                        "visitorId":"visitor_001",
+                        "groupId":"group_b",
+                        "assigned":true,
+                        "reason":"ALLOCATED",
+                        "source":"NEW_ASSIGNMENT",
+                        "strategy":"HASH",
+                        "configVersion":2
+                      },
+                      "timestamp":1
+                    }
+                    """);
+            server.queueResponse(500, """
+                    {"code":500,"message":"系统异常","data":null,"timestamp":1}
+                    """);
+            PiscesClient client = PiscesClient.builder()
+                    .baseUrl(server.baseUrl())
+                    .experimentCacheTtlMillis(60_000)
+                    .allowStaleExperimentConfig(true)
+                    .build();
+
+            client.getExperiment("exp_001");
+            Map<String, Object> groupConfig = client.getGroupConfig("exp_001", "visitor_001");
+
+            assertEquals("15%", groupConfig.get("discount"));
+            assertEquals(3, server.getRequestCount());
         }
     }
 
@@ -196,8 +534,10 @@ class PiscesClientTest {
                     """);
             PiscesClient client = PiscesClient.builder().baseUrl(server.baseUrl()).build();
 
-            assertEquals(2, client.getGroupConfigSchema("exp_001").size());
-            assertEquals("badgeCount", client.getGroupConfigSchema("exp_001").get(1).getKey());
+            var schema = client.getGroupConfigSchema("exp_001");
+
+            assertEquals(2, schema.size());
+            assertEquals("badgeCount", schema.get(1).getKey());
         }
     }
 
@@ -258,7 +598,21 @@ class PiscesClientTest {
     void shouldResolveGroupConfig() throws Exception {
         try (HttpTestServer server = HttpTestServer.start()) {
             server.queueResponse(200, """
-                    {"code":200,"message":"操作成功","data":"group_b","timestamp":1}
+                    {
+                      "code":200,
+                      "message":"操作成功",
+                      "data":{
+                        "experimentId":"exp_001",
+                        "visitorId":"visitor_001",
+                        "groupId":"group_b",
+                        "assigned":true,
+                        "reason":"ALLOCATED",
+                        "source":"NEW_ASSIGNMENT",
+                        "strategy":"HASH",
+                        "configVersion":3
+                      },
+                      "timestamp":1
+                    }
                     """);
             server.queueResponse(200, """
                     {
@@ -268,6 +622,7 @@ class PiscesClientTest {
                         "id":"exp_001",
                         "name":"价格实验",
                         "status":"RUNNING",
+                        "configVersion":3,
                         "groups":{
                           "group_b":{
                             "id":"group_b",
@@ -285,7 +640,7 @@ class PiscesClientTest {
             Map<String, Object> groupConfig = client.getGroupConfig("exp_001", "visitor_001");
 
             assertEquals("15%", groupConfig.get("discount"));
-            assertEquals("/api/experiments/exp_001", server.getLastPath());
+            assertEquals("/api/runtime/experiments/exp_001/config", server.getLastPath());
         }
     }
 
@@ -390,9 +745,11 @@ class PiscesClientTest {
     private static final class HttpTestServer implements AutoCloseable {
         private final HttpServer server;
         private final AtomicReference<String> lastPath = new AtomicReference<>();
+        private final AtomicReference<String> lastQuery = new AtomicReference<>();
         private final AtomicReference<String> lastMethod = new AtomicReference<>();
         private final AtomicReference<String> lastRequestBody = new AtomicReference<>();
         private final AtomicReference<ResponseSpec> nextResponse = new AtomicReference<>();
+        private final AtomicInteger requestCount = new AtomicInteger();
         private final java.util.Queue<ResponseSpec> queuedResponses = new java.util.ArrayDeque<>();
 
         private HttpTestServer(HttpServer server) {
@@ -427,6 +784,10 @@ class PiscesClientTest {
             return lastMethod.get();
         }
 
+        String getLastQuery() {
+            return lastQuery.get();
+        }
+
         Map<String, Object> getLastRequestBodyAsMap() throws IOException {
             String body = lastRequestBody.get();
             if (body == null || body.isBlank()) {
@@ -436,8 +797,14 @@ class PiscesClientTest {
                     .constructMapType(LinkedHashMap.class, String.class, Object.class));
         }
 
+        int getRequestCount() {
+            return requestCount.get();
+        }
+
         private void handle(HttpExchange exchange) throws IOException {
+            requestCount.incrementAndGet();
             lastPath.set(exchange.getRequestURI().getPath());
+            lastQuery.set(exchange.getRequestURI().getQuery());
             lastMethod.set(exchange.getRequestMethod());
             lastRequestBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             ResponseSpec responseSpec = queuedResponses.poll();

@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.EventInboxMapper">
+
+    <resultMap id="eventInboxEntityResultMap" type="com.pisces.service.entity.EventInboxEntity">
+        <id column="id" property="id"/>
+        <result column="inbox_id" property="inboxId"/>
+        <result column="experiment_id" property="experimentId"/>
+        <result column="visitor_id" property="visitorId"/>
+        <result column="group_id" property="groupId"/>
+        <result column="event_kind" property="eventKind"/>
+        <result column="event_type" property="eventType"/>
+        <result column="event_name" property="eventName"/>
+        <result column="scene" property="scene"/>
+        <result column="client_event_id" property="clientEventId"/>
+        <result column="idempotency_key" property="idempotencyKey"/>
+        <result column="properties_json" property="propertiesJson"/>
+        <result column="status" property="status"/>
+        <result column="retry_count" property="retryCount"/>
+        <result column="next_retry_at" property="nextRetryAt"/>
+        <result column="locked_by" property="lockedBy"/>
+        <result column="locked_until" property="lockedUntil"/>
+        <result column="last_error" property="lastError"/>
+        <result column="event_time" property="eventTime"/>
+        <result column="accepted_at" property="acceptedAt"/>
+        <result column="processed_at" property="processedAt"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <resultMap id="eventInboxStatusCountResultMap" type="com.pisces.service.entity.EventInboxStatusCountEntity">
+        <result column="status" property="status"/>
+        <result column="event_count" property="eventCount"/>
+    </resultMap>
+
+    <insert id="insertIgnore" parameterType="com.pisces.service.entity.EventInboxEntity">
+        INSERT IGNORE INTO pisces_event_inbox
+            (inbox_id, experiment_id, visitor_id, group_id, event_kind, event_type, event_name, scene, client_event_id,
+             idempotency_key, properties_json, status, retry_count, next_retry_at, locked_by, locked_until,
+             last_error, event_time, accepted_at, processed_at)
+        VALUES
+            (#{entity.inboxId}, #{entity.experimentId}, #{entity.visitorId}, #{entity.groupId}, #{entity.eventKind},
+             #{entity.eventType}, #{entity.eventName}, #{entity.scene}, #{entity.clientEventId}, #{entity.idempotencyKey},
+             #{entity.propertiesJson}, #{entity.status}, #{entity.retryCount}, #{entity.nextRetryAt},
+             #{entity.lockedBy}, #{entity.lockedUntil}, #{entity.lastError}, #{entity.eventTime},
+             #{entity.acceptedAt}, #{entity.processedAt})
+    </insert>
+
+    <select id="selectDueRecords" resultMap="eventInboxEntityResultMap">
+        SELECT id, inbox_id, experiment_id, visitor_id, group_id, event_kind, event_type, event_name, scene,
+               client_event_id,
+               idempotency_key, properties_json, status, retry_count, next_retry_at, locked_by, locked_until,
+               last_error, event_time, accepted_at, processed_at, created_at, updated_at
+        FROM pisces_event_inbox
+        WHERE (
+            status IN ('PENDING', 'RETRY')
+            AND next_retry_at <![CDATA[<=]]> #{now}
+        )
+        OR (
+            status = 'PROCESSING'
+            AND locked_until <![CDATA[<]]> #{now}
+        )
+        ORDER BY id ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectDueRecordsByExperimentId" resultMap="eventInboxEntityResultMap">
+        SELECT id, inbox_id, experiment_id, visitor_id, group_id, event_kind, event_type, event_name, scene,
+               client_event_id,
+               idempotency_key, properties_json, status, retry_count, next_retry_at, locked_by, locked_until,
+               last_error, event_time, accepted_at, processed_at, created_at, updated_at
+        FROM pisces_event_inbox
+        WHERE experiment_id = #{experimentId}
+          AND (
+              (
+                  status IN ('PENDING', 'RETRY')
+                  AND next_retry_at <![CDATA[<=]]> #{now}
+              )
+              OR (
+                  status = 'PROCESSING'
+                  AND locked_until <![CDATA[<]]> #{now}
+              )
+          )
+        ORDER BY id ASC
+        LIMIT #{limit}
+    </select>
+
+    <update id="markProcessing">
+        UPDATE pisces_event_inbox
+        SET status = 'PROCESSING',
+            locked_by = #{lockedBy},
+            locked_until = #{lockedUntil},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE inbox_id = #{inboxId}
+          AND (
+              (
+                  status IN ('PENDING', 'RETRY')
+                  AND next_retry_at <![CDATA[<=]]> #{now}
+              )
+              OR (
+                  status = 'PROCESSING'
+                  AND locked_until <![CDATA[<]]> #{now}
+              )
+          )
+    </update>
+
+    <update id="markDone">
+        UPDATE pisces_event_inbox
+        SET status = 'DONE',
+            locked_by = NULL,
+            locked_until = NULL,
+            last_error = NULL,
+            processed_at = #{processedAt},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE inbox_id = #{inboxId}
+    </update>
+
+    <update id="markRetry">
+        UPDATE pisces_event_inbox
+        SET status = 'RETRY',
+            retry_count = #{retryCount},
+            next_retry_at = #{nextRetryAt},
+            locked_by = NULL,
+            locked_until = NULL,
+            last_error = #{lastError},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE inbox_id = #{inboxId}
+    </update>
+
+    <update id="markDead">
+        UPDATE pisces_event_inbox
+        SET status = 'DEAD',
+            retry_count = #{retryCount},
+            locked_by = NULL,
+            locked_until = NULL,
+            last_error = #{lastError},
+            processed_at = #{processedAt},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE inbox_id = #{inboxId}
+    </update>
+
+    <select id="countByExperimentIdGroupByStatus" resultMap="eventInboxStatusCountResultMap">
+        SELECT status, COUNT(1) AS event_count
+        FROM pisces_event_inbox
+        WHERE experiment_id = #{experimentId}
+        GROUP BY status
+    </select>
+
+    <select id="selectOldestUnfinishedAcceptedAt" resultType="java.time.LocalDateTime">
+        SELECT MIN(accepted_at)
+        FROM pisces_event_inbox
+        WHERE experiment_id = #{experimentId}
+          AND status IN ('PENDING', 'PROCESSING', 'RETRY')
+    </select>
+
+    <update id="retryDeadRecords">
+        UPDATE pisces_event_inbox
+        SET status = 'RETRY',
+            retry_count = 0,
+            next_retry_at = #{nextRetryAt},
+            locked_by = NULL,
+            locked_until = NULL,
+            processed_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE experiment_id = #{experimentId}
+          AND status = 'DEAD'
+    </update>
+</mapper>

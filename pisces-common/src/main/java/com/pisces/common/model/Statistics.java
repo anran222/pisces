@@ -181,6 +181,16 @@ public class Statistics implements Serializable {
          * 访客总数（注意：字段名保持为userCount以兼容现有接口，但实际存储的是visitorCount）
          */
         private Long userCount;
+
+        /**
+         * 分流数
+         */
+        private Long assignmentCount;
+
+        /**
+         * 曝光数
+         */
+        private Long exposureCount;
         
         /**
          * 事件统计（事件类型 -> 数量）

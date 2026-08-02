@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.ExperimentConfigVersionMapper">
+
+    <resultMap id="experimentConfigVersionEntityResultMap"
+               type="com.pisces.service.entity.ExperimentConfigVersionEntity">
+        <id column="id" property="id"/>
+        <result column="experiment_id" property="experimentId"/>
+        <result column="config_version" property="configVersion"/>
+        <result column="metadata_json" property="metadataJson"/>
+        <result column="published_by" property="publishedBy"/>
+        <result column="publish_comment" property="publishComment"/>
+        <result column="source_config_version" property="sourceConfigVersion"/>
+        <result column="source_type" property="sourceType"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <insert id="upsert" parameterType="com.pisces.service.entity.ExperimentConfigVersionEntity">
+        INSERT INTO pisces_experiment_config_version
+            (experiment_id, config_version, metadata_json, published_by, publish_comment,
+             source_config_version, source_type)
+        VALUES
+            (#{entity.experimentId}, #{entity.configVersion}, #{entity.metadataJson}, #{entity.publishedBy},
+             #{entity.publishComment}, #{entity.sourceConfigVersion}, #{entity.sourceType})
+        ON DUPLICATE KEY UPDATE
+            metadata_json = VALUES(metadata_json),
+            published_by = VALUES(published_by),
+            publish_comment = VALUES(publish_comment),
+            source_config_version = VALUES(source_config_version),
+            source_type = VALUES(source_type),
+            updated_at = CURRENT_TIMESTAMP
+    </insert>
+
+    <select id="selectByExperimentIdAndVersion" resultMap="experimentConfigVersionEntityResultMap">
+        SELECT id, experiment_id, config_version, metadata_json, published_by, publish_comment,
+               source_config_version, source_type, created_at, updated_at
+        FROM pisces_experiment_config_version
+        WHERE experiment_id = #{experimentId}
+          AND config_version = #{configVersion}
+    </select>
+
+    <select id="selectByExperimentId" resultMap="experimentConfigVersionEntityResultMap">
+        SELECT id, experiment_id, config_version, metadata_json, published_by, publish_comment,
+               source_config_version, source_type, created_at, updated_at
+        FROM pisces_experiment_config_version
+        WHERE experiment_id = #{experimentId}
+        ORDER BY config_version DESC
+    </select>
+</mapper>

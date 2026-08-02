@@ -5,7 +5,10 @@ import com.pisces.common.enums.ResponseCode;
 import com.pisces.common.model.ExperimentLayer;
 import com.pisces.common.model.ExperimentMetadata;
 import com.pisces.common.model.TrafficConfig;
+import com.pisces.common.response.TrafficAssignmentResponse;
 import com.pisces.service.repository.ExperimentAssignmentRepository;
+import com.pisces.service.metrics.TrafficAssignmentMetrics;
+import com.pisces.service.security.ApiKeyContextHolder;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.IdentityService;
 import com.pisces.service.service.MultiArmedBanditService;
@@ -53,6 +56,9 @@ public class TrafficServiceImpl implements TrafficService {
     
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
+
+    @Autowired(required = false)
+    private TrafficAssignmentMetrics trafficAssignmentMetrics;
     
     // Redis Key前缀
     private static final String USER_GROUP_CACHE_PREFIX = "pisces:traffic:group:";  // 访客分组缓存
@@ -64,6 +70,19 @@ public class TrafficServiceImpl implements TrafficService {
     private static final long CACHE_EXPIRE_DAYS = 30;
     // 版本字段后缀（同一 Hash key 中存储上次缓存时的 configVersion）
     private static final String VER_SUFFIX = ":ver";
+    private static final String CACHE_OPERATION_USER_GROUP = "USER_GROUP";
+    private static final String CACHE_OPERATION_USER_GROUP_VERSION = "USER_GROUP_VERSION";
+    private static final String CACHE_OPERATION_USER_GROUP_DELETE = "USER_GROUP_DELETE";
+    private static final String CACHE_OPERATION_USER_GROUP_WRITE = "USER_GROUP_WRITE";
+    private static final String CACHE_OPERATION_LAYER_ASSIGNMENT_READ = "LAYER_ASSIGNMENT_READ";
+    private static final String CACHE_OPERATION_LAYER_ASSIGNMENT_WRITE = "LAYER_ASSIGNMENT_WRITE";
+    private static final String CACHE_OPERATION_ASSIGNMENT_PROJECTION_WRITE = "ASSIGNMENT_PROJECTION_WRITE";
+    private static final String CACHE_OPERATION_ASSIGNMENT_SET_WRITE = "ASSIGNMENT_SET_WRITE";
+    private static final String CACHE_OPERATION_ASSIGNMENT_SET_DELETE = "ASSIGNMENT_SET_DELETE";
+    private static final String CACHE_RESULT_HIT = "HIT";
+    private static final String CACHE_RESULT_MISS = "MISS";
+    private static final String CACHE_RESULT_SUCCESS = "SUCCESS";
+    private static final String CACHE_RESULT_ERROR = "ERROR";
 
     /**
      * 分配用户到实验组
@@ -76,40 +95,59 @@ public class TrafficServiceImpl implements TrafficService {
 
     @Override
     public String assignGroup(String experimentId, String visitorId, Map<String, Object> attributes) {
+        return assignGroupWithTrace(experimentId, visitorId, attributes).getGroupId();
+    }
+
+    @Override
+    public TrafficAssignmentResponse assignGroupWithTrace(String experimentId, String visitorId,
+                                                          Map<String, Object> attributes) {
+        long startedNanos = System.nanoTime();
+        try {
+            TrafficAssignmentResponse response = doAssignGroupWithTrace(experimentId, visitorId, attributes);
+            recordAssignmentMetric(response, startedNanos);
+            return response;
+        } catch (RuntimeException exception) {
+            recordAssignmentError(startedNanos);
+            throw exception;
+        }
+    }
+
+    private TrafficAssignmentResponse doAssignGroupWithTrace(String experimentId, String visitorId,
+                                                             Map<String, Object> attributes) {
         String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
 
         // 先获取实验配置（需要 configVersion 做缓存校验）
-        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
-        if (metadata == null) {
-            throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
-        }
+        ExperimentMetadata metadata = getAccessibleExperimentMetadata(experimentId);
 
         migrateExistingIdentityAssignmentIfNeeded(experimentId, visitorId, canonicalVisitorId, metadata);
 
         // 检查 Redis 缓存（带版本校验）
         String cacheKey = USER_GROUP_CACHE_PREFIX + canonicalVisitorId;
         String verField  = experimentId + VER_SUFFIX;
-        Object cachedGroupId = redisTemplate.opsForHash().get(cacheKey, experimentId);
-        Object cachedVersion = redisTemplate.opsForHash().get(cacheKey, verField);
+        Object cachedGroupId = readTrafficCache(cacheKey, experimentId, CACHE_OPERATION_USER_GROUP);
+        Object cachedVersion = readTrafficCache(cacheKey, verField, CACHE_OPERATION_USER_GROUP_VERSION);
 
         if (cachedGroupId != null && cachedVersion != null) {
             try {
                 long cachedVer = Long.parseLong(cachedVersion.toString());
                 if (cachedVer == metadata.getConfigVersion()) {
-                    return cachedGroupId.toString(); // 版本匹配，缓存有效
+                    return buildAssignmentResponse(experimentId, visitorId, canonicalVisitorId,
+                            cachedGroupId.toString(), metadata, "CACHE_HIT", "CACHE");
                 }
                 // 配置已更新，删除旧缓存字段，重新分配
-                redisTemplate.opsForHash().delete(cacheKey, experimentId, verField);
+                deleteTrafficCacheFields(cacheKey, experimentId, verField);
                 log.info("实验配置变更（v{} → v{}），访客 {} 重新分配分组",
                         cachedVer, metadata.getConfigVersion(), canonicalVisitorId);
             } catch (NumberFormatException ignored) {
                 // 格式异常，视为版本不匹配，重新分配
+                deleteTrafficCacheFields(cacheKey, experimentId, verField);
             }
         }
 
         // 检查实验状态
         if (metadata.getExperiment().getStatus() != com.pisces.common.model.Experiment.ExperimentStatus.RUNNING) {
-            return null; // 实验未运行，不分配
+            return buildAssignmentResponse(experimentId, visitorId, canonicalVisitorId,
+                    null, metadata, "EXPERIMENT_NOT_RUNNING", "BLOCKED");
         }
 
         // 检查白名单/黑名单
@@ -118,17 +156,20 @@ public class TrafficServiceImpl implements TrafficService {
                 String groupId = metadata.getGroups().keySet().iterator().next();
                 cacheUserGroup(canonicalVisitorId, experimentId, groupId, metadata.getConfigVersion());
                 recordAssignment(experimentId, canonicalVisitorId, groupId, metadata, Collections.emptyMap());
-                return groupId;
+                return buildAssignmentResponse(experimentId, visitorId, canonicalVisitorId,
+                        groupId, metadata, "WHITELIST", "NEW_ASSIGNMENT");
             }
         }
 
         if (metadata.getBlacklist() != null && metadata.getBlacklist().contains(canonicalVisitorId)) {
-            return null;
+            return buildAssignmentResponse(experimentId, visitorId, canonicalVisitorId,
+                    null, metadata, "BLACKLIST", "BLOCKED");
         }
 
         // 检查时间范围
         if (!isInTimeRange(metadata.getExperiment())) {
-            return null;
+            return buildAssignmentResponse(experimentId, visitorId, canonicalVisitorId,
+                    null, metadata, "OUT_OF_TIME_RANGE", "BLOCKED");
         }
 
         // 分层互斥检查：同一 MUTEX 层内，每个访客只能进入一个实验
@@ -137,20 +178,23 @@ public class TrafficServiceImpl implements TrafficService {
             if (blockedExperiment != null) {
                 log.debug("访客 {} 已在层 {} 的实验 {} 中，实验 {} 被拒绝（互斥）",
                         canonicalVisitorId, metadata.getLayerId(), blockedExperiment, experimentId);
-                return null;
+                return buildAssignmentResponse(experimentId, visitorId, canonicalVisitorId,
+                        null, metadata, "LAYER_MUTEX:" + blockedExperiment, "BLOCKED");
             }
         }
 
         // 根据流量配置分配
         TrafficConfig trafficConfig = metadata.getTraffic();
         if (trafficConfig == null || trafficConfig.getTotalTraffic() == null) {
-            return null;
+            return buildAssignmentResponse(experimentId, visitorId, canonicalVisitorId,
+                    null, metadata, "TRAFFIC_NOT_CONFIGURED", "BLOCKED");
         }
 
         // 检查是否在流量范围内
         double randomValue = generateHashValue(canonicalVisitorId + experimentId);
         if (randomValue >= trafficConfig.getTotalTraffic()) {
-            return null;
+            return buildAssignmentResponse(experimentId, visitorId, canonicalVisitorId,
+                    null, metadata, "OUT_OF_TRAFFIC", "BLOCKED");
         }
 
         // 根据策略分配组
@@ -160,10 +204,61 @@ public class TrafficServiceImpl implements TrafficService {
             cacheUserGroup(canonicalVisitorId, experimentId, groupId, metadata.getConfigVersion());
             recordAssignment(experimentId, canonicalVisitorId, groupId, metadata, attributes);
             recordLayerAssignment(metadata.getLayerId(), experimentId, canonicalVisitorId);
-            return groupId;
+            return buildAssignmentResponse(experimentId, visitorId, canonicalVisitorId,
+                    groupId, metadata, "ALLOCATED", "NEW_ASSIGNMENT");
         }
 
-        return null;
+        return buildAssignmentResponse(experimentId, visitorId, canonicalVisitorId,
+                null, metadata, "NO_GROUP_ALLOCATED", "BLOCKED");
+    }
+
+    private TrafficAssignmentResponse buildAssignmentResponse(String experimentId, String visitorId,
+                                                              String canonicalVisitorId, String groupId,
+                                                              ExperimentMetadata metadata, String reason,
+                                                              String source) {
+        TrafficAssignmentResponse response = new TrafficAssignmentResponse();
+        response.setExperimentId(experimentId);
+        response.setVisitorId(visitorId);
+        response.setCanonicalVisitorId(canonicalVisitorId);
+        response.setGroupId(groupId);
+        response.setAssigned(groupId != null);
+        response.setReason(reason);
+        response.setSource(source);
+        response.setStrategy(resolveTrafficStrategy(metadata));
+        response.setConfigVersion(metadata != null ? metadata.getConfigVersion() : null);
+        return response;
+    }
+
+    private void recordAssignmentMetric(TrafficAssignmentResponse response, long startedNanos) {
+        if (trafficAssignmentMetrics == null) {
+            return;
+        }
+        trafficAssignmentMetrics.recordAssignment(response, elapsedNanos(startedNanos));
+    }
+
+    private void recordAssignmentError(long startedNanos) {
+        if (trafficAssignmentMetrics == null) {
+            return;
+        }
+        trafficAssignmentMetrics.recordAssignmentError(elapsedNanos(startedNanos));
+    }
+
+    private void recordCacheEvent(String operation, String result) {
+        if (trafficAssignmentMetrics == null) {
+            return;
+        }
+        trafficAssignmentMetrics.recordCacheEvent(operation, result);
+    }
+
+    private long elapsedNanos(long startedNanos) {
+        return System.nanoTime() - startedNanos;
+    }
+
+    private String resolveTrafficStrategy(ExperimentMetadata metadata) {
+        if (metadata == null || metadata.getTraffic() == null || metadata.getTraffic().getStrategy() == null) {
+            return null;
+        }
+        return metadata.getTraffic().getStrategy().name();
     }
     
     /**
@@ -172,16 +267,18 @@ public class TrafficServiceImpl implements TrafficService {
     @Override
     public String getUserGroup(String experimentId, String visitorId) {
         String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
+        getAccessibleExperimentMetadata(experimentId);
 
         // 从Redis缓存获取
         String cacheKey = USER_GROUP_CACHE_PREFIX + canonicalVisitorId;
-        Object cachedGroupId = redisTemplate.opsForHash().get(cacheKey, experimentId);
+        Object cachedGroupId = readTrafficCache(cacheKey, experimentId, CACHE_OPERATION_USER_GROUP);
         if (cachedGroupId != null) {
             return cachedGroupId.toString();
         }
 
         if (!canonicalVisitorId.equals(visitorId)) {
-            Object legacyGroupId = redisTemplate.opsForHash().get(USER_GROUP_CACHE_PREFIX + visitorId, experimentId);
+            Object legacyGroupId = readTrafficCache(USER_GROUP_CACHE_PREFIX + visitorId, experimentId,
+                    CACHE_OPERATION_USER_GROUP);
             if (legacyGroupId != null) {
                 return legacyGroupId.toString();
             }
@@ -194,8 +291,18 @@ public class TrafficServiceImpl implements TrafficService {
     @Override
     public ExperimentAssignment getAssignment(String experimentId, String visitorId) {
         String canonicalVisitorId = resolveCanonicalVisitorId(visitorId);
+        getAccessibleExperimentMetadata(experimentId);
         return experimentAssignmentRepository.findByExperimentIdAndVisitorId(experimentId, canonicalVisitorId)
                 .orElse(null);
+    }
+
+    private ExperimentMetadata getAccessibleExperimentMetadata(String experimentId) {
+        ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
+        if (metadata == null) {
+            throw new BusinessException(ResponseCode.EXPERIMENT_NOT_FOUND);
+        }
+        ApiKeyContextHolder.assertCanAccess(metadata);
+        return metadata;
     }
     
     /**
@@ -328,9 +435,16 @@ public class TrafficServiceImpl implements TrafficService {
      */
     private void cacheUserGroup(String visitorId, String experimentId, String groupId, long configVersion) {
         String cacheKey = USER_GROUP_CACHE_PREFIX + visitorId;
-        redisTemplate.opsForHash().put(cacheKey, experimentId, groupId);
-        redisTemplate.opsForHash().put(cacheKey, experimentId + VER_SUFFIX, String.valueOf(configVersion));
-        redisTemplate.expire(cacheKey, CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
+        try {
+            redisTemplate.opsForHash().put(cacheKey, experimentId, groupId);
+            redisTemplate.opsForHash().put(cacheKey, experimentId + VER_SUFFIX, String.valueOf(configVersion));
+            redisTemplate.expire(cacheKey, CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
+            recordCacheEvent(CACHE_OPERATION_USER_GROUP_WRITE, CACHE_RESULT_SUCCESS);
+        } catch (Exception exception) {
+            recordCacheEvent(CACHE_OPERATION_USER_GROUP_WRITE, CACHE_RESULT_ERROR);
+            log.warn("分流缓存写入失败，降级为无缓存分流: experimentId={}, visitorId={}",
+                    experimentId, visitorId, exception);
+        }
     }
 
     /**
@@ -346,7 +460,7 @@ public class TrafficServiceImpl implements TrafficService {
         }
 
         String layerKey = LAYER_ASSIGN_PREFIX + layerId + ":" + visitorId;
-        Object assigned = redisTemplate.opsForValue().get(layerKey);
+        Object assigned = readLayerAssignment(layerKey, layerId, currentExperimentId, visitorId);
         if (assigned == null) {
             return null; // 尚未分配，可以进入
         }
@@ -362,9 +476,18 @@ public class TrafficServiceImpl implements TrafficService {
      * 记录分层分配（访客进入某实验后标记，用于 MUTEX 互斥）
      */
     private void recordLayerAssignment(String layerId, String experimentId, String visitorId) {
-        if (layerId == null) return;
+        if (layerId == null) {
+            return;
+        }
         String layerKey = LAYER_ASSIGN_PREFIX + layerId + ":" + visitorId;
-        redisTemplate.opsForValue().setIfAbsent(layerKey, experimentId, CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
+        try {
+            redisTemplate.opsForValue().setIfAbsent(layerKey, experimentId, CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
+            recordCacheEvent(CACHE_OPERATION_LAYER_ASSIGNMENT_WRITE, CACHE_RESULT_SUCCESS);
+        } catch (Exception exception) {
+            recordCacheEvent(CACHE_OPERATION_LAYER_ASSIGNMENT_WRITE, CACHE_RESULT_ERROR);
+            log.warn("分层互斥缓存写入失败，保留分流结果但互斥缓存暂不可用: layerId={}, experimentId={}, visitorId={}",
+                    layerId, experimentId, visitorId, exception);
+        }
     }
     
     /**
@@ -393,13 +516,10 @@ public class TrafficServiceImpl implements TrafficService {
 
         if (previousAssignment != null && previousAssignment.getGroupId() != null
                 && !previousAssignment.getGroupId().equals(groupId)) {
-            redisTemplate.opsForSet().remove(buildAssignmentSetKey(experimentId, previousAssignment.getGroupId()),
-                    visitorId);
+            removeAssignmentSetProjection(experimentId, previousAssignment.getGroupId(), visitorId);
         }
 
-        String assignmentSetKey = buildAssignmentSetKey(experimentId, groupId);
-        redisTemplate.opsForSet().add(assignmentSetKey, visitorId);
-        redisTemplate.expire(assignmentSetKey, CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
+        addAssignmentSetProjection(experimentId, groupId, visitorId);
     }
 
     private ExperimentAssignment buildAssignment(String experimentId, String visitorId, String groupId,
@@ -422,8 +542,15 @@ public class TrafficServiceImpl implements TrafficService {
     }
 
     private void cacheAssignmentProjection(ExperimentAssignment assignment) {
-        redisTemplate.opsForValue().set(buildAssignmentKey(assignment.getExperimentId(), assignment.getVisitorId()), assignment,
-                CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
+        try {
+            redisTemplate.opsForValue().set(buildAssignmentKey(assignment.getExperimentId(), assignment.getVisitorId()),
+                    assignment, CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
+            recordCacheEvent(CACHE_OPERATION_ASSIGNMENT_PROJECTION_WRITE, CACHE_RESULT_SUCCESS);
+        } catch (Exception exception) {
+            recordCacheEvent(CACHE_OPERATION_ASSIGNMENT_PROJECTION_WRITE, CACHE_RESULT_ERROR);
+            log.warn("分流事实缓存写入失败，数据库事实已保留: experimentId={}, visitorId={}",
+                    assignment.getExperimentId(), assignment.getVisitorId(), exception);
+        }
     }
 
     private String buildAssignmentKey(String experimentId, String visitorId) {
@@ -462,8 +589,10 @@ public class TrafficServiceImpl implements TrafficService {
             return;
         }
 
-        Object legacyGroupId = redisTemplate.opsForHash().get(USER_GROUP_CACHE_PREFIX + rawVisitorId, experimentId);
-        Object legacyVersion = redisTemplate.opsForHash().get(USER_GROUP_CACHE_PREFIX + rawVisitorId, experimentId + VER_SUFFIX);
+        Object legacyGroupId = readTrafficCache(USER_GROUP_CACHE_PREFIX + rawVisitorId, experimentId,
+                CACHE_OPERATION_USER_GROUP);
+        Object legacyVersion = readTrafficCache(USER_GROUP_CACHE_PREFIX + rawVisitorId, experimentId + VER_SUFFIX,
+                CACHE_OPERATION_USER_GROUP_VERSION);
         if (legacyGroupId == null) {
             return;
         }
@@ -480,5 +609,65 @@ public class TrafficServiceImpl implements TrafficService {
         cacheUserGroup(canonicalVisitorId, experimentId, legacyGroupId.toString(), configVersion);
         recordAssignment(experimentId, canonicalVisitorId, legacyGroupId.toString(), metadata,
                 Collections.emptyMap());
+    }
+
+    private Object readTrafficCache(String cacheKey, String field, String operation) {
+        try {
+            Object cacheValue = redisTemplate.opsForHash().get(cacheKey, field);
+            recordCacheEvent(operation, cacheValue != null ? CACHE_RESULT_HIT : CACHE_RESULT_MISS);
+            return cacheValue;
+        } catch (Exception exception) {
+            recordCacheEvent(operation, CACHE_RESULT_ERROR);
+            log.warn("分流缓存读取失败，降级为重新计算: cacheKey={}, field={}", cacheKey, field, exception);
+            return null;
+        }
+    }
+
+    private void deleteTrafficCacheFields(String cacheKey, String... fields) {
+        try {
+            redisTemplate.opsForHash().delete(cacheKey, (Object[]) fields);
+            recordCacheEvent(CACHE_OPERATION_USER_GROUP_DELETE, CACHE_RESULT_SUCCESS);
+        } catch (Exception exception) {
+            recordCacheEvent(CACHE_OPERATION_USER_GROUP_DELETE, CACHE_RESULT_ERROR);
+            log.warn("分流缓存删除失败，将在后续请求继续按版本校验: cacheKey={}", cacheKey, exception);
+        }
+    }
+
+    private Object readLayerAssignment(String layerKey, String layerId, String experimentId, String visitorId) {
+        try {
+            Object assignment = redisTemplate.opsForValue().get(layerKey);
+            recordCacheEvent(CACHE_OPERATION_LAYER_ASSIGNMENT_READ,
+                    assignment != null ? CACHE_RESULT_HIT : CACHE_RESULT_MISS);
+            return assignment;
+        } catch (Exception exception) {
+            recordCacheEvent(CACHE_OPERATION_LAYER_ASSIGNMENT_READ, CACHE_RESULT_ERROR);
+            log.warn("分层互斥缓存读取失败，分流降级为放行: layerId={}, experimentId={}, visitorId={}",
+                    layerId, experimentId, visitorId, exception);
+            return null;
+        }
+    }
+
+    private void removeAssignmentSetProjection(String experimentId, String groupId, String visitorId) {
+        try {
+            redisTemplate.opsForSet().remove(buildAssignmentSetKey(experimentId, groupId), visitorId);
+            recordCacheEvent(CACHE_OPERATION_ASSIGNMENT_SET_DELETE, CACHE_RESULT_SUCCESS);
+        } catch (Exception exception) {
+            recordCacheEvent(CACHE_OPERATION_ASSIGNMENT_SET_DELETE, CACHE_RESULT_ERROR);
+            log.warn("分流集合缓存删除失败: experimentId={}, groupId={}, visitorId={}",
+                    experimentId, groupId, visitorId, exception);
+        }
+    }
+
+    private void addAssignmentSetProjection(String experimentId, String groupId, String visitorId) {
+        String assignmentSetKey = buildAssignmentSetKey(experimentId, groupId);
+        try {
+            redisTemplate.opsForSet().add(assignmentSetKey, visitorId);
+            redisTemplate.expire(assignmentSetKey, CACHE_EXPIRE_DAYS, TimeUnit.DAYS);
+            recordCacheEvent(CACHE_OPERATION_ASSIGNMENT_SET_WRITE, CACHE_RESULT_SUCCESS);
+        } catch (Exception exception) {
+            recordCacheEvent(CACHE_OPERATION_ASSIGNMENT_SET_WRITE, CACHE_RESULT_ERROR);
+            log.warn("分流集合缓存写入失败，数据库事实已保留: experimentId={}, groupId={}, visitorId={}",
+                    experimentId, groupId, visitorId, exception);
+        }
     }
 }

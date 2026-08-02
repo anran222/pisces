@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.ApplicationDictionaryMapper">
+
+    <resultMap id="applicationEventDefinitionResultMap"
+               type="com.pisces.service.entity.ApplicationEventDefinitionEntity">
+        <id column="id" property="id"/>
+        <result column="app_id" property="appId"/>
+        <result column="event_key" property="eventKey"/>
+        <result column="label" property="label"/>
+        <result column="description" property="description"/>
+        <result column="category" property="category"/>
+        <result column="is_primary" property="primary"/>
+        <result column="source_experiment_id" property="sourceExperimentId"/>
+        <result column="updated_by" property="updatedBy"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <resultMap id="applicationMetricDefinitionResultMap"
+               type="com.pisces.service.entity.ApplicationMetricDefinitionEntity">
+        <id column="id" property="id"/>
+        <result column="app_id" property="appId"/>
+        <result column="metric_key" property="metricKey"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="aggregation_type" property="aggregationType"/>
+        <result column="numerator_event_type" property="numeratorEventType"/>
+        <result column="denominator_type" property="denominatorType"/>
+        <result column="denominator_event_type" property="denominatorEventType"/>
+        <result column="is_primary_metric" property="primaryMetric"/>
+        <result column="is_guardrail_metric" property="guardrailMetric"/>
+        <result column="source_experiment_id" property="sourceExperimentId"/>
+        <result column="updated_by" property="updatedBy"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <insert id="upsertEventDefinition" parameterType="com.pisces.service.entity.ApplicationEventDefinitionEntity">
+        INSERT INTO pisces_application_event_definition
+            (app_id, event_key, label, description, category, is_primary, source_experiment_id,
+             updated_by, created_at, updated_at)
+        VALUES
+            (#{entity.appId}, #{entity.eventKey}, #{entity.label}, #{entity.description}, #{entity.category},
+             #{entity.primary}, #{entity.sourceExperimentId}, #{entity.updatedBy}, #{entity.createdAt},
+             #{entity.updatedAt})
+        ON DUPLICATE KEY UPDATE
+            label = VALUES(label),
+            description = VALUES(description),
+            category = VALUES(category),
+            is_primary = VALUES(is_primary),
+            source_experiment_id = VALUES(source_experiment_id),
+            updated_by = VALUES(updated_by),
+            updated_at = VALUES(updated_at)
+    </insert>
+
+    <insert id="upsertMetricDefinition" parameterType="com.pisces.service.entity.ApplicationMetricDefinitionEntity">
+        INSERT INTO pisces_application_metric_definition
+            (app_id, metric_key, name, description, aggregation_type, numerator_event_type,
+             denominator_type, denominator_event_type, is_primary_metric, is_guardrail_metric,
+             source_experiment_id, updated_by, created_at, updated_at)
+        VALUES
+            (#{entity.appId}, #{entity.metricKey}, #{entity.name}, #{entity.description},
+             #{entity.aggregationType}, #{entity.numeratorEventType}, #{entity.denominatorType},
+             #{entity.denominatorEventType}, #{entity.primaryMetric}, #{entity.guardrailMetric},
+             #{entity.sourceExperimentId}, #{entity.updatedBy}, #{entity.createdAt}, #{entity.updatedAt})
+        ON DUPLICATE KEY UPDATE
+            name = VALUES(name),
+            description = VALUES(description),
+            aggregation_type = VALUES(aggregation_type),
+            numerator_event_type = VALUES(numerator_event_type),
+            denominator_type = VALUES(denominator_type),
+            denominator_event_type = VALUES(denominator_event_type),
+            is_primary_metric = VALUES(is_primary_metric),
+            is_guardrail_metric = VALUES(is_guardrail_metric),
+            source_experiment_id = VALUES(source_experiment_id),
+            updated_by = VALUES(updated_by),
+            updated_at = VALUES(updated_at)
+    </insert>
+
+    <select id="selectEventDefinitionsByAppId" resultMap="applicationEventDefinitionResultMap">
+        SELECT id, app_id, event_key, label, description, category, is_primary, source_experiment_id,
+               updated_by, created_at, updated_at
+        FROM pisces_application_event_definition
+        WHERE app_id = #{appId}
+        ORDER BY event_key ASC
+    </select>
+
+    <select id="selectMetricDefinitionsByAppId" resultMap="applicationMetricDefinitionResultMap">
+        SELECT id, app_id, metric_key, name, description, aggregation_type, numerator_event_type,
+               denominator_type, denominator_event_type, is_primary_metric, is_guardrail_metric,
+               source_experiment_id, updated_by, created_at, updated_at
+        FROM pisces_application_metric_definition
+        WHERE app_id = #{appId}
+        ORDER BY metric_key ASC
+    </select>
+</mapper>

@@ -23,7 +23,7 @@ public final class ExperimentConclusionStatusPolicy {
      * 解析最新分析建议状态
      */
     public static ExperimentMetadata.ConclusionStatus resolveSuggestedStatus(List<ExperimentReportSnapshot> snapshots) {
-        ExperimentReportSnapshot latestSnapshot = latestSnapshot(snapshots);
+        ExperimentReportSnapshot latestSnapshot = resolveLatestSnapshot(snapshots);
         if (latestSnapshot == null) {
             return null;
         }
@@ -34,14 +34,17 @@ public final class ExperimentConclusionStatusPolicy {
      * 解析最新分析建议更新时间
      */
     public static LocalDateTime resolveSuggestedUpdatedAt(List<ExperimentReportSnapshot> snapshots) {
-        ExperimentReportSnapshot latestSnapshot = latestSnapshot(snapshots);
+        ExperimentReportSnapshot latestSnapshot = resolveLatestSnapshot(snapshots);
         if (latestSnapshot == null) {
             return null;
         }
         return latestSnapshot.getGeneratedAt();
     }
 
-    private static ExperimentReportSnapshot latestSnapshot(List<ExperimentReportSnapshot> snapshots) {
+    /**
+     * 解析最新报告快照
+     */
+    public static ExperimentReportSnapshot resolveLatestSnapshot(List<ExperimentReportSnapshot> snapshots) {
         if (snapshots == null || snapshots.isEmpty()) {
             return null;
         }
@@ -52,7 +55,7 @@ public final class ExperimentConclusionStatusPolicy {
                 .orElseGet(() -> snapshots.stream()
                         .filter(Objects::nonNull)
                         .max(Comparator.comparing(ExperimentReportSnapshot::getGeneratedAt,
-                                Comparator.nullsLast(Comparator.naturalOrder())))
+                                Comparator.nullsFirst(Comparator.naturalOrder())))
                         .orElse(null));
     }
 }

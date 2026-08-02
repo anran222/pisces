@@ -15,6 +15,7 @@ public class ExperimentConfig {
     private String name;
     private String description;
     private String status;
+    private Long configVersion;
     private List<EventDefinition> eventDefinitions;
     private List<MetricDefinition> metricDefinitions;
     private List<GroupConfigFieldDefinition> groupConfigSchema;
@@ -51,6 +52,14 @@ public class ExperimentConfig {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public Long getConfigVersion() {
+        return configVersion;
+    }
+
+    public void setConfigVersion(Long configVersion) {
+        this.configVersion = configVersion;
     }
 
     public List<EventDefinition> getEventDefinitions() {

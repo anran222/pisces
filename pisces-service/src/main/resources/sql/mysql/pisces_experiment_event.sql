@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS pisces_experiment_event (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     PRIMARY KEY (id),
     UNIQUE KEY uk_event_id (event_id),
-    UNIQUE KEY uk_client_event_id (client_event_id),
+    UNIQUE KEY uk_event_experiment_client_event (experiment_id, client_event_id),
     KEY idx_event_exp_group_type (experiment_id, group_id, event_type),
+    KEY idx_event_replay_scope (experiment_id, group_id, event_time, event_type),
     KEY idx_event_exp_visitor (experiment_id, visitor_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pisces实验事件事实表';

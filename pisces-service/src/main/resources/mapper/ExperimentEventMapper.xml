@@ -18,13 +18,22 @@
         <result column="created_at" property="createdAt"/>
     </resultMap>
 
-    <insert id="insert" parameterType="com.pisces.service.entity.ExperimentEventEntity">
-        INSERT INTO pisces_experiment_event
+    <insert id="insertIgnore" parameterType="com.pisces.service.entity.ExperimentEventEntity">
+        INSERT IGNORE INTO pisces_experiment_event
             (event_id, experiment_id, visitor_id, group_id, event_type, event_name, client_event_id, properties_json, event_time)
         VALUES
             (#{entity.eventId}, #{entity.experimentId}, #{entity.visitorId}, #{entity.groupId}, #{entity.eventType},
              #{entity.eventName}, #{entity.clientEventId}, #{entity.propertiesJson}, #{entity.eventTime})
     </insert>
+
+    <select id="selectByExperimentIdAndClientEventId" resultMap="experimentEventEntityResultMap">
+        SELECT id, event_id, experiment_id, visitor_id, group_id, event_type, event_name, client_event_id,
+               properties_json, event_time, created_at
+        FROM pisces_experiment_event
+        WHERE experiment_id = #{experimentId}
+          AND client_event_id = #{clientEventId}
+        LIMIT 1
+    </select>
 
     <select id="countByExperimentIdAndGroupIdAndEventType" resultType="long">
         SELECT COUNT(1)
@@ -32,6 +41,119 @@
         WHERE experiment_id = #{experimentId}
           AND group_id = #{groupId}
           AND event_type = #{eventType}
+    </select>
+
+    <select id="countByReplayScope" resultType="long">
+        SELECT COUNT(1)
+        FROM pisces_experiment_event
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+        <if test="startTime != null">
+          AND event_time <![CDATA[>=]]> #{startTime}
+        </if>
+        <if test="endTime != null">
+          AND event_time <![CDATA[<=]]> #{endTime}
+        </if>
+        <if test="eventTypes != null and eventTypes.size() > 0">
+          AND event_type IN
+          <foreach collection="eventTypes" item="eventType" open="(" separator="," close=")">
+            #{eventType}
+          </foreach>
+        </if>
+    </select>
+
+    <select id="selectByReplayScope" resultMap="experimentEventEntityResultMap">
+        SELECT id, event_id, experiment_id, visitor_id, group_id, event_type, event_name, client_event_id,
+               properties_json, event_time, created_at
+        FROM pisces_experiment_event
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+        <if test="startTime != null">
+          AND event_time <![CDATA[>=]]> #{startTime}
+        </if>
+        <if test="endTime != null">
+          AND event_time <![CDATA[<=]]> #{endTime}
+        </if>
+        <if test="eventTypes != null and eventTypes.size() > 0">
+          AND event_type IN
+          <foreach collection="eventTypes" item="eventType" open="(" separator="," close=")">
+            #{eventType}
+          </foreach>
+        </if>
+        ORDER BY event_time ASC, id ASC
+    </select>
+
+    <select id="selectByReplayScopeBatch" resultMap="experimentEventEntityResultMap">
+        SELECT id, event_id, experiment_id, visitor_id, group_id, event_type, event_name, client_event_id,
+               properties_json, event_time, created_at
+        FROM pisces_experiment_event
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+        <if test="startTime != null">
+          AND event_time <![CDATA[>=]]> #{startTime}
+        </if>
+        <if test="endTime != null">
+          AND event_time <![CDATA[<=]]> #{endTime}
+        </if>
+        <if test="eventTypes != null and eventTypes.size() > 0">
+          AND event_type IN
+          <foreach collection="eventTypes" item="eventType" open="(" separator="," close=")">
+            #{eventType}
+          </foreach>
+        </if>
+        ORDER BY event_time ASC, id ASC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="selectUnmaterializedByReplayScope" resultMap="experimentEventEntityResultMap">
+        SELECT e.id, e.event_id, e.experiment_id, e.visitor_id, e.group_id, e.event_type, e.event_name,
+               e.client_event_id, e.properties_json, e.event_time, e.created_at
+        FROM pisces_experiment_event e
+        LEFT JOIN pisces_event_materialization m
+          ON m.fact_kind = 'EVENT'
+         AND m.fact_id = e.event_id
+        WHERE e.experiment_id = #{experimentId}
+          AND e.group_id = #{groupId}
+          AND m.fact_id IS NULL
+        <if test="startTime != null">
+          AND e.event_time <![CDATA[>=]]> #{startTime}
+        </if>
+        <if test="endTime != null">
+          AND e.event_time <![CDATA[<=]]> #{endTime}
+        </if>
+        <if test="eventTypes != null and eventTypes.size() > 0">
+          AND e.event_type IN
+          <foreach collection="eventTypes" item="eventType" open="(" separator="," close=")">
+            #{eventType}
+          </foreach>
+        </if>
+        ORDER BY e.event_time ASC, e.id ASC
+    </select>
+
+    <select id="selectUnmaterializedByReplayScopeBatch" resultMap="experimentEventEntityResultMap">
+        SELECT e.id, e.event_id, e.experiment_id, e.visitor_id, e.group_id, e.event_type, e.event_name,
+               e.client_event_id, e.properties_json, e.event_time, e.created_at
+        FROM pisces_experiment_event e
+        LEFT JOIN pisces_event_materialization m
+          ON m.fact_kind = 'EVENT'
+         AND m.fact_id = e.event_id
+        WHERE e.experiment_id = #{experimentId}
+          AND e.group_id = #{groupId}
+          AND m.fact_id IS NULL
+        <if test="startTime != null">
+          AND e.event_time <![CDATA[>=]]> #{startTime}
+        </if>
+        <if test="endTime != null">
+          AND e.event_time <![CDATA[<=]]> #{endTime}
+        </if>
+        <if test="eventTypes != null and eventTypes.size() > 0">
+          AND e.event_type IN
+          <foreach collection="eventTypes" item="eventType" open="(" separator="," close=")">
+            #{eventType}
+          </foreach>
+        </if>
+        ORDER BY e.event_time ASC, e.id ASC
+        LIMIT #{limit} OFFSET #{offset}
     </select>
 
     <select id="countDistinctVisitorByExperimentIdAndGroupId" resultType="long">
@@ -48,6 +170,16 @@
         WHERE experiment_id = #{experimentId}
           AND group_id = #{groupId}
         ORDER BY event_time ASC, id ASC
+    </select>
+
+    <select id="selectByExperimentIdAndGroupIdBatch" resultMap="experimentEventEntityResultMap">
+        SELECT id, event_id, experiment_id, visitor_id, group_id, event_type, event_name, client_event_id,
+               properties_json, event_time, created_at
+        FROM pisces_experiment_event
+        WHERE experiment_id = #{experimentId}
+          AND group_id = #{groupId}
+        ORDER BY event_time ASC, id ASC
+        LIMIT #{limit} OFFSET #{offset}
     </select>
 
     <select id="selectByExperimentIdAndGroupIdInTimeRange" resultMap="experimentEventEntityResultMap">

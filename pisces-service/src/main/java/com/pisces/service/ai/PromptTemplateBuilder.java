@@ -153,6 +153,7 @@ public class PromptTemplateBuilder {
                 - statisticsFacts: %s
                 - groupMetricSnapshot: %s
                 - dataQualityFacts: %s
+                - reportSnapshotFacts: %s
                 - decisionHints: %s
 
                 输出要求：
@@ -167,6 +168,7 @@ public class PromptTemplateBuilder {
                 defaultValue(formatStatisticsFacts(context)),
                 defaultValue(formatGroupMetricSnapshot(context)),
                 defaultValue(formatDataQualityFacts(context)),
+                defaultValue(formatReportSnapshotFacts(context)),
                 defaultValue(buildDecisionHints(context)),
                 DIAGNOSIS_JSON_FIELDS,
                 CONFIDENCE_REQUIREMENT);
@@ -182,6 +184,7 @@ public class PromptTemplateBuilder {
                 - statisticsFacts: %s
                 - groupMetricSnapshot: %s
                 - dataQualityFacts: %s
+                - reportSnapshotFacts: %s
                 - decisionHints: %s
 
                 输出要求：
@@ -196,6 +199,7 @@ public class PromptTemplateBuilder {
                 defaultValue(formatStatisticsFacts(context)),
                 defaultValue(formatGroupMetricSnapshot(context)),
                 defaultValue(formatDataQualityFacts(context)),
+                defaultValue(formatReportSnapshotFacts(context)),
                 defaultValue(buildDecisionHints(context)),
                 GRADUATION_JSON_FIELDS,
                 CONFIDENCE_REQUIREMENT);
@@ -418,6 +422,13 @@ public class PromptTemplateBuilder {
         appendFact(facts, "blockingIssues", dataQualityCheck.getBlockingIssues());
         appendFact(facts, "warnings", dataQualityCheck.getWarnings());
         return facts.isEmpty() ? EMPTY_VALUE : String.join("; ", facts);
+    }
+
+    private String formatReportSnapshotFacts(ExperimentDecisionContext context) {
+        if (context == null || context.getReportSnapshotFacts() == null || context.getReportSnapshotFacts().isEmpty()) {
+            return EMPTY_VALUE;
+        }
+        return String.join("; ", context.getReportSnapshotFacts());
     }
 
     private String buildDecisionHints(ExperimentDecisionContext context) {

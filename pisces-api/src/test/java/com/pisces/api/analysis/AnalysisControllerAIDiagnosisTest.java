@@ -1,5 +1,6 @@
 package com.pisces.api.analysis;
 
+import com.pisces.common.response.AIDecisionEvidenceResponse;
 import com.pisces.common.response.AIDiagnosisResponse;
 import com.pisces.service.service.AIDecisionService;
 import com.pisces.service.service.AnalysisService;
@@ -36,6 +37,12 @@ class AnalysisControllerAIDiagnosisTest {
         response.setSummary("AI实验诊断草案: 新客首单优惠");
         response.setGuardrailStatus("BLOCKED");
         response.setRiskFlags(List.of("SRM"));
+        AIDecisionEvidenceResponse evidence = new AIDecisionEvidenceResponse();
+        evidence.setExperimentId("exp_1");
+        evidence.setAnalysisReady(false);
+        evidence.setBlockingIssues(List.of("样本量不足"));
+        evidence.setLatestReportSnapshotVersion(7);
+        response.setEvidence(evidence);
 
         when(aiDecisionService.diagnoseExperiment("exp_1")).thenReturn(response);
 
@@ -43,6 +50,10 @@ class AnalysisControllerAIDiagnosisTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.decisionType").value("DIAGNOSIS"))
                 .andExpect(jsonPath("$.data.guardrailStatus").value("BLOCKED"))
-                .andExpect(jsonPath("$.data.riskFlags[0]").value("SRM"));
+                .andExpect(jsonPath("$.data.riskFlags[0]").value("SRM"))
+                .andExpect(jsonPath("$.data.evidence.experimentId").value("exp_1"))
+                .andExpect(jsonPath("$.data.evidence.analysisReady").value(false))
+                .andExpect(jsonPath("$.data.evidence.latestReportSnapshotVersion").value(7))
+                .andExpect(jsonPath("$.data.evidence.blockingIssues[0]").value("样本量不足"));
     }
 }

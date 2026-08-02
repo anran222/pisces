@@ -1,0 +1,64 @@
+flowchart TB
+    subgraph Client [接入层]
+        WEB[pisces-web<br/>管理台]
+        SDKJ[Java SDK]
+        SDKS[JS SDK]
+    end
+
+    subgraph API [pisces-api]
+        CE[Experiment]
+        CT[Traffic]
+        CD[Data]
+        CA[Analysis]
+        CV[Variant]
+    end
+
+    subgraph Service [pisces-service]
+        S1[实验主流程]
+        S2[分流 &amp; MAB]
+        S3[统计 &amp; 贝叶斯]
+        S4[AI 决策引擎]
+        S5[变体生成]
+        S6[演示 &amp; 补数]
+    end
+
+    subgraph Storage [存储层]
+        R[(Redis<br/>事件/MAB)]
+        Z[(Zookeeper<br/>配置)]
+        M[(MySQL<br/>兜底)]
+    end
+
+    subgraph LLM [外部 AI]
+        T[阿里百炼<br/>DashScope]
+    end
+
+    WEB --> API
+    SDKJ --> API
+    SDKS --> API
+
+    CE --> S1
+    CT --> S2
+    CD --> S1
+    CA --> S3
+    CA --> S4
+    CV --> S5
+    CE --> S6
+
+    S1 --> Z
+    S1 --> M
+    S2 --> R
+    S3 --> R
+    S4 --> T
+    S5 --> T
+
+    classDef client fill:#d1fae5,stroke:#059669,color:#064e3b;
+    classDef api fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+    classDef svc fill:#fef3c7,stroke:#d97706,color:#78350f;
+    classDef store fill:#e0e7ff,stroke:#6366f1,color:#312e81;
+    classDef ext fill:#fce7f3,stroke:#db2777,color:#831843;
+
+    class WEB,SDKJ,SDKS client;
+    class CE,CT,CD,CA,CV api;
+    class S1,S2,S3,S4,S5,S6 svc;
+    class R,Z,M store;
+    class T ext;

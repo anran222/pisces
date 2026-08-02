@@ -22,6 +22,21 @@ public class ExperimentCreateRequest extends BaseRequest {
     private String name;
     
     private String description;
+
+    /**
+     * 所属应用ID。非管理员 API Key 会强制使用 Key 绑定的 appId。
+     */
+    private String appId;
+
+    /**
+     * 归属人。未传时使用 API Key owner 或 system。
+     */
+    private String owner;
+
+    /**
+     * 所属流量分层 ID。互斥层内同一应用只允许一个实验运行。
+     */
+    private String layerId;
     
     @NotNull(message = "开始时间不能为空")
     private LocalDateTime startTime;

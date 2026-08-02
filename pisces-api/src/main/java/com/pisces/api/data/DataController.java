@@ -3,7 +3,9 @@ package com.pisces.api.data;
 import com.pisces.common.request.EventReportRequest;
 import com.pisces.common.request.ExposureReportRequest;
 import com.pisces.common.response.BaseResponse;
+import com.pisces.service.annotation.ApiKeyScopeRequired;
 import com.pisces.service.annotation.NoTokenRequired;
+import com.pisces.service.security.ApiKeyScope;
 import com.pisces.service.service.DataService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -15,6 +17,7 @@ import org.springframework.web.bind.annotation.*;
  */
 @RestController
 @RequestMapping("/data")
+@ApiKeyScopeRequired(ApiKeyScope.RUNTIME)
 @NoTokenRequired  // 无需Token认证
 @RequiredArgsConstructor
 public class DataController {

@@ -16,6 +16,15 @@ public interface VariantGenerationService {
      * @return 生成的变体列表
      */
     List<String> generateTextVariants(String prompt, int count);
+
+    /**
+     * 获取当前请求线程内最近一次文本生成的 AI 调用元数据。
+     *
+     * @return AI 调用元数据，未执行文本生成时为空
+     */
+    default Map<String, Object> getLastTextGenerationMetadata() {
+        return Map.of();
+    }
     
     /**
      * 生成图像类变体（商品主图、详情页配图等）

@@ -79,6 +79,16 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
     }
 
     @Override
+    public Map<String, Object> getLastTextGenerationMetadata() {
+        TongYiTextGenerationClient.TextGenerationInvocationSummary invocationSummary =
+                tongYiTextGenerationClient.getLastInvocationSummary();
+        if (invocationSummary == null) {
+            return Map.of();
+        }
+        return invocationSummary.toMetadataMap();
+    }
+
+    @Override
     public List<String> generateImageVariants(String prompt, int count) {
         return generateImageVariants(prompt, count, Collections.emptyMap());
     }

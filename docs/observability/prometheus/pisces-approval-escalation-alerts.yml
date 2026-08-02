@@ -1,0 +1,74 @@
+groups:
+  - name: pisces-approval-escalation.rules
+    interval: 30s
+    rules:
+      - alert: PiscesApprovalEscalationDeadDelivery
+        expr: max(pisces_approval_escalation_delivery_count{status="DEAD"}) > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: approval-escalation
+        annotations:
+          summary: "Pisces approval escalation delivery has dead channels"
+          description: "At least one active approval escalation delivery channel is DEAD. Check the application outbox and retry or repair the webhook channel."
+
+      - alert: PiscesApprovalEscalationUndeliveredBacklog
+        expr: max(pisces_approval_escalation_notification_count{status="UNDELIVERED"}) > 0
+        for: 15m
+        labels:
+          severity: warning
+          component: approval-escalation
+        annotations:
+          summary: "Pisces approval escalation outbox has undelivered active alerts"
+          description: "Active approval escalation alerts have stayed undelivered for more than 15 minutes. Check dispatcher health, webhook targets, and retry state."
+
+      - alert: PiscesApprovalEscalationMetricsRefreshUnhealthy
+        expr: pisces_approval_escalation_metrics_refresh_healthy == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: approval-escalation
+        annotations:
+          summary: "Pisces approval escalation metrics refresh is unhealthy"
+          description: "The service reported a failed approval escalation metrics refresh. Check repository access and application logs."
+
+      - alert: PiscesApprovalEscalationMetricsRefreshStale
+        expr: time() - pisces_approval_escalation_metrics_last_refresh_epoch_seconds > 120
+        for: 5m
+        labels:
+          severity: warning
+          component: approval-escalation
+        annotations:
+          summary: "Pisces approval escalation metrics refresh is stale"
+          description: "Approval escalation metrics have not refreshed for more than 120 seconds. Check the scheduler thread and service health."
+
+      - alert: PiscesApprovalEscalationMetricsMissing
+        expr: absent(pisces_approval_escalation_metrics_refresh_healthy)
+        for: 5m
+        labels:
+          severity: critical
+          component: approval-escalation
+        annotations:
+          summary: "Pisces approval escalation metrics are missing"
+          description: "Prometheus cannot find approval escalation metrics. Check scrape configuration, /api/actuator/prometheus, and the service deployment."
+
+      - alert: PiscesApprovalEscalationDispatcherEnabledWithoutTargets
+        expr: pisces_approval_escalation_dispatcher_enabled == 1 and pisces_approval_escalation_dispatcher_targets == 0
+        for: 10m
+        labels:
+          severity: warning
+          component: approval-escalation
+        annotations:
+          summary: "Pisces approval escalation dispatcher has no targets"
+          description: "Dispatcher is enabled but no webhook target is configured. Check PISCES_APPROVAL_ESCALATION_WEBHOOK_URL or PISCES_APPROVAL_ESCALATION_WEBHOOK_URLS."
+
+      # Enable this rule only in environments where external escalation dispatch is mandatory.
+      # - alert: PiscesApprovalEscalationDispatcherDisabled
+      #   expr: pisces_approval_escalation_dispatcher_enabled == 0
+      #   for: 10m
+      #   labels:
+      #     severity: warning
+      #     component: approval-escalation
+      #   annotations:
+      #     summary: "Pisces approval escalation dispatcher is disabled"
+      #     description: "External escalation dispatch is expected in this environment, but dispatcher_enabled is 0."

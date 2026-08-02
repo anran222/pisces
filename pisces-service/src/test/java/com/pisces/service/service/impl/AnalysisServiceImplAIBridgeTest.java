@@ -1,8 +1,11 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.ExperimentDecisionContext;
+import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.common.response.AIDecisionEvidenceResponse;
 import com.pisces.common.response.AIGraduationDecisionResponse;
 import com.pisces.service.service.AIDecisionService;
+import com.pisces.service.service.ConfigService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
@@ -15,6 +18,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * AnalysisService AI桥接测试
@@ -36,6 +41,10 @@ class AnalysisServiceImplAIBridgeTest {
         response.setDecision("CONTINUE");
         response.setConfidence(0.78D);
         response.setRiskFlags(List.of("SRM"));
+        AIDecisionEvidenceResponse evidence = new AIDecisionEvidenceResponse();
+        evidence.setExperimentId("exp_1");
+        evidence.setLatestReportSnapshotVersion(7);
+        response.setEvidence(evidence);
         capturedExperimentId = null;
     }
 
@@ -43,8 +52,11 @@ class AnalysisServiceImplAIBridgeTest {
     void shouldReuseAiDecisionServiceForGraduation() {
         AnalysisServiceImpl analysisService = new AnalysisServiceImpl();
         AIDecisionService aiDecisionService = new StubAIDecisionService();
+        ConfigService configService = mock(ConfigService.class);
 
         ReflectionTestUtils.setField(analysisService, "aiDecisionServiceProvider", new StubObjectProvider(aiDecisionService));
+        ReflectionTestUtils.setField(analysisService, "configService", configService);
+        when(configService.getExperimentConfig("exp_1")).thenReturn(new ExperimentMetadata());
 
         Map<String, Object> result = analysisService.autoGraduateDecision("exp_1");
 
@@ -52,6 +64,7 @@ class AnalysisServiceImplAIBridgeTest {
         assertThat(result).containsEntry("guardrailStatus", "BLOCKED");
         assertThat(result).containsEntry("decision", "CONTINUE");
         assertThat(result).containsEntry("decisionType", "GRADUATION");
+        assertThat(result.get("evidence")).isSameAs(response.getEvidence());
         assertThat(capturedExperimentId).isEqualTo("exp_1");
     }
 

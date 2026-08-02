@@ -1,6 +1,7 @@
 package com.pisces.service.service;
 
 import com.pisces.common.model.ExperimentAssignment;
+import com.pisces.common.response.TrafficAssignmentResponse;
 
 import java.util.Collections;
 import java.util.Map;
@@ -30,6 +31,17 @@ public interface TrafficService {
      * @return 实验组ID
      */
     String assignGroup(String experimentId, String visitorId, Map<String, Object> attributes);
+
+    /**
+     * 分配访客到实验组，并返回命中原因和配置版本
+     *
+     * @param experimentId 实验ID
+     * @param visitorId 访客唯一标识
+     * @param attributes 访客属性
+     * @return 分流结果
+     */
+    TrafficAssignmentResponse assignGroupWithTrace(String experimentId, String visitorId,
+                                                   Map<String, Object> attributes);
     
     /**
      * 获取访客所在组

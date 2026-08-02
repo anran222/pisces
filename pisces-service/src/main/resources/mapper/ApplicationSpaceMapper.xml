@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pisces.service.mapper.ApplicationSpaceMapper">
+
+    <resultMap id="applicationSpaceEntityResultMap" type="com.pisces.service.entity.ApplicationSpaceEntity">
+        <id column="id" property="id"/>
+        <result column="app_id" property="appId"/>
+        <result column="display_name" property="displayName"/>
+        <result column="default_owner" property="defaultOwner"/>
+        <result column="experiment_quota" property="experimentQuota"/>
+        <result column="is_approval_required" property="approvalRequired"/>
+        <result column="approval_owners" property="approvalOwners"/>
+        <result column="approval_required_count" property="approvalRequiredCount"/>
+        <result column="approval_policy_version" property="approvalPolicyVersion"/>
+        <result column="approval_sla_hours" property="approvalSlaHours"/>
+        <result column="approval_escalation_owners" property="approvalEscalationOwners"/>
+        <result column="is_release_window_enabled" property="releaseWindowEnabled"/>
+        <result column="release_window_timezone" property="releaseWindowTimezone"/>
+        <result column="release_window_days" property="releaseWindowDays"/>
+        <result column="release_window_start_time" property="releaseWindowStartTime"/>
+        <result column="release_window_end_time" property="releaseWindowEndTime"/>
+        <result column="created_by" property="createdBy"/>
+        <result column="updated_by" property="updatedBy"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <insert id="upsert" parameterType="com.pisces.service.entity.ApplicationSpaceEntity">
+        INSERT INTO pisces_application_space
+            (app_id, display_name, default_owner, experiment_quota, is_approval_required, approval_owners,
+             approval_required_count, approval_policy_version, approval_sla_hours, approval_escalation_owners,
+             is_release_window_enabled, release_window_timezone, release_window_days,
+             release_window_start_time, release_window_end_time,
+             created_by, updated_by, created_at, updated_at)
+        VALUES
+            (#{entity.appId}, #{entity.displayName}, #{entity.defaultOwner}, #{entity.experimentQuota},
+             #{entity.approvalRequired}, #{entity.approvalOwners}, #{entity.approvalRequiredCount},
+             #{entity.approvalPolicyVersion}, #{entity.approvalSlaHours}, #{entity.approvalEscalationOwners},
+             #{entity.releaseWindowEnabled}, #{entity.releaseWindowTimezone}, #{entity.releaseWindowDays},
+             #{entity.releaseWindowStartTime}, #{entity.releaseWindowEndTime},
+             #{entity.createdBy}, #{entity.updatedBy}, #{entity.createdAt}, #{entity.updatedAt})
+        ON DUPLICATE KEY UPDATE
+            display_name = VALUES(display_name),
+            default_owner = VALUES(default_owner),
+            experiment_quota = VALUES(experiment_quota),
+            is_approval_required = VALUES(is_approval_required),
+            approval_owners = VALUES(approval_owners),
+            approval_required_count = VALUES(approval_required_count),
+            approval_policy_version = VALUES(approval_policy_version),
+            approval_sla_hours = VALUES(approval_sla_hours),
+            approval_escalation_owners = VALUES(approval_escalation_owners),
+            is_release_window_enabled = VALUES(is_release_window_enabled),
+            release_window_timezone = VALUES(release_window_timezone),
+            release_window_days = VALUES(release_window_days),
+            release_window_start_time = VALUES(release_window_start_time),
+            release_window_end_time = VALUES(release_window_end_time),
+            updated_by = VALUES(updated_by),
+            updated_at = VALUES(updated_at)
+    </insert>
+
+    <select id="selectByAppId" resultMap="applicationSpaceEntityResultMap">
+        SELECT id, app_id, display_name, default_owner, experiment_quota, is_approval_required, approval_owners,
+               approval_required_count, approval_policy_version, approval_sla_hours, approval_escalation_owners,
+               is_release_window_enabled, release_window_timezone, release_window_days,
+               release_window_start_time, release_window_end_time,
+               created_by, updated_by, created_at, updated_at
+        FROM pisces_application_space
+        WHERE app_id = #{appId}
+    </select>
+
+    <select id="selectAll" resultMap="applicationSpaceEntityResultMap">
+        SELECT id, app_id, display_name, default_owner, experiment_quota, is_approval_required, approval_owners,
+               approval_required_count, approval_policy_version, approval_sla_hours, approval_escalation_owners,
+               is_release_window_enabled, release_window_timezone, release_window_days,
+               release_window_start_time, release_window_end_time,
+               created_by, updated_by, created_at, updated_at
+        FROM pisces_application_space
+        ORDER BY app_id ASC
+    </select>
+</mapper>

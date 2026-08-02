@@ -1,0 +1,25 @@
+{
+  "assignment": {
+    "errorRate": 0,
+    "p95Ms": 120,
+    "p99Ms": 180,
+    "requests": 5000
+  },
+  "broadcast": {
+    "invalidDelta": 0,
+    "listenerErrorDelta": 0,
+    "publishErrorDelta": 0
+  },
+  "cache": {
+    "errorDelta": 0
+  },
+  "sdk": {
+    "requestFailureDelta": 0,
+    "retryDelta": 0,
+    "staleFallbackDelta": 0
+  },
+  "window": {
+    "finishedAt": "2026-07-20T12:30:00Z",
+    "startedAt": "2026-07-20T12:00:00Z"
+  }
+}

@@ -28,13 +28,71 @@ public class ExperimentEventRepository implements com.pisces.service.repository.
     private final JsonUtil jsonUtil;
 
     @Override
-    public void save(ExperimentEventFact eventFact) {
-        experimentEventMapper.insert(buildExperimentEventEntity(eventFact));
+    public boolean saveIfAbsent(ExperimentEventFact eventFact) {
+        return experimentEventMapper.insertIgnore(buildExperimentEventEntity(eventFact)) > 0;
+    }
+
+    @Override
+    public ExperimentEventFact findByExperimentIdAndClientEventId(String experimentId, String clientEventId) {
+        ExperimentEventEntity entity =
+                experimentEventMapper.selectByExperimentIdAndClientEventId(experimentId, clientEventId);
+        return entity == null ? null : buildExperimentEventFact(entity);
     }
 
     @Override
     public long countByExperimentIdAndGroupIdAndEventType(String experimentId, String groupId, String eventType) {
         return experimentEventMapper.countByExperimentIdAndGroupIdAndEventType(experimentId, groupId, eventType);
+    }
+
+    @Override
+    public long countByReplayScope(String experimentId, String groupId, LocalDateTime startTime,
+                                   LocalDateTime endTime, List<String> eventTypes) {
+        return experimentEventMapper.countByReplayScope(experimentId, groupId, startTime, endTime, eventTypes);
+    }
+
+    @Override
+    public List<ExperimentEventFact> listByReplayScope(String experimentId, String groupId,
+                                                       LocalDateTime startTime, LocalDateTime endTime,
+                                                       List<String> eventTypes) {
+        return experimentEventMapper.selectByReplayScope(experimentId, groupId, startTime, endTime, eventTypes)
+                .stream()
+                .map(this::buildExperimentEventFact)
+                .toList();
+    }
+
+    @Override
+    public List<ExperimentEventFact> listByReplayScopeBatch(String experimentId, String groupId,
+                                                            LocalDateTime startTime, LocalDateTime endTime,
+                                                            List<String> eventTypes, long offset, int limit) {
+        return experimentEventMapper.selectByReplayScopeBatch(experimentId, groupId, startTime, endTime, eventTypes,
+                        offset, limit)
+                .stream()
+                .map(this::buildExperimentEventFact)
+                .toList();
+    }
+
+    @Override
+    public List<ExperimentEventFact> listUnmaterializedByReplayScope(String experimentId, String groupId,
+                                                                     LocalDateTime startTime, LocalDateTime endTime,
+                                                                     List<String> eventTypes) {
+        return experimentEventMapper.selectUnmaterializedByReplayScope(experimentId, groupId, startTime, endTime,
+                        eventTypes)
+                .stream()
+                .map(this::buildExperimentEventFact)
+                .toList();
+    }
+
+    @Override
+    public List<ExperimentEventFact> listUnmaterializedByReplayScopeBatch(String experimentId, String groupId,
+                                                                          LocalDateTime startTime,
+                                                                          LocalDateTime endTime,
+                                                                          List<String> eventTypes,
+                                                                          long offset, int limit) {
+        return experimentEventMapper.selectUnmaterializedByReplayScopeBatch(experimentId, groupId, startTime,
+                        endTime, eventTypes, offset, limit)
+                .stream()
+                .map(this::buildExperimentEventFact)
+                .toList();
     }
 
     @Override
@@ -45,6 +103,15 @@ public class ExperimentEventRepository implements com.pisces.service.repository.
     @Override
     public List<ExperimentEventFact> listByExperimentIdAndGroupId(String experimentId, String groupId) {
         return experimentEventMapper.selectByExperimentIdAndGroupId(experimentId, groupId).stream()
+                .map(this::buildExperimentEventFact)
+                .toList();
+    }
+
+    @Override
+    public List<ExperimentEventFact> listByExperimentIdAndGroupIdBatch(String experimentId, String groupId,
+                                                                       long offset, int limit) {
+        return experimentEventMapper.selectByExperimentIdAndGroupIdBatch(experimentId, groupId, offset, limit)
+                .stream()
                 .map(this::buildExperimentEventFact)
                 .toList();
     }

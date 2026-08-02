@@ -7,6 +7,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.data.redis.serializer.Jackson2JsonRedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 
@@ -16,6 +17,8 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
 @Configuration
 @RequiredArgsConstructor
 public class RedisConfig {
+
+    private static final long REDIS_LISTENER_RECOVERY_INTERVAL_MILLIS = 5_000L;
 
     private final JsonUtil jsonUtil;
 
@@ -46,5 +49,16 @@ public class RedisConfig {
         
         template.afterPropertiesSet();
         return template;
+    }
+
+    /**
+     * Redis Pub/Sub 监听容器。
+     */
+    @Bean
+    public RedisMessageListenerContainer redisMessageListenerContainer(RedisConnectionFactory connectionFactory) {
+        RedisMessageListenerContainer container = new RedisMessageListenerContainer();
+        container.setConnectionFactory(connectionFactory);
+        container.setRecoveryInterval(REDIS_LISTENER_RECOVERY_INTERVAL_MILLIS);
+        return container;
     }
 }

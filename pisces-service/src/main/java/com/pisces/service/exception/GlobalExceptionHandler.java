@@ -71,18 +71,13 @@ public class GlobalExceptionHandler {
     private HttpStatus getHttpStatus(ResponseCode responseCode) {
         int code = responseCode.getCode();
         if (code >= 400 && code < 500) {
-            if (code == 401) {
-                return HttpStatus.UNAUTHORIZED;
-            } else if (code == 403) {
-                return HttpStatus.FORBIDDEN;
-            } else if (code == 404) {
-                return HttpStatus.NOT_FOUND;
-            } else {
-                return HttpStatus.BAD_REQUEST;
+            HttpStatus httpStatus = HttpStatus.resolve(code);
+            if (httpStatus != null) {
+                return httpStatus;
             }
+            return HttpStatus.BAD_REQUEST;
         } else {
             return HttpStatus.INTERNAL_SERVER_ERROR;
         }
     }
 }
-

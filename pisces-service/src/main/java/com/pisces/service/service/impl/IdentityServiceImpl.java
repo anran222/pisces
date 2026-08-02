@@ -52,8 +52,13 @@ public class IdentityServiceImpl implements IdentityService {
         if (visitorId == null || visitorId.isBlank()) {
             return visitorId;
         }
-        Object mapped = redisTemplate.opsForValue().get(BIND_PREFIX + visitorId);
-        return mapped != null ? mapped.toString() : visitorId;
+        try {
+            Object mapped = redisTemplate.opsForValue().get(BIND_PREFIX + visitorId);
+            return mapped != null ? mapped.toString() : visitorId;
+        } catch (Exception exception) {
+            log.warn("身份映射读取失败，降级使用原始访客 ID: visitorId={}", visitorId, exception);
+            return visitorId;
+        }
     }
 
     @Override

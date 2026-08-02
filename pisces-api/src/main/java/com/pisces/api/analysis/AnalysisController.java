@@ -5,9 +5,16 @@ import com.pisces.common.model.Statistics;
 import com.pisces.common.response.AIDiagnosisResponse;
 import com.pisces.common.response.AIGraduationDecisionResponse;
 import com.pisces.common.request.AIDesignRequest;
+import com.pisces.common.request.EventReplayPlanRequest;
 import com.pisces.common.response.AIDesignResponse;
 import com.pisces.common.response.BaseResponse;
+import com.pisces.common.response.EventPipelineOperationResponse;
+import com.pisces.common.response.EventPipelineStatusResponse;
+import com.pisces.common.response.EventReplayJobResponse;
+import com.pisces.common.response.EventReplayPlanResponse;
+import com.pisces.service.annotation.ApiKeyScopeRequired;
 import com.pisces.service.annotation.NoTokenRequired;
+import com.pisces.service.security.ApiKeyScope;
 import com.pisces.service.service.AIDecisionService;
 import com.pisces.service.service.AnalysisService;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +29,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/analysis")
+@ApiKeyScopeRequired(ApiKeyScope.ANALYSIS)
 @RequiredArgsConstructor
 public class AnalysisController {
 
@@ -36,6 +44,126 @@ public class AnalysisController {
     public BaseResponse<Statistics> getStatistics(@PathVariable String id) {
         Statistics statistics = analysisService.getStatistics(id);
         return BaseResponse.of(statistics);
+    }
+
+    /**
+     * 获取实验事件管道状态
+     */
+    @GetMapping("/experiment/{id}/event-pipeline")
+    @NoTokenRequired
+    public BaseResponse<EventPipelineStatusResponse> getEventPipelineStatus(@PathVariable String id) {
+        return BaseResponse.of(analysisService.getEventPipelineStatus(id));
+    }
+
+    /**
+     * 重试实验事件管道死信记录
+     */
+    @PostMapping("/experiment/{id}/event-pipeline/dead/retry")
+    @ApiKeyScopeRequired({ApiKeyScope.ANALYSIS, ApiKeyScope.MANAGEMENT})
+    @NoTokenRequired
+    public BaseResponse<EventPipelineOperationResponse> retryDeadEvents(
+            @PathVariable String id,
+            @RequestParam(value = "operator", required = false, defaultValue = "web-ui") String operator) {
+        return BaseResponse.of(analysisService.retryDeadEvents(id, operator));
+    }
+
+    /**
+     * 同步物化实验事件管道待处理记录
+     */
+    @PostMapping("/experiment/{id}/event-pipeline/drain")
+    @ApiKeyScopeRequired({ApiKeyScope.ANALYSIS, ApiKeyScope.MANAGEMENT})
+    @NoTokenRequired
+    public BaseResponse<EventPipelineOperationResponse> drainEventPipeline(
+            @PathVariable String id,
+            @RequestParam(value = "operator", required = false, defaultValue = "web-ui") String operator) {
+        return BaseResponse.of(analysisService.drainEventPipeline(id, operator));
+    }
+
+    /**
+     * 重放实验事实并重建事件管道派生数据
+     */
+    @PostMapping("/experiment/{id}/events/replay")
+    @ApiKeyScopeRequired({ApiKeyScope.ANALYSIS, ApiKeyScope.MANAGEMENT})
+    @NoTokenRequired
+    public BaseResponse<EventPipelineOperationResponse> replayEventPipeline(
+            @PathVariable String id,
+            @RequestBody(required = false) EventReplayPlanRequest request,
+            @RequestParam(value = "operator", required = false, defaultValue = "web-ui") String operator) {
+        return BaseResponse.of(analysisService.replayEventPipeline(id, request, operator));
+    }
+
+    /**
+     * 生成事件重放计划，不修改 Redis/MAB 派生数据
+     */
+    @PostMapping("/experiment/{id}/events/replay/plan")
+    @NoTokenRequired
+    public BaseResponse<EventReplayPlanResponse> planEventReplay(
+            @PathVariable String id,
+            @RequestBody(required = false) EventReplayPlanRequest request) {
+        return BaseResponse.of(analysisService.planEventReplay(id, request));
+    }
+
+    /**
+     * 修复缺失的事件派生物化账本。
+     */
+    @PostMapping("/experiment/{id}/events/replay/materialization/repair")
+    @ApiKeyScopeRequired({ApiKeyScope.ANALYSIS, ApiKeyScope.MANAGEMENT})
+    @NoTokenRequired
+    public BaseResponse<EventPipelineOperationResponse> repairEventMaterialization(
+            @PathVariable String id,
+            @RequestBody(required = false) EventReplayPlanRequest request,
+            @RequestParam(value = "operator", required = false, defaultValue = "web-ui") String operator) {
+        return BaseResponse.of(analysisService.repairEventMaterialization(id, request, operator));
+    }
+
+    /**
+     * 按重放计划分段修复缺失的事件派生物化账本。
+     */
+    @PostMapping("/experiment/{id}/events/replay/materialization/repair/segments/{segmentIndex}")
+    @ApiKeyScopeRequired({ApiKeyScope.ANALYSIS, ApiKeyScope.MANAGEMENT})
+    @NoTokenRequired
+    public BaseResponse<EventPipelineOperationResponse> repairEventMaterializationSegment(
+            @PathVariable String id,
+            @PathVariable Integer segmentIndex,
+            @RequestBody(required = false) EventReplayPlanRequest request,
+            @RequestParam(value = "operator", required = false, defaultValue = "web-ui") String operator) {
+        return BaseResponse.of(analysisService.repairEventMaterializationSegment(id, request,
+                segmentIndex == null ? -1 : segmentIndex, operator));
+    }
+
+    /**
+     * 查询实验事件重放任务
+     */
+    @GetMapping("/experiment/{id}/events/replay/jobs")
+    @NoTokenRequired
+    public BaseResponse<List<EventReplayJobResponse>> listEventReplayJobs(
+            @PathVariable String id,
+            @RequestParam(value = "limit", required = false, defaultValue = "10") Integer limit) {
+        return BaseResponse.of(analysisService.listEventReplayJobs(id, limit));
+    }
+
+    /**
+     * 查询实验事件重放任务详情
+     */
+    @GetMapping("/experiment/{id}/events/replay/jobs/{replayJobId}")
+    @NoTokenRequired
+    public BaseResponse<EventReplayJobResponse> getEventReplayJob(
+            @PathVariable String id,
+            @PathVariable String replayJobId) {
+        return BaseResponse.of(analysisService.getEventReplayJob(id, replayJobId));
+    }
+
+    /**
+     * 取消运行中的实验事件重放任务
+     */
+    @PostMapping("/experiment/{id}/events/replay/jobs/{replayJobId}/cancel")
+    @ApiKeyScopeRequired({ApiKeyScope.ANALYSIS, ApiKeyScope.MANAGEMENT})
+    @NoTokenRequired
+    public BaseResponse<EventPipelineOperationResponse> cancelEventReplayJob(
+            @PathVariable String id,
+            @PathVariable String replayJobId,
+            @RequestParam(value = "operator", required = false, defaultValue = "web-ui") String operator) {
+        return BaseResponse.of(analysisService.cancelEventReplayJob(id, replayJobId, operator));
     }
     
     /**

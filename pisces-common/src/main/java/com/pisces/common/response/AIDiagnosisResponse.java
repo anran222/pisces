@@ -43,6 +43,11 @@ public class AIDiagnosisResponse {
      */
     private List<RecommendedAction> recommendedActions;
 
+    /**
+     * 决策证据
+     */
+    private AIDecisionEvidenceResponse evidence;
+
     @Data
     public static class RecommendedAction {
 
