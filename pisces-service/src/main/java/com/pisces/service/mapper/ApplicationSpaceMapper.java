@@ -15,6 +15,8 @@ import java.util.List;
 @Mapper
 public interface ApplicationSpaceMapper {
 
+    int insert(@Param("entity") ApplicationSpaceEntity entity);
+
     int upsert(@Param("entity") ApplicationSpaceEntity entity);
 
     ApplicationSpaceEntity selectByAppId(@Param("appId") String appId);

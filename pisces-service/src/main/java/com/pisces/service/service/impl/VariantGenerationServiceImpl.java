@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class VariantGenerationServiceImpl implements VariantGenerationService {
 
-    private static final String TEXT_SYSTEM_PROMPT = "你是一个专业的文案生成助手，擅长生成多样化、高质量的商业文案。";
+    private static final String TEXT_SYSTEM_PROMPT = "你是资深增长实验方案专家，擅长将业务目标转化为可验证、可投放、可归因的商业候选方案。";
     private static final String TEXT_OPERATION_NAME = "通义文本生成";
     private static final String IMAGE_API_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/generation";
     private static final String IMAGE_SIZE = "1280*1280";
@@ -112,6 +112,9 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
     }
 
     private String buildStructuredPrompt(String originalPrompt, int count) {
+        if (originalPrompt.contains("完整方案输出格式")) {
+            return buildCompletePlanPrompt(originalPrompt, count);
+        }
         StringBuilder stringBuilder = new StringBuilder();
         stringBuilder.append("你是一个专业的文案生成助手。请根据以下要求生成").append(count).append("个不同的文案变体。\n\n");
         stringBuilder.append("原始需求：").append(originalPrompt).append("\n\n");
@@ -121,6 +124,22 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
         stringBuilder.append("3. 符合商业规范，不包含违规内容\n");
         stringBuilder.append("4. 每个变体长度控制在50-200字之间\n\n");
         stringBuilder.append("请直接输出").append(count).append("个文案变体，每个变体一行，用换行符分隔。");
+        return stringBuilder.toString();
+    }
+
+    private String buildCompletePlanPrompt(String originalPrompt, int count) {
+        StringBuilder stringBuilder = new StringBuilder();
+        stringBuilder.append("请根据以下业务与实验信息，生成")
+                .append(count)
+                .append("个可直接进入 A/B 实验的完整候选方案。\n\n");
+        stringBuilder.append("原始需求：\n").append(originalPrompt).append("\n\n");
+        stringBuilder.append("方案质量要求：\n");
+        stringBuilder.append("1. 各方案的核心策略必须实质不同，不能只做同义词替换\n");
+        stringBuilder.append("2. 实验假设必须说明变化、用户心理和目标指标之间的因果链路\n");
+        stringBuilder.append("3. 候选内容必须是可直接投放的最终内容，不得只给方向\n");
+        stringBuilder.append("4. 实施建议必须说明替换位置和需保持不变的变量\n");
+        stringBuilder.append("5. 风险提醒必须对应品牌、合规、理解偏差或转化副作用\n");
+        stringBuilder.append("6. 每个方案严格独占一行，不要输出序号、Markdown 或额外解释\n");
         return stringBuilder.toString();
     }
 

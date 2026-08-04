@@ -128,7 +128,13 @@ class VariantControllerTest {
                                   "constraints": ["突出质保", "语言简洁"],
                                   "count": 3,
                                   "sourceContext": {
-                                    "scene": "detail-page"
+                                    "scene": "商品详情页",
+                                    "primaryMetricKey": "ADD_TO_CART_RATE",
+                                    "primaryMetric": "加购转化率",
+                                    "guardrailMetrics": "退款申请率",
+                                    "startTime": "2026-08-05T09:00",
+                                    "endTime": "2026-08-19T09:00",
+                                    "hypothesis": "强化质保信息可降低决策疑虑"
                                   }
                                 }
                                 """))
@@ -155,7 +161,15 @@ class VariantControllerTest {
                 .contains("生成目标: 请为二手手机详情页生成3个文案变体")
                 .contains("目标受众: 二手手机购买用户")
                 .contains("约束条件: 突出质保；语言简洁")
-                .contains("上下文信息: scene=detail-page")
+                .contains("业务场景=商品详情页")
+                .contains("主指标编码=ADD_TO_CART_RATE")
+                .contains("主指标=加购转化率")
+                .contains("护栏指标=退款申请率")
+                .contains("实验开始时间=2026-08-05T09:00")
+                .contains("实验结束时间=2026-08-19T09:00")
+                .contains("实验假设=强化质保信息可降低决策疑虑")
+                .contains("完整方案输出格式")
+                .contains("方案名称：...｜策略方向：...｜候选内容：...")
                 .contains("请生成3个候选变体。");
     }
 
@@ -196,7 +210,8 @@ class VariantControllerTest {
                 .contains("生成目标: 请为二手手机主图生成2个图片候选")
                 .contains("目标受众: 二手手机购买用户")
                 .contains("约束条件: 白底；突出成色")
-                .contains("上下文信息: brief=当前主图背景层级较乱, referenceImage=provided")
+                .contains("上下文信息: 补充背景=当前主图背景层级较乱, referenceImage=provided")
+                .contains("图片方案必须围绕实验假设和主指标")
                 .contains("请生成2个候选变体。");
         assertThat(sourceContextCaptor.getValue())
                 .containsEntry("brief", "当前主图背景层级较乱")

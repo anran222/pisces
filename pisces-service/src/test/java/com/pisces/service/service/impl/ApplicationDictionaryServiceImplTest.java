@@ -77,13 +77,18 @@ class ApplicationDictionaryServiceImplTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void syncDefinitionsShouldPersistEventAndMetricDefinitions() {
+    void upsertApplicationDictionaryShouldPersistApplicationOwnedDefinitions() {
         ApiKeyContextHolder.set(principal("app-a", "owner-a", ApiKeyScope.MANAGEMENT));
         EventDefinition eventDefinition = eventDefinition("PRODUCT_VIEW", "商品查看", true);
         MetricDefinition metricDefinition = metricDefinition("PAY_RATE", "支付率");
+        metricDefinition.setNumeratorEventType("PRODUCT_VIEW");
+        when(applicationDictionaryRepository.findEventDefinitionsByAppId("app-a"))
+                .thenReturn(List.of(), List.of(applicationEventDefinition("PRODUCT_VIEW")));
+        when(applicationDictionaryRepository.findMetricDefinitionsByAppId("app-a"))
+                .thenReturn(List.of(applicationMetricDefinition("PAY_RATE")));
 
-        applicationDictionaryService.syncDefinitions("app-a", "exp_dict", List.of(eventDefinition),
-                List.of(metricDefinition));
+        applicationDictionaryService.upsertApplicationDictionary(
+                "app-a", List.of(eventDefinition), List.of(metricDefinition));
 
         ArgumentCaptor<List<ApplicationEventDefinition>> eventCaptor = ArgumentCaptor.forClass(List.class);
         ArgumentCaptor<List<ApplicationMetricDefinition>> metricCaptor = ArgumentCaptor.forClass(List.class);
@@ -92,7 +97,7 @@ class ApplicationDictionaryServiceImplTest {
         ApplicationEventDefinition savedEventDefinition = eventCaptor.getValue().get(0);
         assertThat(savedEventDefinition.getAppId()).isEqualTo("app-a");
         assertThat(savedEventDefinition.getKey()).isEqualTo("PRODUCT_VIEW");
-        assertThat(savedEventDefinition.getSourceExperimentId()).isEqualTo("exp_dict");
+        assertThat(savedEventDefinition.getSourceExperimentId()).isNull();
         assertThat(savedEventDefinition.getUpdatedBy()).isEqualTo("owner-a");
         assertThat(savedEventDefinition.getCreatedAt()).isNotNull();
         assertThat(savedEventDefinition.getUpdatedAt()).isNotNull();
@@ -100,9 +105,48 @@ class ApplicationDictionaryServiceImplTest {
         ApplicationMetricDefinition savedMetricDefinition = metricCaptor.getValue().get(0);
         assertThat(savedMetricDefinition.getAppId()).isEqualTo("app-a");
         assertThat(savedMetricDefinition.getKey()).isEqualTo("PAY_RATE");
-        assertThat(savedMetricDefinition.getSourceExperimentId()).isEqualTo("exp_dict");
+        assertThat(savedMetricDefinition.getSourceExperimentId()).isNull();
         assertThat(savedMetricDefinition.getUpdatedBy()).isEqualTo("owner-a");
         assertThat(savedMetricDefinition.getAggregationType()).isEqualTo(MetricDefinition.AggregationType.RATE);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void upsertApplicationDictionaryShouldNormalizeAndPersistDefinitions() {
+        ApiKeyContextHolder.set(principal("app-a", "owner-a", ApiKeyScope.MANAGEMENT));
+        EventDefinition eventDefinition = eventDefinition(" product_view ", "商品查看", true);
+        MetricDefinition metricDefinition = metricDefinition(" view_rate ", "浏览率");
+        metricDefinition.setNumeratorEventType("product_view");
+        metricDefinition.setDenominatorEventType("product_view");
+        when(applicationDictionaryRepository.findEventDefinitionsByAppId("app-a"))
+                .thenReturn(List.of(), List.of(applicationEventDefinition("PRODUCT_VIEW")));
+        when(applicationDictionaryRepository.findMetricDefinitionsByAppId("app-a"))
+                .thenReturn(List.of(applicationMetricDefinition("VIEW_RATE")));
+
+        ApplicationDictionaryResponse response = applicationDictionaryService.upsertApplicationDictionary(
+                "app-a", List.of(eventDefinition), List.of(metricDefinition));
+
+        ArgumentCaptor<List<ApplicationEventDefinition>> eventCaptor = ArgumentCaptor.forClass(List.class);
+        ArgumentCaptor<List<ApplicationMetricDefinition>> metricCaptor = ArgumentCaptor.forClass(List.class);
+        verify(applicationDictionaryRepository).saveEventDefinitions(eventCaptor.capture());
+        verify(applicationDictionaryRepository).saveMetricDefinitions(metricCaptor.capture());
+        assertThat(eventCaptor.getValue().get(0).getKey()).isEqualTo("PRODUCT_VIEW");
+        assertThat(metricCaptor.getValue().get(0).getKey()).isEqualTo("VIEW_RATE");
+        assertThat(metricCaptor.getValue().get(0).getNumeratorEventType()).isEqualTo("PRODUCT_VIEW");
+        assertThat(response.getEventDefinitions()).hasSize(1);
+        assertThat(response.getMetricDefinitions()).hasSize(1);
+    }
+
+    @Test
+    void upsertApplicationDictionaryShouldRejectMetricWithUnknownEvent() {
+        ApiKeyContextHolder.set(principal("app-a", "owner-a", ApiKeyScope.MANAGEMENT));
+        MetricDefinition metricDefinition = metricDefinition("PAY_RATE", "支付率");
+        when(applicationDictionaryRepository.findEventDefinitionsByAppId("app-a")).thenReturn(List.of());
+
+        assertThatThrownBy(() -> applicationDictionaryService.upsertApplicationDictionary(
+                "app-a", List.of(), List.of(metricDefinition)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("不存在的分子事件");
     }
 
     private ApiKeyPrincipal principal(String appId, String owner, ApiKeyScope firstScope,

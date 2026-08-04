@@ -69,6 +69,17 @@ public class GlobalExceptionHandler {
      * 根据响应码获取HTTP状态码
      */
     private HttpStatus getHttpStatus(ResponseCode responseCode) {
+        if (responseCode == ResponseCode.VALIDATION_ERROR) {
+            return HttpStatus.BAD_REQUEST;
+        }
+        if (responseCode == ResponseCode.DATA_NOT_FOUND
+                || responseCode == ResponseCode.EXPERIMENT_NOT_FOUND) {
+            return HttpStatus.NOT_FOUND;
+        }
+        if (responseCode == ResponseCode.EXPERIMENT_ALREADY_EXISTS
+                || responseCode == ResponseCode.EXPERIMENT_STATUS_ERROR) {
+            return HttpStatus.CONFLICT;
+        }
         int code = responseCode.getCode();
         if (code >= 400 && code < 500) {
             HttpStatus httpStatus = HttpStatus.resolve(code);

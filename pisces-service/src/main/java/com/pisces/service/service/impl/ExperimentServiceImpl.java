@@ -1,6 +1,8 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.enums.ResponseCode;
+import com.pisces.common.model.ApplicationEventDefinition;
+import com.pisces.common.model.ApplicationMetricDefinition;
 import com.pisces.common.model.ApplicationSpace;
 import com.pisces.common.model.Experiment;
 import com.pisces.common.model.ExperimentApprovalEscalation;
@@ -27,6 +29,7 @@ import com.pisces.common.request.ExperimentConfigRollbackRequest;
 import com.pisces.common.request.ExperimentConclusionStatusUpdateRequest;
 import com.pisces.common.request.ExperimentCreateRequest;
 import com.pisces.common.response.AuditLogResponse;
+import com.pisces.common.response.ApplicationDictionaryResponse;
 import com.pisces.common.response.ExperimentApprovalEscalationDeliveryResponse;
 import com.pisces.common.response.ExperimentApprovalEscalationOperationResponse;
 import com.pisces.common.response.ExperimentApprovalEscalationResponse;
@@ -58,6 +61,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.DateTimeException;
@@ -202,6 +206,7 @@ public class ExperimentServiceImpl implements ExperimentService {
         String appId = ApiKeyContextHolder.resolveCreateAppId(request.getAppId());
         ApplicationSpace applicationSpace = findApplicationSpace(appId).orElse(null);
         validateApplicationSpaceQuota(appId, applicationSpace);
+        DefinitionSelection definitionSelection = resolveApplicationDictionarySelection(appId, request);
         String owner = resolveCreateOwner(request, applicationSpace);
         LocalDateTime now = LocalDateTime.now();
 
@@ -247,8 +252,8 @@ public class ExperimentServiceImpl implements ExperimentService {
         metadata.setTraffic(trafficConfig);
         metadata.setWhitelist(request.getWhitelist() != null ? request.getWhitelist() : new ArrayList<>());
         metadata.setBlacklist(request.getBlacklist() != null ? request.getBlacklist() : new ArrayList<>());
-        metadata.setEventDefinitions(resolveEventDefinitions(request));
-        metadata.setMetricDefinitions(resolveMetricDefinitions(request));
+        metadata.setEventDefinitions(definitionSelection.eventDefinitions());
+        metadata.setMetricDefinitions(definitionSelection.metricDefinitions());
         metadata.setGroupConfigSchema(groupConfigSchema);
         metadata.setConclusionStatus(ExperimentMetadata.ConclusionStatus.NOT_READY);
         metadata.setConclusionUpdatedAt(now);
@@ -261,8 +266,6 @@ public class ExperimentServiceImpl implements ExperimentService {
             log.error("保存实验配置失败: {}", experimentId, e);
             throw new BusinessException(ResponseCode.OPERATION_FAILED, "保存实验配置失败: " + e.getMessage());
         }
-        syncApplicationDictionary(experimentId, metadata);
-
         log.info("创建实验成功: {}", experimentId);
         recordExperimentAudit(experimentId, AuditLogConstants.ACTION_EXPERIMENT_CREATE,
                 ApiKeyContextHolder.resolveOperator(owner), null, statusName(experiment.getStatus()), "创建实验",
@@ -282,6 +285,8 @@ public class ExperimentServiceImpl implements ExperimentService {
         ApplicationSpace applicationSpace =
                 findApplicationSpace(ApiKeyContextHolder.resolveMetadataAppId(metadata)).orElse(null);
         validateConfigChangeApproval(metadata, applicationSpace);
+        DefinitionSelection definitionSelection = resolveApplicationDictionarySelection(
+                ApiKeyContextHolder.resolveMetadataAppId(metadata), request);
 
         Experiment experiment = metadata.getExperiment();
         String beforeStatus = statusName(experiment.getStatus());
@@ -315,8 +320,8 @@ public class ExperimentServiceImpl implements ExperimentService {
         // 更新白名单和黑名单
         metadata.setWhitelist(request.getWhitelist() != null ? request.getWhitelist() : new ArrayList<>());
         metadata.setBlacklist(request.getBlacklist() != null ? request.getBlacklist() : new ArrayList<>());
-        metadata.setEventDefinitions(resolveEventDefinitions(request));
-        metadata.setMetricDefinitions(resolveMetricDefinitions(request));
+        metadata.setEventDefinitions(definitionSelection.eventDefinitions());
+        metadata.setMetricDefinitions(definitionSelection.metricDefinitions());
         metadata.setGroupConfigSchema(groupConfigSchema);
         metadata.setConfigVersion(Math.max(1L, metadata.getConfigVersion()) + 1);
         resetConclusionAfterConfigChange(metadata);
@@ -332,8 +337,6 @@ public class ExperimentServiceImpl implements ExperimentService {
             log.error("保存实验配置失败: {}", experimentId, e);
             throw new BusinessException(ResponseCode.OPERATION_FAILED, "保存实验配置失败: " + e.getMessage());
         }
-        syncApplicationDictionary(experimentId, metadata);
-
         log.info("更新实验成功: {}", experimentId);
         Map<String, Object> detail = buildExperimentAuditDetail(metadata);
         detail.put("beforeConfigVersion", beforeConfigVersion);
@@ -490,6 +493,7 @@ public class ExperimentServiceImpl implements ExperimentService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public ExperimentConfigVersionResponse publishConfigVersion(String experimentId,
                                                                ExperimentConfigPublishRequest request) {
         ExperimentMetadata metadata = getExperimentMetadataOrThrow(experimentId);
@@ -513,6 +517,7 @@ public class ExperimentServiceImpl implements ExperimentService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public ExperimentConfigVersionResponse rollbackConfigVersion(String experimentId,
                                                                 ExperimentConfigRollbackRequest request) {
         validateRollbackRequest(request);
@@ -539,8 +544,6 @@ public class ExperimentServiceImpl implements ExperimentService {
         } catch (Exception exception) {
             throw new BusinessException(ResponseCode.OPERATION_FAILED, "保存回滚配置失败: " + exception.getMessage());
         }
-        syncApplicationDictionary(experimentId, rollbackMetadata);
-
         String operator = ApiKeyContextHolder.resolveOperator(request.getOperator());
         String comment = trimToNull(request.getComment());
         ExperimentConfigVersion rollbackVersion;
@@ -581,6 +584,7 @@ public class ExperimentServiceImpl implements ExperimentService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public ExperimentConfigDraftResponse saveConfigDraft(String experimentId, ExperimentConfigDraftSaveRequest request) {
         List<GroupConfigFieldDefinition> groupConfigSchema =
                 groupConfigSchemaValidator.normalizeSchema(request.getGroupConfigSchema());
@@ -609,6 +613,7 @@ public class ExperimentServiceImpl implements ExperimentService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public ExperimentConfigVersionResponse publishConfigDraft(String experimentId, ExperimentConfigPublishRequest request) {
         ExperimentMetadata currentMetadata = getExperimentMetadataOrThrow(experimentId);
         ExperimentConfigDraft draft = configService.getExperimentConfigDraft(experimentId)
@@ -637,8 +642,6 @@ public class ExperimentServiceImpl implements ExperimentService {
         } catch (Exception exception) {
             throw new BusinessException(ResponseCode.OPERATION_FAILED, "发布实验配置草稿失败: " + exception.getMessage());
         }
-        syncApplicationDictionary(experimentId, draftMetadata);
-
         String operator = ApiKeyContextHolder.resolveOperator(request == null ? null : request.getOperator());
         String comment = trimToNull(request == null ? null : request.getComment());
         ExperimentConfigVersion publishedVersion;
@@ -857,18 +860,6 @@ public class ExperimentServiceImpl implements ExperimentService {
         }
         Optional<ApplicationSpace> applicationSpaceOptional = applicationSpaceRepository.findByAppId(appId);
         return applicationSpaceOptional == null ? Optional.empty() : applicationSpaceOptional;
-    }
-
-    private void syncApplicationDictionary(String experimentId, ExperimentMetadata metadata) {
-        if (applicationDictionaryService == null) {
-            return;
-        }
-        try {
-            applicationDictionaryService.syncDefinitions(ApiKeyContextHolder.resolveMetadataAppId(metadata),
-                    experimentId, metadata.getEventDefinitions(), metadata.getMetricDefinitions());
-        } catch (Exception exception) {
-            log.warn("同步应用事件指标字典失败: experimentId={}", experimentId, exception);
-        }
     }
 
     private void initializeApprovalStatus(ExperimentMetadata metadata, ApplicationSpace applicationSpace,
@@ -1202,7 +1193,7 @@ public class ExperimentServiceImpl implements ExperimentService {
                                                   ApplicationSpace applicationSpace) {
         if (!isApprovalRequired(applicationSpace)) {
             approval.setApprovalOwnersSnapshot(List.of());
-            approval.setApprovalRequiredCountSnapshot(null);
+            approval.setApprovalRequiredCountSnapshot(1);
             approval.setApprovalPolicyVersion(null);
             return;
         }
@@ -1835,6 +1826,8 @@ public class ExperimentServiceImpl implements ExperimentService {
                                                   ExperimentConfigDraftSaveRequest request,
                                                   List<GroupConfigFieldDefinition> groupConfigSchema) {
         Experiment currentExperiment = currentMetadata.getExperiment();
+        DefinitionSelection definitionSelection = resolveApplicationDictionarySelection(
+                ApiKeyContextHolder.resolveMetadataAppId(currentMetadata), request);
         Experiment draftExperiment = new Experiment();
         draftExperiment.setId(currentExperiment.getId());
         draftExperiment.setName(request.getName());
@@ -1858,8 +1851,8 @@ public class ExperimentServiceImpl implements ExperimentService {
         draftMetadata.setTraffic(buildTrafficConfig(request.getTraffic()));
         draftMetadata.setWhitelist(request.getWhitelist() != null ? request.getWhitelist() : new ArrayList<>());
         draftMetadata.setBlacklist(request.getBlacklist() != null ? request.getBlacklist() : new ArrayList<>());
-        draftMetadata.setEventDefinitions(resolveEventDefinitions(request));
-        draftMetadata.setMetricDefinitions(resolveMetricDefinitions(request));
+        draftMetadata.setEventDefinitions(definitionSelection.eventDefinitions());
+        draftMetadata.setMetricDefinitions(definitionSelection.metricDefinitions());
         draftMetadata.setGroupConfigSchema(groupConfigSchema);
         draftMetadata.setConclusionStatus(currentMetadata.getConclusionStatus());
         draftMetadata.setConclusionUpdatedAt(currentMetadata.getConclusionUpdatedAt());
@@ -2011,6 +2004,104 @@ public class ExperimentServiceImpl implements ExperimentService {
 
     private List<MetricDefinition> resolveMetricDefinitions(ExperimentCreateRequest request) {
         return normalizeMetricDefinitions(request.getMetricDefinitions());
+    }
+
+    private DefinitionSelection resolveApplicationDictionarySelection(
+            String appId, ExperimentCreateRequest request) {
+        List<EventDefinition> requestedEvents = resolveEventDefinitions(request);
+        List<MetricDefinition> requestedMetrics = resolveMetricDefinitions(request);
+        if (applicationDictionaryService == null) {
+            return new DefinitionSelection(requestedEvents, requestedMetrics);
+        }
+
+        ApplicationDictionaryResponse dictionary = applicationDictionaryService.getApplicationDictionary(appId);
+        if (dictionary == null) {
+            return new DefinitionSelection(requestedEvents, requestedMetrics);
+        }
+
+        Map<String, ApplicationEventDefinition> dictionaryEvents = new LinkedHashMap<>();
+        for (ApplicationEventDefinition definition : safeList(dictionary.getEventDefinitions())) {
+            if (definition != null && trimToNull(definition.getKey()) != null) {
+                dictionaryEvents.put(definition.getKey().trim().toUpperCase(Locale.ROOT), definition);
+            }
+        }
+        Map<String, ApplicationMetricDefinition> dictionaryMetrics = new LinkedHashMap<>();
+        for (ApplicationMetricDefinition definition : safeList(dictionary.getMetricDefinitions())) {
+            if (definition != null && trimToNull(definition.getKey()) != null) {
+                dictionaryMetrics.put(definition.getKey().trim().toUpperCase(Locale.ROOT), definition);
+            }
+        }
+
+        List<EventDefinition> selectedEvents = requestedEvents.stream()
+                .map(requested -> copySelectedEventDefinition(requested, dictionaryEvents))
+                .toList();
+        List<MetricDefinition> selectedMetrics = requestedMetrics.stream()
+                .map(requested -> copySelectedMetricDefinition(requested, dictionaryMetrics))
+                .toList();
+        validateSelectedMetricReferences(selectedEvents, selectedMetrics);
+        return new DefinitionSelection(selectedEvents, selectedMetrics);
+    }
+
+    private EventDefinition copySelectedEventDefinition(
+            EventDefinition requested, Map<String, ApplicationEventDefinition> dictionaryEvents) {
+        ApplicationEventDefinition source = dictionaryEvents.get(requested.getKey());
+        if (source == null) {
+            throw new BusinessException(ResponseCode.VALIDATION_ERROR,
+                    "事件不属于所选应用字典：" + requested.getKey());
+        }
+        EventDefinition selected = new EventDefinition();
+        selected.setKey(requested.getKey());
+        selected.setLabel(source.getLabel());
+        selected.setDescription(source.getDescription());
+        selected.setCategory(source.getCategory());
+        selected.setPrimary(Boolean.TRUE.equals(source.getPrimary()));
+        return selected;
+    }
+
+    private MetricDefinition copySelectedMetricDefinition(
+            MetricDefinition requested, Map<String, ApplicationMetricDefinition> dictionaryMetrics) {
+        ApplicationMetricDefinition source = dictionaryMetrics.get(requested.getKey());
+        if (source == null) {
+            throw new BusinessException(ResponseCode.VALIDATION_ERROR,
+                    "指标不属于所选应用字典：" + requested.getKey());
+        }
+        MetricDefinition selected = new MetricDefinition();
+        selected.setKey(requested.getKey());
+        selected.setName(source.getName());
+        selected.setDescription(source.getDescription());
+        selected.setAggregationType(source.getAggregationType());
+        selected.setNumeratorEventType(source.getNumeratorEventType());
+        selected.setDenominatorType(source.getDenominatorType());
+        selected.setDenominatorEventType(source.getDenominatorEventType());
+        selected.setPrimaryMetric(Boolean.TRUE.equals(requested.getPrimaryMetric()));
+        selected.setGuardrailMetric(Boolean.TRUE.equals(requested.getGuardrailMetric()));
+        return selected;
+    }
+
+    private void validateSelectedMetricReferences(List<EventDefinition> events, List<MetricDefinition> metrics) {
+        java.util.Set<String> selectedEventKeys = events.stream()
+                .map(EventDefinition::getKey)
+                .collect(Collectors.toSet());
+        for (MetricDefinition metric : metrics) {
+            if (!selectedEventKeys.contains(trimToNull(metric.getNumeratorEventType()))) {
+                throw new BusinessException(ResponseCode.VALIDATION_ERROR,
+                        "指标“" + metric.getName() + "”依赖的分子事件未选择：" + metric.getNumeratorEventType());
+            }
+            if (metric.getAggregationType() == MetricDefinition.AggregationType.RATE
+                    && metric.getDenominatorType() == MetricDefinition.DenominatorType.EVENT_COUNT
+                    && !selectedEventKeys.contains(trimToNull(metric.getDenominatorEventType()))) {
+                throw new BusinessException(ResponseCode.VALIDATION_ERROR,
+                        "指标“" + metric.getName() + "”依赖的分母事件未选择：" + metric.getDenominatorEventType());
+            }
+        }
+    }
+
+    private <T> List<T> safeList(List<T> values) {
+        return values == null ? List.of() : values;
+    }
+
+    private record DefinitionSelection(List<EventDefinition> eventDefinitions,
+                                       List<MetricDefinition> metricDefinitions) {
     }
 
     private TrafficConfig buildTrafficConfig(ExperimentCreateRequest.TrafficConfigRequest trafficRequest) {
@@ -2176,7 +2267,9 @@ public class ExperimentServiceImpl implements ExperimentService {
                     ExperimentMetadata metadata = configService.getExperimentConfig(experimentId);
                     if (isVisibleExperimentMetadata(metadata)
                             && matchesExperimentFilters(metadata, targetStatuses, targetAppId, targetOwner)) {
-                        experiments.add(metadata.getExperiment());
+                        Experiment experiment = metadata.getExperiment();
+                        experiment.setConclusionStatus(metadata.getConclusionStatus());
+                        experiments.add(experiment);
                     }
                 } catch (Exception e) {
                     log.warn("获取实验失败: {}", experimentId, e);

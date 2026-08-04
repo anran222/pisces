@@ -2,6 +2,7 @@ package com.pisces.service.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pisces.common.enums.ResponseCode;
+import com.pisces.common.model.ApplicationEventDefinition;
 import com.pisces.common.model.ApplicationSpace;
 import com.pisces.common.model.Experiment;
 import com.pisces.common.model.ExperimentApprovalEscalation;
@@ -26,6 +27,7 @@ import com.pisces.common.request.ExperimentConfigRollbackRequest;
 import com.pisces.common.request.ExperimentConclusionStatusUpdateRequest;
 import com.pisces.common.request.ExperimentCreateRequest;
 import com.pisces.common.response.ExperimentApprovalEscalationOperationResponse;
+import com.pisces.common.response.ApplicationDictionaryResponse;
 import com.pisces.common.response.ExperimentApprovalEscalationResponse;
 import com.pisces.common.response.ExperimentApprovalEscalationStatusResponse;
 import com.pisces.common.response.ExperimentApprovalTaskResponse;
@@ -53,6 +55,7 @@ import com.pisces.service.util.JsonUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.annotation.Transactional;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
@@ -74,7 +77,6 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -84,6 +86,21 @@ import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class ExperimentServiceImplTest {
+
+    @Test
+    void configDraftMutationsShouldRunInsideTransactions() throws NoSuchMethodException {
+        Transactional saveDraftTransaction = ExperimentServiceImpl.class
+                .getMethod("saveConfigDraft", String.class, ExperimentConfigDraftSaveRequest.class)
+                .getAnnotation(Transactional.class);
+        Transactional publishDraftTransaction = ExperimentServiceImpl.class
+                .getMethod("publishConfigDraft", String.class, ExperimentConfigPublishRequest.class)
+                .getAnnotation(Transactional.class);
+
+        assertThat(saveDraftTransaction).isNotNull();
+        assertThat(publishDraftTransaction).isNotNull();
+        assertThat(saveDraftTransaction.rollbackFor()).contains(Exception.class);
+        assertThat(publishDraftTransaction.rollbackFor()).contains(Exception.class);
+    }
 
     @Mock
     private ConfigService configService;
@@ -226,15 +243,33 @@ class ExperimentServiceImplTest {
     }
 
     @Test
-    void createExperimentShouldSyncApplicationDictionary() throws Exception {
+    void createExperimentShouldReadApplicationDictionaryWithoutWritingIt() throws Exception {
         ApiKeyContextHolder.set(principal("app-a", "owner-a", ApiKeyScope.MANAGEMENT));
         ExperimentCreateRequest request = buildRequest("字典同步实验");
         request.setAppId("spoofed-app");
 
-        Experiment experiment = experimentService.createExperiment(request);
+        experimentService.createExperiment(request);
 
-        verify(applicationDictionaryService).syncDefinitions(eq("app-a"), eq(experiment.getId()),
-                anyList(), anyList());
+        verify(applicationDictionaryService).getApplicationDictionary("app-a");
+    }
+
+    @Test
+    void createExperimentShouldRejectEventOutsideApplicationDictionary() throws Exception {
+        ApiKeyContextHolder.set(principal("app-a", "owner-a", ApiKeyScope.MANAGEMENT));
+        ExperimentCreateRequest request = buildRequest("非法字典选择实验");
+        ApplicationEventDefinition applicationEvent = new ApplicationEventDefinition();
+        applicationEvent.setKey("PRODUCT_VIEW");
+        applicationEvent.setLabel("商品查看");
+        ApplicationDictionaryResponse dictionary = new ApplicationDictionaryResponse();
+        dictionary.setAppId("app-a");
+        dictionary.setEventDefinitions(List.of(applicationEvent));
+        dictionary.setMetricDefinitions(List.of());
+        when(applicationDictionaryService.getApplicationDictionary("app-a")).thenReturn(dictionary);
+
+        assertThatThrownBy(() -> experimentService.createExperiment(request))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("事件不属于所选应用字典：PAY_SUCCESS");
+        verify(configService, never()).saveExperimentConfig(any(), any());
     }
 
     @Test
@@ -307,8 +342,11 @@ class ExperimentServiceImplTest {
         assertThat(response.getApprovalStatus()).isEqualTo(ExperimentMetadata.ApprovalStatus.NOT_REQUIRED);
         assertThat(response.getDraftExperiment().getName()).isEqualTo("草稿配置");
         assertThat(currentMetadata.getExperiment().getName()).isEqualTo("当前配置");
+        ArgumentCaptor<ExperimentConfigDraftApproval> approvalCaptor =
+                ArgumentCaptor.forClass(ExperimentConfigDraftApproval.class);
+        verify(configService).saveExperimentConfigDraftApproval(approvalCaptor.capture());
+        assertThat(approvalCaptor.getValue().getApprovalRequiredCountSnapshot()).isEqualTo(1);
         verify(configService, never()).saveExperimentConfig(eq("exp_draft_save"), any());
-        verify(applicationDictionaryService, never()).syncDefinitions(any(), any(), anyList(), anyList());
     }
 
     @Test
@@ -846,7 +884,7 @@ class ExperimentServiceImplTest {
     }
 
     @Test
-    void updateExperimentShouldSyncApplicationDictionary() throws Exception {
+    void updateExperimentShouldReadApplicationDictionaryWithoutWritingIt() throws Exception {
         ExperimentMetadata metadata = metadataFor("exp_dict", "app-a", "owner-a",
                 Experiment.ExperimentStatus.DRAFT);
         metadata.setConfigVersion(1L);
@@ -854,8 +892,7 @@ class ExperimentServiceImplTest {
 
         experimentService.updateExperiment("exp_dict", buildRequest("更新字典实验"));
 
-        verify(applicationDictionaryService).syncDefinitions(eq("app-a"), eq("exp_dict"),
-                anyList(), anyList());
+        verify(applicationDictionaryService).getApplicationDictionary("app-a");
     }
 
     @Test
@@ -1058,6 +1095,22 @@ class ExperimentServiceImplTest {
         assertThat(experiments)
                 .extracting(Experiment::getId)
                 .containsExactly("exp_app_b");
+    }
+
+    @Test
+    void listExperimentsShouldIncludeConclusionStatus() throws Exception {
+        ExperimentMetadata metadata = metadataFor("exp_conclusion", "app-a", "owner-a",
+                Experiment.ExperimentStatus.STOPPED);
+        metadata.setConclusionStatus(ExperimentMetadata.ConclusionStatus.GRADUATED);
+        when(configService.getAllExperimentIds()).thenReturn(List.of("exp_conclusion"));
+        when(configService.getExperimentConfig("exp_conclusion")).thenReturn(metadata);
+        ApiKeyContextHolder.set(principal("app-a", "owner-a", ApiKeyScope.MANAGEMENT));
+
+        List<Experiment> experiments = experimentService.listExperiments();
+
+        assertThat(experiments).singleElement()
+                .extracting(Experiment::getConclusionStatus)
+                .isEqualTo(ExperimentMetadata.ConclusionStatus.GRADUATED);
     }
 
     @Test

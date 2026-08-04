@@ -11,6 +11,11 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @ConfigurationProperties(prefix = "zookeeper")
 public class ZookeeperConfig {
+
+    /**
+     * 是否启用Zookeeper配置同步。本地单机模式默认关闭，数据库仍作为配置主存储。
+     */
+    private boolean enabled = false;
     
     /**
      * Zookeeper连接地址
@@ -37,4 +42,3 @@ public class ZookeeperConfig {
      */
     private String basePath = "/pisces";
 }
-

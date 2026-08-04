@@ -119,7 +119,7 @@ public class ApiLogAspect {
             String lower = name.toLowerCase(Locale.ROOT);
             String value = req.getHeader(name);
             if (!StringUtils.hasText(value)) continue;
-            if (SENSITIVE_KEYS.contains(lower) || lower.contains("token") || lower.contains("secret")) {
+            if (isSensitiveKey(lower)) {
                 map.put(name, maskValue(value));
             } else {
                 map.put(name, safeTruncate(value));
@@ -143,7 +143,7 @@ public class ApiLogAspect {
             // 跳过Servlet相关对象，避免噪声与序列化问题
             if (v instanceof HttpServletRequest) continue;
             String key = name == null ? "" : name.toLowerCase(Locale.ROOT);
-            if (SENSITIVE_KEYS.contains(key) || key.contains("password") || key.contains("token") || key.contains("apikey")) {
+            if (isSensitiveKey(key)) {
                 out.add(singleEntry(name, "***"));
             } else {
                 out.add(singleEntry(name, summarizeValue(v)));
@@ -180,7 +180,7 @@ public class ApiLogAspect {
             String k = String.valueOf(e.getKey());
             String lower = k.toLowerCase(Locale.ROOT);
             Object val = e.getValue();
-            if (SENSITIVE_KEYS.contains(lower) || lower.contains("token") || lower.contains("secret") || lower.contains("apikey")) {
+            if (isSensitiveKey(lower)) {
                 preview.put(k, "***");
             } else {
                 preview.put(k, summarizeValue(val));
@@ -218,6 +218,17 @@ public class ApiLogAspect {
         if (!StringUtils.hasText(v)) return v;
         if (v.length() <= 8) return "****";
         return v.substring(0, 2) + "****" + v.substring(v.length() - 2);
+    }
+
+    private boolean isSensitiveKey(String key) {
+        if (!StringUtils.hasText(key)) return false;
+        String lower = key.toLowerCase(Locale.ROOT);
+        return SENSITIVE_KEYS.contains(lower)
+                || lower.contains("password")
+                || lower.contains("token")
+                || lower.contains("secret")
+                || lower.contains("apikey")
+                || lower.contains("api-key");
     }
 
     private Map<String, Object> singleEntry(String key, Object value) {

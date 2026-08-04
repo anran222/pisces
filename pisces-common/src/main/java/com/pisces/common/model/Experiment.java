@@ -30,6 +30,11 @@ public class Experiment implements Serializable {
      * 实验状态：DRAFT-草稿, RUNNING-运行中, PAUSED-已暂停, STOPPED-已停止
      */
     private ExperimentStatus status;
+
+    /**
+     * 实验结论状态。
+     */
+    private ExperimentMetadata.ConclusionStatus conclusionStatus;
     
     /**
      * 开始时间

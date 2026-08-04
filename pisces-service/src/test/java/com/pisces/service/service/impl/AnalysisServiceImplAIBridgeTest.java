@@ -1,7 +1,9 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.model.ExperimentDecisionContext;
+import com.pisces.common.model.ExperimentGroup;
 import com.pisces.common.model.ExperimentMetadata;
+import com.pisces.common.model.TrafficConfig;
 import com.pisces.common.response.AIDecisionEvidenceResponse;
 import com.pisces.common.response.AIGraduationDecisionResponse;
 import com.pisces.service.service.AIDecisionService;
@@ -14,6 +16,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -92,6 +95,28 @@ class AnalysisServiceImplAIBridgeTest {
         assertThat(result).isNotNull();
         assertThat(result).containsEntry("status", "BLOCKED");
         assertThat(result).containsEntry("reason", "当前仅支持 DID 和 PSM");
+    }
+
+    @Test
+    void shouldPreferControlAsBaselineRegardlessOfPersistedGroupOrder() throws Exception {
+        ExperimentMetadata metadata = new ExperimentMetadata();
+        Map<String, ExperimentGroup> groups = new LinkedHashMap<>();
+        groups.put("variant_b", new ExperimentGroup());
+        groups.put("control", new ExperimentGroup());
+        groups.put("variant_a", new ExperimentGroup());
+        metadata.setGroups(groups);
+
+        TrafficConfig traffic = new TrafficConfig();
+        TrafficConfig.GroupAllocation variantAllocation = new TrafficConfig.GroupAllocation();
+        variantAllocation.setGroup("variant_b");
+        traffic.setAllocation(List.of(variantAllocation));
+        metadata.setTraffic(traffic);
+
+        AnalysisServiceImpl analysisService = new AnalysisServiceImpl();
+        Method method = AnalysisServiceImpl.class.getDeclaredMethod("resolveBaselineGroupId", ExperimentMetadata.class);
+        method.setAccessible(true);
+
+        assertThat(method.invoke(analysisService, metadata)).isEqualTo("control");
     }
 
     private class StubAIDecisionService implements AIDecisionService {

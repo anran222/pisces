@@ -33,6 +33,11 @@ public class ZookeeperClient {
 
     @PostConstruct
     public void init() {
+        if (!zookeeperConfig.isEnabled()) {
+            initFailed = true;
+            log.info("Zookeeper配置同步未启用，使用数据库配置存储模式");
+            return;
+        }
         try {
             client = CuratorFrameworkFactory.builder()
                     .connectString(zookeeperConfig.getConnectString())
@@ -48,12 +53,14 @@ public class ZookeeperClient {
             if (isConnected) {
                 log.info("Zookeeper客户端连接成功，地址: {}", zookeeperConfig.getConnectString());
             } else {
-                log.warn("Zookeeper连接超时，将使用本地内存存储模式");
+                log.warn("Zookeeper连接超时，将使用数据库配置存储模式");
                 initFailed = true;
+                closeClient();
             }
         } catch (Exception e) {
-            log.warn("Zookeeper客户端初始化失败，将使用本地内存存储模式: {}", e.getMessage());
+            log.warn("Zookeeper客户端初始化失败，将使用数据库配置存储模式: {}", e.getMessage());
             initFailed = true;
+            closeClient();
         }
     }
     
@@ -72,10 +79,18 @@ public class ZookeeperClient {
     
     @PreDestroy
     public void destroy() {
-        if (client != null) {
-            client.close();
+        if (closeClient()) {
             log.info("Zookeeper客户端已关闭");
         }
+    }
+
+    private boolean closeClient() {
+        if (client == null) {
+            return false;
+        }
+        client.close();
+        client = null;
+        return true;
     }
     
     /**

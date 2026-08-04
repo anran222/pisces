@@ -27,7 +27,7 @@
         <result column="updated_at" property="updatedAt"/>
     </resultMap>
 
-    <insert id="upsert" parameterType="com.pisces.service.entity.ApplicationSpaceEntity">
+    <sql id="applicationSpaceInsert">
         INSERT INTO pisces_application_space
             (app_id, display_name, default_owner, experiment_quota, is_approval_required, approval_owners,
              approval_required_count, approval_policy_version, approval_sla_hours, approval_escalation_owners,
@@ -41,6 +41,14 @@
              #{entity.releaseWindowEnabled}, #{entity.releaseWindowTimezone}, #{entity.releaseWindowDays},
              #{entity.releaseWindowStartTime}, #{entity.releaseWindowEndTime},
              #{entity.createdBy}, #{entity.updatedBy}, #{entity.createdAt}, #{entity.updatedAt})
+    </sql>
+
+    <insert id="insert" parameterType="com.pisces.service.entity.ApplicationSpaceEntity">
+        <include refid="applicationSpaceInsert"/>
+    </insert>
+
+    <insert id="upsert" parameterType="com.pisces.service.entity.ApplicationSpaceEntity">
+        <include refid="applicationSpaceInsert"/>
         ON DUPLICATE KEY UPDATE
             display_name = VALUES(display_name),
             default_owner = VALUES(default_owner),

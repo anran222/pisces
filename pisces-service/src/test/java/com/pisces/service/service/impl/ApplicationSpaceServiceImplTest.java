@@ -18,6 +18,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DuplicateKeyException;
 
 import java.util.EnumSet;
 import java.util.List;
@@ -276,6 +277,54 @@ class ApplicationSpaceServiceImplTest {
         assertThatThrownBy(() -> applicationSpaceService.upsertApplicationSpace("app-a", request))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("审批通过人数不能超过审批负责人数量: 1");
+    }
+
+    @Test
+    void registerApplicationSpaceShouldAllowNonAdminToCreateNewApp() {
+        ApiKeyContextHolder.set(principal("app-a", "owner-a", ApiKeyScope.MANAGEMENT));
+        ApplicationSpaceUpsertRequest request = new ApplicationSpaceUpsertRequest();
+        request.setDisplayName("应用B");
+        request.setDefaultOwner("owner-b");
+        when(applicationSpaceRepository.findByAppId("app-b")).thenReturn(Optional.empty());
+        when(applicationSpaceRepository.create(any(ApplicationSpace.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(apiKeyRegistry.listPrincipals()).thenReturn(List.of());
+        when(experimentService.listExperiments(isNull(), anyList(), isNull(), isNull())).thenReturn(List.of());
+
+        ApplicationSpaceResponse response = applicationSpaceService.registerApplicationSpace("app-b", request);
+
+        assertThat(response.getAppId()).isEqualTo("app-b");
+        assertThat(response.getDisplayName()).isEqualTo("应用B");
+        assertThat(response.getRegistered()).isTrue();
+        verify(applicationSpaceRepository).create(any(ApplicationSpace.class));
+    }
+
+    @Test
+    void registerApplicationSpaceShouldRejectRegisteredApp() {
+        ApiKeyContextHolder.set(principal("app-a", "owner-a", ApiKeyScope.MANAGEMENT));
+        when(applicationSpaceRepository.findByAppId("app-b"))
+                .thenReturn(Optional.of(applicationSpace("app-b", "应用B", "owner-b", 10)));
+
+        assertThatThrownBy(() -> applicationSpaceService.registerApplicationSpace("app-b",
+                new ApplicationSpaceUpsertRequest()))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(throwable -> assertThat(((BusinessException) throwable).getResponseCode())
+                        .isEqualTo(ResponseCode.CONFLICT));
+    }
+
+    @Test
+    void registerApplicationSpaceShouldHandleConcurrentRegistration() {
+        ApiKeyContextHolder.set(principal("app-a", "owner-a", ApiKeyScope.MANAGEMENT));
+        ApplicationSpaceUpsertRequest request = new ApplicationSpaceUpsertRequest();
+        request.setDefaultOwner("owner-b");
+        when(applicationSpaceRepository.findByAppId("app-b")).thenReturn(Optional.empty());
+        when(applicationSpaceRepository.create(any(ApplicationSpace.class)))
+                .thenThrow(new DuplicateKeyException("duplicate app id"));
+
+        assertThatThrownBy(() -> applicationSpaceService.registerApplicationSpace("app-b", request))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(throwable -> assertThat(((BusinessException) throwable).getResponseCode())
+                        .isEqualTo(ResponseCode.CONFLICT));
     }
 
     @Test

@@ -13,6 +13,8 @@ import java.util.Optional;
  */
 public interface ApplicationSpaceRepository {
 
+    ApplicationSpace create(ApplicationSpace applicationSpace);
+
     ApplicationSpace save(ApplicationSpace applicationSpace);
 
     Optional<ApplicationSpace> findByAppId(String appId);

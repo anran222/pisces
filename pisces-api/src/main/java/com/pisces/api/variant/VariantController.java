@@ -36,6 +36,24 @@ public class VariantController {
     private static final String GENERATE_SUCCESS_MESSAGE = "生成成功";
     private static final String VARIANT_TYPE_REQUIRED_MESSAGE = "variantType不能为空";
     private static final String VARIANT_COUNT_INVALID_MESSAGE = "count必须大于0";
+    private static final Map<String, String> SOURCE_CONTEXT_LABELS = Map.ofEntries(
+            Map.entry("appId", "应用标识"),
+            Map.entry("applicationName", "应用名称"),
+            Map.entry("businessScenario", "业务场景"),
+            Map.entry("scene", "业务场景"),
+            Map.entry("placement", "投放位置"),
+            Map.entry("baseline", "现状基线"),
+            Map.entry("hypothesis", "实验假设"),
+            Map.entry("primaryMetricKey", "主指标编码"),
+            Map.entry("primaryMetric", "主指标"),
+            Map.entry("guardrailMetrics", "护栏指标"),
+            Map.entry("expectedLift", "预期提升"),
+            Map.entry("startTime", "实验开始时间"),
+            Map.entry("endTime", "实验结束时间"),
+            Map.entry("sellingPoints", "核心卖点"),
+            Map.entry("tone", "表达风格"),
+            Map.entry("riskGuardrail", "风险护栏")
+    );
 
     private final VariantGenerationService variantGenerationService;
 
@@ -138,6 +156,12 @@ public class VariantController {
                 lines.add("上下文信息: " + sourceContextSummary);
             }
         }
+        if ("TEXT".equals(normalizedVariantType)) {
+            lines.add("完整方案输出格式: 方案名称：...｜策略方向：...｜候选内容：...｜实验假设：...｜实施建议：...｜风险提醒：...");
+            lines.add("每个候选必须独占一行并包含全部六个字段；字段内不得使用换行或竖线；候选内容必须可直接投放。");
+        } else if ("IMAGE".equals(normalizedVariantType)) {
+            lines.add("图片方案必须围绕实验假设和主指标，清晰呈现商品主体与核心卖点，避免无关文字和夸张效果。");
+        }
         lines.add("请生成" + (request.getCount() == null ? 1 : request.getCount()) + "个候选变体。");
         return String.join("\n", lines);
     }
@@ -146,7 +170,7 @@ public class VariantController {
         List<String> details = new ArrayList<>();
         Object brief = sourceContext.get("brief");
         if (brief instanceof String briefText && StringUtils.hasText(briefText)) {
-            details.add("brief=" + briefText.trim());
+            details.add("补充背景=" + briefText.trim());
         }
 
         String genericContext = sourceContext.entrySet().stream()
@@ -154,7 +178,8 @@ public class VariantController {
                 .filter(entry -> !"imageUrl".equals(entry.getKey()))
                 .filter(entry -> !"imageBase64".equals(entry.getKey()))
                 .filter(entry -> !"referenceImages".equals(entry.getKey()))
-                .map(entry -> entry.getKey() + "=" + entry.getValue())
+                .map(entry -> SOURCE_CONTEXT_LABELS.getOrDefault(entry.getKey(), entry.getKey())
+                        + "=" + entry.getValue())
                 .collect(Collectors.joining(", "));
         if (StringUtils.hasText(genericContext)) {
             details.add(genericContext);

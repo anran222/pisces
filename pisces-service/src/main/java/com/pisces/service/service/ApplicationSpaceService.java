@@ -21,6 +21,15 @@ public interface ApplicationSpaceService {
     List<ApplicationSpaceResponse> listApplicationSpaces();
 
     /**
+     * 注册新的应用空间。
+     *
+     * @param appId 应用ID
+     * @param request 应用空间注册请求
+     * @return 应用空间
+     */
+    ApplicationSpaceResponse registerApplicationSpace(String appId, ApplicationSpaceUpsertRequest request);
+
+    /**
      * 保存应用空间。
      *
      * @param appId 应用ID

@@ -23,13 +23,14 @@ public interface ApplicationDictionaryService {
     ApplicationDictionaryResponse getApplicationDictionary(String appId);
 
     /**
-     * 同步实验事件和指标定义到应用字典。
+     * 保存应用事件和指标字典。
      *
      * @param appId 应用ID
-     * @param experimentId 实验ID
      * @param eventDefinitions 事件定义
      * @param metricDefinitions 指标定义
+     * @return 保存后的应用字典
      */
-    void syncDefinitions(String appId, String experimentId, List<EventDefinition> eventDefinitions,
-                         List<MetricDefinition> metricDefinitions);
+    ApplicationDictionaryResponse upsertApplicationDictionary(String appId, List<EventDefinition> eventDefinitions,
+                                                               List<MetricDefinition> metricDefinitions);
+
 }

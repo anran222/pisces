@@ -43,6 +43,7 @@ management:
 
 # Zookeeper配置
 zookeeper:
+  enabled: ${PISCES_ZOOKEEPER_ENABLED:false}
   connectString: ${PISCES_ZOOKEEPER_CONNECT_STRING:localhost:2181}
   sessionTimeoutMs: 30000
   connectionTimeoutMs: 30000

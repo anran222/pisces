@@ -35,6 +35,27 @@ class VariantGenerationServiceImplTest {
     }
 
     @Test
+    void shouldBuildCompleteExperimentPlanPromptWhenStructuredContractProvided() {
+        String originalPrompt = """
+                生成目标: 提升加购转化率
+                完整方案输出格式: 方案名称：...｜策略方向：...｜候选内容：...
+                """;
+
+        String prompt = (String) ReflectionTestUtils.invokeMethod(
+                service,
+                "buildStructuredPrompt",
+                originalPrompt,
+                3
+        );
+
+        assertThat(prompt)
+                .contains("生成3个可直接进入 A/B 实验的完整候选方案")
+                .contains("各方案的核心策略必须实质不同")
+                .contains("实验假设必须说明变化、用户心理和目标指标之间的因果链路")
+                .contains("每个方案严格独占一行");
+    }
+
+    @Test
     void shouldBuildImagePromptWithCommercialHints() {
         String prompt = (String) ReflectionTestUtils.invokeMethod(service, "buildImagePrompt", "二手手机主图");
 

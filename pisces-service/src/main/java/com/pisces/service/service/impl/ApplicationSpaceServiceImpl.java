@@ -14,6 +14,7 @@ import com.pisces.service.security.ApiKeyScope;
 import com.pisces.service.service.ApplicationSpaceService;
 import com.pisces.service.service.ExperimentService;
 import lombok.AllArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -97,6 +98,20 @@ public class ApplicationSpaceServiceImpl implements ApplicationSpaceService {
                 .map(ApplicationSpaceBuilder::build)
                 .sorted(Comparator.comparing(ApplicationSpaceResponse::getAppId))
                 .toList();
+    }
+
+    @Override
+    public ApplicationSpaceResponse registerApplicationSpace(String appId, ApplicationSpaceUpsertRequest request) {
+        String normalizedAppId = requireAppId(appId);
+        if (findRegisteredSpace(normalizedAppId).isPresent()) {
+            throw new BusinessException(ResponseCode.CONFLICT, "应用已注册，请勿重复注册");
+        }
+        ApplicationSpace applicationSpace = buildApplicationSpace(normalizedAppId, request, null);
+        try {
+            return buildApplicationSpaceResponse(applicationSpaceRepository.create(applicationSpace));
+        } catch (DuplicateKeyException exception) {
+            throw new BusinessException(ResponseCode.CONFLICT, "应用已注册，请刷新后重试");
+        }
     }
 
     @Override

@@ -219,7 +219,7 @@ public class AnalysisServiceImpl implements AnalysisService {
         double bestPrimaryMetricValue = Double.NEGATIVE_INFINITY;
         String bestPerformingGroup = null;
         
-        // 确定基准组（第一个组为基准组）
+        // 确定基准组
         String baselineGroupId = resolveBaselineGroupId(metadata);
         double baselineConversionRate = 0.0;
         
@@ -1641,6 +1641,9 @@ public class AnalysisServiceImpl implements AnalysisService {
     private String resolveBaselineGroupId(ExperimentMetadata metadata) {
         if (metadata == null || metadata.getGroups() == null || metadata.getGroups().isEmpty()) {
             return null;
+        }
+        if (metadata.getGroups().containsKey("control")) {
+            return "control";
         }
         if (metadata.getTraffic() != null && metadata.getTraffic().getAllocation() != null) {
             for (com.pisces.common.model.TrafficConfig.GroupAllocation allocation : metadata.getTraffic().getAllocation()) {

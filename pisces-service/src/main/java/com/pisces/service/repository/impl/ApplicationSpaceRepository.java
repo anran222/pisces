@@ -24,6 +24,12 @@ public class ApplicationSpaceRepository implements com.pisces.service.repository
     private final ApplicationSpaceMapper applicationSpaceMapper;
 
     @Override
+    public ApplicationSpace create(ApplicationSpace applicationSpace) {
+        applicationSpaceMapper.insert(buildApplicationSpaceEntity(applicationSpace));
+        return findByAppId(applicationSpace.getAppId()).orElse(applicationSpace);
+    }
+
+    @Override
     public ApplicationSpace save(ApplicationSpace applicationSpace) {
         applicationSpaceMapper.upsert(buildApplicationSpaceEntity(applicationSpace));
         return findByAppId(applicationSpace.getAppId()).orElse(applicationSpace);

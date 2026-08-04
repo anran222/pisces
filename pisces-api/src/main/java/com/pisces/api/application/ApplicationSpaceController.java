@@ -1,5 +1,6 @@
 package com.pisces.api.application;
 
+import com.pisces.common.request.ApplicationDictionaryUpsertRequest;
 import com.pisces.common.request.ApplicationSpaceUpsertRequest;
 import com.pisces.common.response.ApplicationDictionaryResponse;
 import com.pisces.common.response.ApplicationSpaceResponse;
@@ -12,6 +13,7 @@ import com.pisces.service.service.ApplicationSpaceService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -47,6 +49,20 @@ public class ApplicationSpaceController {
     }
 
     /**
+     * 注册新的应用空间。
+     *
+     * @param appId 应用ID
+     * @param request 应用空间注册请求
+     * @return 应用空间
+     */
+    @PostMapping("/{appId}")
+    public BaseResponse<ApplicationSpaceResponse> registerApplicationSpace(
+            @PathVariable String appId,
+            @RequestBody ApplicationSpaceUpsertRequest request) {
+        return BaseResponse.of(applicationSpaceService.registerApplicationSpace(appId, request));
+    }
+
+    /**
      * 保存应用空间。
      *
      * @param appId 应用ID
@@ -69,5 +85,20 @@ public class ApplicationSpaceController {
     @GetMapping("/{appId}/dictionary")
     public BaseResponse<ApplicationDictionaryResponse> getApplicationDictionary(@PathVariable String appId) {
         return BaseResponse.of(applicationDictionaryService.getApplicationDictionary(appId));
+    }
+
+    /**
+     * 保存应用事件和指标字典。
+     *
+     * @param appId 应用ID
+     * @param request 应用字典保存请求
+     * @return 保存后的应用字典
+     */
+    @PutMapping("/{appId}/dictionary")
+    public BaseResponse<ApplicationDictionaryResponse> upsertApplicationDictionary(
+            @PathVariable String appId,
+            @RequestBody ApplicationDictionaryUpsertRequest request) {
+        return BaseResponse.of(applicationDictionaryService.upsertApplicationDictionary(
+                appId, request.getEventDefinitions(), request.getMetricDefinitions()));
     }
 }
