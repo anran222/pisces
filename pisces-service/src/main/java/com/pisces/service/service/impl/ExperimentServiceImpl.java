@@ -38,6 +38,7 @@ import com.pisces.common.response.ExperimentApprovalTaskResponse;
 import com.pisces.common.response.ExperimentConfigDraftApprovalResponse;
 import com.pisces.common.response.ExperimentConfigDraftResponse;
 import com.pisces.common.response.ExperimentConfigVersionResponse;
+import com.pisces.common.response.ExperimentPreflightResponse;
 import com.pisces.common.response.ExperimentResponse;
 import com.pisces.service.audit.AuditLogConstants;
 import com.pisces.service.audit.AuditLogRecord;
@@ -57,6 +58,7 @@ import com.pisces.service.service.AnalysisService;
 import com.pisces.service.service.ApplicationDictionaryService;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.service.ExperimentService;
+import com.pisces.service.validation.ExperimentPreflightValidator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -191,6 +193,51 @@ public class ExperimentServiceImpl implements ExperimentService {
     @Autowired
     private GroupConfigSchemaValidator groupConfigSchemaValidator;
 
+    @Autowired
+    private ExperimentPreflightValidator experimentPreflightValidator;
+
+    /**
+     * 执行实验创建前检查。
+     *
+     * @param request 实验草案
+     * @return 创建前检查结果
+     */
+    @Override
+    public ExperimentPreflightResponse preflightExperiment(ExperimentCreateRequest request) {
+        List<ExperimentPreflightResponse.CheckItem> checks = new ArrayList<>();
+        List<GroupConfigFieldDefinition> normalizedSchema;
+        try {
+            normalizedSchema = groupConfigSchemaValidator.normalizeSchema(
+                    request == null ? null : request.getGroupConfigSchema());
+        } catch (BusinessException exception) {
+            normalizedSchema = List.of();
+            checks.add(buildPreflightCheck("GROUP_SCHEMA", "字段与分组",
+                    ExperimentPreflightValidator.STATUS_BLOCKED, "字段定义需要修正", exception.getMessage(),
+                    "请修正字段名称、类型或默认值", "schema"));
+        }
+        checks.addAll(experimentPreflightValidator.validate(request, normalizedSchema));
+
+        String requestedAppId = request == null ? null : trimToNull(request.getAppId());
+        String resolvedAppId = ApiKeyContextHolder.resolveCreateAppId(requestedAppId);
+        ApplicationSpace applicationSpace = findApplicationSpace(resolvedAppId).orElse(null);
+        int quotaUsed = applicationSpace == null ? 0 : countExperimentsByAppId(resolvedAppId);
+        appendApplicationPreflightChecks(
+                checks, request, requestedAppId, resolvedAppId, applicationSpace, quotaUsed);
+
+        ExperimentPreflightResponse response = new ExperimentPreflightResponse();
+        response.setChecks(checks);
+        response.setBlockingCount((int) checks.stream()
+                .filter(check -> ExperimentPreflightValidator.STATUS_BLOCKED.equals(check.getStatus()))
+                .count());
+        response.setWarningCount((int) checks.stream()
+                .filter(check -> ExperimentPreflightValidator.STATUS_WARNING.equals(check.getStatus()))
+                .count());
+        response.setReadyToCreate(response.getBlockingCount() == 0);
+        response.setSummary(buildPreflightSummary(request, resolvedAppId, applicationSpace));
+        response.setApplicationGovernance(buildPreflightGovernance(applicationSpace, quotaUsed));
+        return response;
+    }
+
     /**
      * 创建实验（无用户系统版本）
      */
@@ -200,6 +247,8 @@ public class ExperimentServiceImpl implements ExperimentService {
                 groupConfigSchemaValidator.normalizeSchema(request.getGroupConfigSchema());
         // 参数校验
         validateExperimentRequest(request, groupConfigSchema);
+        experimentPreflightValidator.assertReady(
+                experimentPreflightValidator.validate(request, groupConfigSchema));
 
         // 生成实验ID
         String experimentId = "exp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
@@ -361,6 +410,7 @@ public class ExperimentServiceImpl implements ExperimentService {
         validateActivationApproval(metadata);
         validateReleaseWindow(metadata, "启动实验");
         validateNoRunningMutexConflict(experimentId, metadata);
+        synchronizeConclusionForActivation(metadata, "实验启动后自动进入运行中");
 
         String beforeStatus = statusName(experiment.getStatus());
         experiment.setStatus(Experiment.ExperimentStatus.RUNNING);
@@ -447,6 +497,7 @@ public class ExperimentServiceImpl implements ExperimentService {
         validateActivationApproval(metadata);
         validateReleaseWindow(metadata, "恢复实验");
         validateNoRunningMutexConflict(experimentId, metadata);
+        synchronizeConclusionForActivation(metadata, "实验恢复后重新进入运行中");
 
         String beforeStatus = statusName(experiment.getStatus());
         experiment.setStatus(Experiment.ExperimentStatus.RUNNING);
@@ -862,6 +913,208 @@ public class ExperimentServiceImpl implements ExperimentService {
         return applicationSpaceOptional == null ? Optional.empty() : applicationSpaceOptional;
     }
 
+    private void appendApplicationPreflightChecks(
+            List<ExperimentPreflightResponse.CheckItem> checks,
+            ExperimentCreateRequest request,
+            String requestedAppId,
+            String resolvedAppId,
+            ApplicationSpace applicationSpace,
+            int quotaUsed) {
+        if (requestedAppId == null) {
+            checks.add(buildPreflightCheck("APPLICATION_ACCESS", "应用与字典",
+                    ExperimentPreflightValidator.STATUS_BLOCKED, "尚未选择应用",
+                    "创建实验前需要明确所属应用",
+                    "请选择已注册且有权访问的应用", "basics"));
+        } else if (!requestedAppId.equals(resolvedAppId)) {
+            checks.add(buildPreflightCheck("APPLICATION_ACCESS", "应用与字典",
+                    ExperimentPreflightValidator.STATUS_BLOCKED, "无权使用所选应用",
+                    "当前访问身份只能操作应用“" + resolvedAppId + "”",
+                    "请选择当前身份有权访问的应用", "basics"));
+        } else if (applicationSpace == null) {
+            checks.add(buildPreflightCheck("APPLICATION_ACCESS", "应用与字典",
+                    ExperimentPreflightValidator.STATUS_BLOCKED, "应用尚未注册",
+                    "应用“" + resolvedAppId + "”没有注册记录",
+                    "请先前往应用管理完成应用登记", "basics"));
+        } else {
+            checks.add(buildPreflightCheck("APPLICATION_ACCESS", "应用与字典",
+                    ExperimentPreflightValidator.STATUS_PASS, "应用可用",
+                    "实验将归属于“" + applicationSpace.getDisplayName() + "”", null, "basics"));
+        }
+
+        appendDictionaryPreflightCheck(checks, request, resolvedAppId);
+        appendQuotaPreflightCheck(checks, applicationSpace, quotaUsed);
+        appendGovernancePreflightChecks(checks, request, applicationSpace);
+    }
+
+    private void appendDictionaryPreflightCheck(
+            List<ExperimentPreflightResponse.CheckItem> checks,
+            ExperimentCreateRequest request,
+            String appId) {
+        if (request == null || request.getEventDefinitions() == null || request.getMetricDefinitions() == null) {
+            return;
+        }
+        try {
+            DefinitionSelection selection = resolveApplicationDictionarySelection(appId, request);
+            checks.add(buildPreflightCheck("APPLICATION_DICTIONARY", "应用与字典",
+                    ExperimentPreflightValidator.STATUS_PASS, "字典归属有效",
+                    "已确认" + selection.eventDefinitions().size() + "个事件和"
+                            + selection.metricDefinitions().size() + "个指标属于当前应用",
+                    null, "dictionary"));
+        } catch (BusinessException exception) {
+            checks.add(buildPreflightCheck("APPLICATION_DICTIONARY", "应用与字典",
+                    ExperimentPreflightValidator.STATUS_BLOCKED, "字典选择需要修正", exception.getMessage(),
+                    "请重新选择当前应用字典中的事件和指标", "dictionary"));
+        }
+    }
+
+    private void appendQuotaPreflightCheck(
+            List<ExperimentPreflightResponse.CheckItem> checks,
+            ApplicationSpace applicationSpace,
+            int quotaUsed) {
+        if (applicationSpace == null || applicationSpace.getExperimentQuota() == null) {
+            checks.add(buildPreflightCheck("APPLICATION_QUOTA", "治理策略",
+                    ExperimentPreflightValidator.STATUS_PASS, "实验配额可用",
+                    "当前应用未限制实验总数", null, "basics"));
+            return;
+        }
+        int quota = applicationSpace.getExperimentQuota();
+        if (quotaUsed >= quota) {
+            checks.add(buildPreflightCheck("APPLICATION_QUOTA", "治理策略",
+                    ExperimentPreflightValidator.STATUS_BLOCKED, "实验配额已用尽",
+                    "当前已使用" + quotaUsed + "个实验，应用配额为" + quota + "个",
+                    "请清理无效实验或调整应用配额", "basics"));
+            return;
+        }
+        checks.add(buildPreflightCheck("APPLICATION_QUOTA", "治理策略",
+                ExperimentPreflightValidator.STATUS_PASS, "实验配额可用",
+                "当前剩余" + (quota - quotaUsed) + "个实验名额", null, "basics"));
+    }
+
+    private void appendGovernancePreflightChecks(
+            List<ExperimentPreflightResponse.CheckItem> checks,
+            ExperimentCreateRequest request,
+            ApplicationSpace applicationSpace) {
+        if (isApprovalRequired(applicationSpace)) {
+            checks.add(buildPreflightCheck("START_APPROVAL", "治理策略",
+                    ExperimentPreflightValidator.STATUS_WARNING, "启动前需要审批",
+                    "实验可以创建为草稿，启动前需要应用审批人通过",
+                    "创建后请在应用管理中完成启动审批", "basics"));
+        } else {
+            checks.add(buildPreflightCheck("START_APPROVAL", "治理策略",
+                    ExperimentPreflightValidator.STATUS_PASS, "无需启动审批",
+                    "当前应用未启用启动审批", null, "basics"));
+        }
+        if (applicationSpace != null
+                && Boolean.TRUE.equals(applicationSpace.getReleaseWindowEnabled())
+                && !isCurrentlyInReleaseWindow(applicationSpace)) {
+            checks.add(buildPreflightCheck("RELEASE_WINDOW", "治理策略",
+                    ExperimentPreflightValidator.STATUS_WARNING, "当前不在发布窗口",
+                    "实验可以创建为草稿，但当前时间不能启动或发布运行配置",
+                    "请在应用配置的发布窗口内执行启动操作", "basics"));
+        } else {
+            checks.add(buildPreflightCheck("RELEASE_WINDOW", "治理策略",
+                    ExperimentPreflightValidator.STATUS_PASS, "发布时间条件正常",
+                    applicationSpace != null && Boolean.TRUE.equals(applicationSpace.getReleaseWindowEnabled())
+                            ? "当前处于应用发布窗口内" : "当前应用未限制发布窗口",
+                    null, "basics"));
+        }
+        boolean hasAudienceList = request != null
+                && ((request.getWhitelist() != null && !request.getWhitelist().isEmpty())
+                || (request.getBlacklist() != null && !request.getBlacklist().isEmpty()));
+        checks.add(hasAudienceList
+                ? buildPreflightCheck("AUDIENCE_LIST", "流量", ExperimentPreflightValidator.STATUS_PASS,
+                        "已配置定向名单", "白名单或黑名单将参与分流过滤", null, "groups")
+                : buildPreflightCheck("AUDIENCE_LIST", "流量", ExperimentPreflightValidator.STATUS_WARNING,
+                        "未配置定向名单", "实验仍可创建，将按普通流量规则分配用户",
+                        "如需灰度验证，可配置白名单或黑名单", "groups"));
+    }
+
+    private ExperimentPreflightResponse.Summary buildPreflightSummary(
+            ExperimentCreateRequest request,
+            String resolvedAppId,
+            ApplicationSpace applicationSpace) {
+        ExperimentPreflightResponse.Summary summary = new ExperimentPreflightResponse.Summary();
+        summary.setAppId(resolvedAppId);
+        summary.setApplicationName(applicationSpace == null ? resolvedAppId : applicationSpace.getDisplayName());
+        if (request == null) {
+            return summary;
+        }
+        summary.setExperimentName(trimToNull(request.getName()));
+        summary.setStartTime(request.getStartTime() == null ? null : request.getStartTime().toString());
+        summary.setEndTime(request.getEndTime() == null ? null : request.getEndTime().toString());
+        summary.setGroupCount(request.getGroups() == null ? 0 : request.getGroups().size());
+        summary.setTotalTraffic(request.getTraffic() == null ? null : request.getTraffic().getTotalTraffic());
+        summary.setEventCount(request.getEventDefinitions() == null ? 0 : request.getEventDefinitions().size());
+        summary.setMetricCount(request.getMetricDefinitions() == null ? 0 : request.getMetricDefinitions().size());
+        if (request.getMetricDefinitions() != null) {
+            request.getMetricDefinitions().stream()
+                    .filter(metric -> metric != null && Boolean.TRUE.equals(metric.getPrimaryMetric()))
+                    .findFirst()
+                    .ifPresent(metric -> {
+                        summary.setPrimaryMetricKey(metric.getKey());
+                        summary.setPrimaryMetricName(metric.getName());
+                    });
+        }
+        return summary;
+    }
+
+    private ExperimentPreflightResponse.ApplicationGovernance buildPreflightGovernance(
+            ApplicationSpace applicationSpace, int quotaUsed) {
+        ExperimentPreflightResponse.ApplicationGovernance governance =
+                new ExperimentPreflightResponse.ApplicationGovernance();
+        if (applicationSpace == null) {
+            return governance;
+        }
+        governance.setExperimentQuota(applicationSpace.getExperimentQuota());
+        governance.setQuotaUsed(quotaUsed);
+        governance.setQuotaRemaining(applicationSpace.getExperimentQuota() == null
+                ? null : Math.max(0, applicationSpace.getExperimentQuota() - quotaUsed));
+        governance.setApprovalRequired(isApprovalRequired(applicationSpace));
+        governance.setReleaseWindowEnabled(Boolean.TRUE.equals(applicationSpace.getReleaseWindowEnabled()));
+        governance.setCurrentlyInReleaseWindow(isCurrentlyInReleaseWindow(applicationSpace));
+        if (Boolean.TRUE.equals(applicationSpace.getReleaseWindowEnabled())) {
+            governance.setReleaseWindowDescription(formatReleaseWindow(
+                    resolveReleaseWindowDays(applicationSpace),
+                    resolveReleaseWindowStartTime(applicationSpace),
+                    resolveReleaseWindowEndTime(applicationSpace),
+                    resolveReleaseWindowZoneId(applicationSpace)));
+        } else {
+            governance.setReleaseWindowDescription("未限制发布窗口");
+        }
+        return governance;
+    }
+
+    private boolean isCurrentlyInReleaseWindow(ApplicationSpace applicationSpace) {
+        if (applicationSpace == null || !Boolean.TRUE.equals(applicationSpace.getReleaseWindowEnabled())) {
+            return true;
+        }
+        ZoneId zoneId = resolveReleaseWindowZoneId(applicationSpace);
+        ZonedDateTime now = ZonedDateTime.now(releaseWindowClock.withZone(zoneId));
+        LocalTime currentTime = now.toLocalTime();
+        return resolveReleaseWindowDays(applicationSpace).contains(now.getDayOfWeek().getValue())
+                && !currentTime.isBefore(resolveReleaseWindowStartTime(applicationSpace))
+                && currentTime.isBefore(resolveReleaseWindowEndTime(applicationSpace));
+    }
+
+    private ExperimentPreflightResponse.CheckItem buildPreflightCheck(
+            String code,
+            String section,
+            String status,
+            String title,
+            String detail,
+            String action,
+            String targetPanel) {
+        ExperimentPreflightResponse.CheckItem check = new ExperimentPreflightResponse.CheckItem();
+        check.setCode(code);
+        check.setSection(section);
+        check.setStatus(status);
+        check.setTitle(title);
+        check.setDetail(detail);
+        check.setAction(action);
+        check.setTargetPanel(targetPanel);
+        return check;
+    }
+
     private void initializeApprovalStatus(ExperimentMetadata metadata, ApplicationSpace applicationSpace,
                                           String operator, LocalDateTime now) {
         if (isApprovalRequired(applicationSpace)) {
@@ -1097,6 +1350,21 @@ public class ExperimentServiceImpl implements ExperimentService {
         metadata.setConclusionStatus(ExperimentMetadata.ConclusionStatus.NOT_READY);
         metadata.setConclusionUpdatedAt(LocalDateTime.now());
         clearConclusionBinding(metadata);
+    }
+
+    private void synchronizeConclusionForActivation(ExperimentMetadata metadata, String comment) {
+        ExperimentMetadata.ConclusionStatus conclusionStatus = metadata.getConclusionStatus();
+        if (conclusionStatus != null && conclusionStatus.isTerminal()) {
+            throw new BusinessException(ResponseCode.EXPERIMENT_STATUS_ERROR, "终态结论的实验不能重新运行");
+        }
+        if (conclusionStatus == ExperimentMetadata.ConclusionStatus.RUNNING) {
+            return;
+        }
+        metadata.setConclusionStatus(ExperimentMetadata.ConclusionStatus.RUNNING);
+        metadata.setConclusionUpdatedAt(LocalDateTime.now());
+        clearConclusionBinding(metadata);
+        metadata.setConclusionOperator(resolveCurrentOperator());
+        metadata.setConclusionComment(comment);
     }
 
     private void clearConclusionBinding(ExperimentMetadata metadata) {

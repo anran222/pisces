@@ -11,12 +11,16 @@
 - 演示实验生成
 - 为已有实验补充真实事件数据
 - Java / JS 运行时 SDK
+- 应用接入链路检查与真实事实聚合
+- 实验创建前完整预检与创建门禁
 
 ## 当前重要约束
 
 ### 配置与安全
 
 - MySQL 密码、通义 API Key、Pisces 管理 API Key 不在仓库中提供固定默认值，必须通过环境变量注入。
+- 本地生产脚本统一按“依赖栈默认配置 -> `config/pisces-local.env` 用户配置”加载，用户显式填写的数据库、Redis、Zookeeper、千问和实例地址不会再被自动生成的栈配置覆盖。
+- 本地服务管理会根据健康地址解析端口并核对真实监听 PID，可识别和接管已运行的 Pisces 后端；服务摘要仅记录脱敏依赖地址、监听归属和配置指纹，不写入数据库密码、API Key 或完整敏感配置。
 - `TONGYI_API_KEY` 未配置时，AI 相关接口直接失败；非 AI 主链路不依赖该配置。
 - 文本生成默认使用 `TONGYI_MODEL=qwen3.7-max` 和 DashScope 通道，适配只替换普通百炼/千问 `TONGYI_API_KEY` 的本地流程；如账号已开通 Token Plan preview，可显式覆盖为 `TONGYI_MODEL=qwen3.8-max-preview` 和 `TONGYI_API_MODE=openai-compatible`，回退模型仍保持 `TONGYI_FALLBACK_MODEL=qwen3.7-max`。
 - `PISCES_API_KEY_SPECS` 是生产推荐配置，格式为 `key|appId|owner|scope1+scope2`，多条使用英文逗号分隔。
@@ -25,7 +29,9 @@
 - `GET /applications` 提供应用空间目录，当前从数据库注册表、API Key 配置和已有实验归并生成；非 `admin` key 只返回自身应用。
 - `PUT /applications/{appId}` 可注册或更新应用空间展示名、默认负责人、审批人列表、审批通过人数、审批 SLA 小时数、升级接收人、实验配额、配置/启动审批开关和发布窗口；审批策略变化时会递增 `approvalPolicyVersion`，非 `admin` key 只能更新自身应用。
 - `GET /applications/{appId}/dictionary` 提供应用级事件/指标字典；非 `admin` key 只能查询自身应用。
+- `GET /applications/{appId}/integration-health` 按当前应用一次性聚合应用登记、访问身份、业务字典、实验配置、用户分流、变体曝光和业务事件七个阶段；分流、曝光、事件分别使用一次批量 SQL，响应只提供中文说明、证据数量和下一步动作，不返回密钥内容。
 - 管理台 `/applications` 提供应用空间治理入口，可编辑展示名、默认负责人、审批人列表、审批通过人数、审批 SLA、升级接收人、实验配额、`approvalRequired` 和发布窗口，可查看审批策略版本、集中处理配置/启动审批待办，并可按应用查看事件/指标字典。
+- 管理台 `/applications` 增加“接入检查”一级页签，只按需读取当前应用状态，在横屏中集中展示七阶段链路、阻断摘要和处理入口。
 - `PISCES_API_KEYS` 使用英文逗号分隔，作为兼容模式仍可用；兼容 key 拥有全部 scope，不建议生产长期使用。
 - 前端管理台可通过 `VITE_PISCES_API_KEY` 注入 `X-Pisces-Api-Key` 请求头。
 
@@ -39,12 +45,16 @@
 - `diagnosis` 和 `graduation` 响应会绑定 `evidence`，包含 `analysisReady`、SRM、样本量、阻断项、主指标、分组快照、统计事实和最新报告快照版本；旧 `autoGraduateDecision` 桥接结果也会透出同一份 `evidence`，调用方可审计 AI 建议、数据质量门禁与报告快照依据
 - 本地最终验收会通过 `production-infrastructure-local-ai-smoke.sh` 调用 `/api/variants/generate`，要求 TongYi 文本模型真实返回候选变体，并在响应和 smoke summary 中记录实际命中的 `aiModel`、`aiApiMode`、是否回退和尝试模型列表后才允许完成。
 - 管理台 `/variants-lab` 会在候选输出区以紧凑横向状态条展示实际命中的 TongYi 模型、调用协议、是否回退和尝试模型链路；核心截图 `09-variant-lab-tongyi-model-evidence.png` 纳入横屏布局审计，并作为本地完成验收的必需前端证据。
+- 本地最终验收默认运行真实 Playwright 实验闭环：在 `shop-app` 中从页面调用千问生成完整方案，将全部方案填充到基础、字典、事件、指标、字段和分组配置，完成预检、创建、启动、数据生成、事实分析、报告快照及待审核结论；临时实验清理、实验数量恢复和零页面运行时错误均为 `COMPLETE` 的硬门禁。
 
 ### 实验配置
 
 - 实验管理操作已写入 `pisces_audit_log` 审计日志，覆盖创建、更新、启动、暂停、恢复、停止、删除和人工结论状态流转。
 - 人工结论推进到 `READY_FOR_REVIEW`、`GRADUATED` 或 `REJECTED` 时必须绑定当前 `configVersion` 和最新报告 `snapshotVersion`；缺少证据版本、无报告快照、报告未分析就绪、证据版本过期、毕业报告存在 SRM 或护栏异常时会拒绝提交且不改变当前结论；配置变更、草稿发布和配置回滚会把旧人工结论重置为 `NOT_READY` 并清空旧证据，避免新配置继续沿用旧报告结论。
+- 实验首次启动时会把结论状态从 `NOT_READY` 自动同步为 `RUNNING`；暂停实验恢复运行时，会把未终态结论重新同步为 `RUNNING` 并清除待审核状态绑定的旧配置版本和报告快照。已经 `GRADUATED` 或 `REJECTED` 的终态实验不能恢复运行。
 - 实验创建时会持久化 `appId` 和 `owner`；非 `admin` key 不能通过请求体伪造其他应用归属。`admin` 创建实验未指定负责人时，会优先使用应用空间默认负责人；已配置实验配额的应用会在创建前校验额度。
+- `POST /experiments/preflight` 复用实验创建请求模型，在不写入实验、配置和审计记录的前提下，一次返回基础信息、应用字典、字段分组、流量、指标和治理策略的全部阻断项与提醒项；创建接口继续执行同源强校验，避免绕过预检直接写入无效配置。
+- 管理台新建实验页使用右侧“创建前检查”抽屉集中展示结果，检查项可定位到现有配置页签；草案变化后旧结果立即失效，存在阻断项时禁止创建，只有提醒项时需再次确认。
 - 应用空间启用 `approvalRequired` 后，新建、更新或保存配置草稿会进入 `PENDING` 审批状态；提交审批时会把审批人、通过人数和策略版本写入任务快照；保存配置草稿时会为当前 `draftVersion` 生成带策略快照的草稿审批记录；`approvalRequiredCount` 定义至少几名审批人通过才最终 `APPROVED`，保存应用空间时会校验该人数不超过有效审批人数量。
 - `POST /experiments/{id}/approval-status` 会写入 `pisces_experiment_approval_vote` 投票记录并聚合当前审批结果：`APPROVED` 会先检查最新报告快照，存在 SRM 或护栏异常时拒绝通过；`admin` 可显式提交 `riskOverride=true` 和 `riskOverrideReason` 豁免阻断风险，豁免信息会进入审批审计详情；票数未达到任务快照 `approvalRequiredCount` 时保持 `PENDING` 并写入进度，达到后才更新实验/草稿审批为 `APPROVED`；任一 `REJECTED` 会立即终止为 `REJECTED`。非 `admin` key 必须在任务快照审批人列表内才能审批，且不能审批自己提交的配置/启动变更；历史任务缺少快照时回退当前应用空间策略。
 - `GET /experiments/approval-tasks` 提供当前身份可见的配置/启动审批待办列表，默认返回 `PENDING`，支持按应用、负责人和审批状态过滤，并通过 `approvalType` 区分 `CONFIG_DRAFT` 与 `EXPERIMENT_START`；响应会返回 `approvalRequestedBy`、`approvalOwner`、`approvalOwners`、审批所需/已通过/已拒绝人数、进度文案、提交时间、已等待小时数、SLA 状态、升级接收人、最新报告风险上下文、`approvable` 和 `approvalDisabledReason` 供管理台展示和禁用无权/高风险操作，其中审批人和通过人数优先来自提交时策略快照。
@@ -74,6 +84,8 @@
 - 创建和更新实验成功后，会把当前实验的事件定义和指标定义 upsert 到应用级字典；字典写入失败只记录 WARN，不回滚已保存的实验配置。
 - 应用级字典表为 `pisces_application_event_definition` 和 `pisces_application_metric_definition`，需要执行 `pisces_application_dictionary.sql` 建表。
 - 管理台新建实验页可填写 `appId` / `layerId`，并从应用字典导入未存在的事件与指标定义。
+- 智能诊断与毕业建议在前端独立更新；任一请求失败不会清空另一项成功结果，页面会明确区分生成中、失败和已完成。
+- 实验详情页把当前运行版本与发布历史分开表达，旧实验没有快照时显示“尚未记录发布快照”，不再以版本 0 表示。
 - 定义 schema 后，实验组配置会按类型校验和归一化
 
 ### 数据
@@ -94,9 +106,11 @@
 - `GET /traffic/experiment/{id}/mab/summary` 的分配概率计算已改为一次性读取 Redis Beta 参数并在内存中模拟，Gamma 采样使用常数复杂度实现；摘要同时暴露 `totalObservedRewards`、`ucbSelectionTrials`、组级 `observedRewardCount`、`observedSuccesses`、`observedFailures`、`ucbTrials` 和兼容字段 `totalTrials`，避免奖励观测口径与 UCB 选择口径混淆。
 - MAB 奖励已切到观测键口径：主 `RATE + EVENT_COUNT` 指标的 denominator 事件先记录失败，numerator 事件按同一 `mabObservationId` 或 visitor 观测键升级为成功，成功不会被后续失败降级；事实表重放会重建 Redis 派生数据、MAB Beta 参数和奖励观测去重状态。
 - 其余实验创建、统计和补数都应使用真实数据链路
+- `scripts/local-experiment-workflow-smoke.sh` 使用当前本地 `shop-app` 应用字典创建临时二手手机实验，验证预检、创建、启动、分流、曝光、事件上报、异步物化、统计、报告快照和人工结论门禁，并在完成或失败后清理临时实验；摘要写入 `target/pisces-local-experiment-workflow-smoke/summary.json`，不保存 API Key。
 - 已有实验补数时，会按实验自己的事件定义生成事件，而不是回退到固定 `VIEW` / `CLICK` / `CONVERT`
 - 统计结果总览暴露 `totalAssignments`、`totalExposures`、`totalEvents`，分组统计暴露 `assignmentCount`、`exposureCount` 和事件计数
 - 前端实验详情页与决策页展示数据链路状态，用于判断 assignment、exposure、event、analysis readiness 和异步事件管道是否可用
+- 前端事件重放计划会在提交前校验时间范围完整性、先后顺序和分段要求，错误时不发送请求并使用中文提示。
 - 事件上报使用 `properties.clientEventId` 做服务端幂等；同一实验内重复 `clientEventId` 不重复进入 inbox
 - `/data/event` 与 `/data/exposure` 已改为写入 MySQL inbox，由后台消费者异步物化事件事实、曝光事实、Redis 派生计数和 MAB 奖励
 - 后台消费者已写入 `pisces_event_materialization` 事实派生物化账本；事实写入成功但 Redis/MAB 派生失败后重试时，会回查事实表中的真实 `eventId` / `exposureId` 后补写派生数据和账本，账本存在时跳过重复派生，避免后续复制型 replay 使用新 inbox ID 污染事实账本。

@@ -190,6 +190,7 @@ summary = {
         "captureFrontend": plan.get("captureFrontend"),
         "frontendEvidence": plan.get("frontendEvidence") or {},
         "runAiSmoke": plan.get("runAiSmoke"),
+        "runBrowserWorkflow": plan.get("runBrowserWorkflow"),
         "runCloseout": plan.get("runCloseout"),
         "runCompletionVerify": plan.get("runCompletionVerify"),
         "redisFault": plan.get("redisFault"),
@@ -344,10 +345,11 @@ if plan.get("dryRun") is not True:
 if (
     plan.get("captureFrontend") is not True
     or plan.get("runAiSmoke") is not True
+    or plan.get("runBrowserWorkflow") is not True
     or plan.get("runCloseout") is not True
     or plan.get("runCompletionVerify") is not True
 ):
-    raise SystemExit("dry-run finalizer did not plan AI smoke, frontend capture, closeout, and completion verification")
+    raise SystemExit("dry-run finalizer did not plan AI smoke, frontend capture, browser workflow, closeout, and completion verification")
 frontend_evidence = plan.get("frontendEvidence") or {}
 if frontend_evidence.get("requiredScreenshots") != ["09-variant-lab-tongyi-model-evidence.png"]:
     raise SystemExit("dry-run finalizer did not expose the required variant model evidence screenshot")
@@ -363,6 +365,7 @@ expected_commands = [
     "bash scripts/production-infrastructure-local-readiness.sh",
     "bash scripts/production-infrastructure-local-ai-smoke.sh",
     "bash scripts/production-infrastructure-local-frontend-evidence.sh",
+    "bash scripts/production-infrastructure-local-browser-workflow.sh",
 ]
 missing = [command for command in expected_commands if command not in commands]
 if missing:

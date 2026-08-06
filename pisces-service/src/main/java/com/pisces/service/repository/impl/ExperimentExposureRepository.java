@@ -3,6 +3,7 @@ package com.pisces.service.repository.impl;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.pisces.common.model.ExperimentExposure;
 import com.pisces.service.entity.ExperimentExposureEntity;
+import com.pisces.service.entity.ExperimentFactAggregateEntity;
 import com.pisces.service.mapper.ExperimentExposureMapper;
 import com.pisces.service.util.JsonUtil;
 import lombok.AllArgsConstructor;
@@ -46,6 +47,14 @@ public class ExperimentExposureRepository implements com.pisces.service.reposito
     @Override
     public long countByExperimentIdAndGroupId(String experimentId, String groupId) {
         return experimentExposureMapper.countByExperimentIdAndGroupId(experimentId, groupId);
+    }
+
+    @Override
+    public ExperimentFactAggregateEntity aggregateByExperimentIds(List<String> experimentIds) {
+        if (experimentIds == null || experimentIds.isEmpty()) {
+            return emptyAggregate();
+        }
+        return normalizeAggregate(experimentExposureMapper.aggregateByExperimentIds(experimentIds));
     }
 
     @Override
@@ -153,5 +162,15 @@ public class ExperimentExposureRepository implements com.pisces.service.reposito
             return Collections.emptyMap();
         }
         return jsonUtil.toObject(json, MAP_TYPE);
+    }
+
+    private ExperimentFactAggregateEntity normalizeAggregate(ExperimentFactAggregateEntity aggregate) {
+        return aggregate == null ? emptyAggregate() : aggregate;
+    }
+
+    private ExperimentFactAggregateEntity emptyAggregate() {
+        ExperimentFactAggregateEntity aggregate = new ExperimentFactAggregateEntity();
+        aggregate.setTotalCount(0L);
+        return aggregate;
     }
 }

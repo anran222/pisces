@@ -23,6 +23,8 @@ Environment:
   PISCES_LOCAL_FINALIZE_RUN_READINESS      Run local readiness before evidence collection. Default: true.
   PISCES_LOCAL_FINALIZE_RUN_AI_SMOKE       Run local TongYi text generation smoke. Default: true.
   PISCES_LOCAL_FINALIZE_CAPTURE_FRONTEND   Run frontend audit and core screenshot capture. Default: true.
+  PISCES_LOCAL_FINALIZE_RUN_BROWSER_WORKFLOW
+                                               Run the real browser experiment workflow. Default: true.
   PISCES_LOCAL_FINALIZE_RUN_CLOSEOUT       Run generated local closeout after evidence collection. Default: true.
   PISCES_LOCAL_FINALIZE_RUN_COMPLETION_VERIFY
                                                Verify finalizer, closeout, and evidence manifest after closeout. Default: true.
@@ -35,8 +37,9 @@ with NEEDS_QIANWEN_API_KEY. After replacing only TONGYI_API_KEY in
 config/pisces-local.env, rerun this script; it prepares the local dependency
 stack and schema, starts the local service, records readiness, captures
 frontend evidence, verifies the local TongYi text model, collects real local
-evidence, runs the local Redis fault drill, runs the generated local closeout
-wrapper, and verifies the final local completion evidence.
+evidence, verifies the real browser experiment workflow, runs the local Redis
+fault drill, runs the generated local closeout wrapper, and verifies the final
+local completion evidence.
 USAGE
 }
 
@@ -170,6 +173,7 @@ write_summary() {
   local collect_exit="${10:-not_run}"
   local verify_exit="${11:-not_run}"
   local ai_smoke_exit="${PISCES_LOCAL_FINALIZE_AI_SMOKE_EXIT:-not_run}"
+  local browser_workflow_exit="${PISCES_LOCAL_FINALIZE_BROWSER_WORKFLOW_EXIT:-not_run}"
 
   export PISCES_LOCAL_FINALIZE_SUMMARY_STATUS="$status"
   export PISCES_LOCAL_FINALIZE_SUMMARY_EXIT_CODE="$exit_code"
@@ -180,6 +184,7 @@ write_summary() {
   export PISCES_LOCAL_FINALIZE_SERVICE_EXIT="$service_exit"
   export PISCES_LOCAL_FINALIZE_READINESS_EXIT="$readiness_exit"
   export PISCES_LOCAL_FINALIZE_AI_SMOKE_EXIT="$ai_smoke_exit"
+  export PISCES_LOCAL_FINALIZE_BROWSER_WORKFLOW_EXIT="$browser_workflow_exit"
   export PISCES_LOCAL_FINALIZE_FRONTEND_EXIT="$frontend_exit"
   export PISCES_LOCAL_FINALIZE_COLLECT_EXIT="$collect_exit"
   export PISCES_LOCAL_FINALIZE_VERIFY_EXIT="$verify_exit"
@@ -228,6 +233,9 @@ run_ai_smoke = os.environ["PISCES_LOCAL_FINALIZE_RUN_AI_SMOKE"].lower() in {"tru
 capture_frontend = os.environ["PISCES_LOCAL_FINALIZE_CAPTURE_FRONTEND"].lower() in {
     "true", "1", "yes", "y"
 }
+run_browser_workflow = os.environ["PISCES_LOCAL_FINALIZE_RUN_BROWSER_WORKFLOW"].lower() in {
+    "true", "1", "yes", "y"
+}
 run_completion_verify = os.environ["PISCES_LOCAL_FINALIZE_RUN_COMPLETION_VERIFY"].lower() in {
     "true", "1", "yes", "y"
 }
@@ -256,6 +264,8 @@ if run_ai_smoke:
     commands.append("bash scripts/production-infrastructure-local-ai-smoke.sh")
 if capture_frontend:
     commands.append("bash scripts/production-infrastructure-local-frontend-evidence.sh")
+if run_browser_workflow:
+    commands.append("bash scripts/production-infrastructure-local-browser-workflow.sh")
 commands.append(collector_command)
 if run_completion_verify:
     commands.append("bash scripts/production-infrastructure-local-completion-verify.sh")
@@ -290,6 +300,7 @@ elif status in {
     "READINESS_FAILED",
     "AI_SMOKE_FAILED",
     "FRONTEND_EVIDENCE_FAILED",
+    "BROWSER_WORKFLOW_FAILED",
     "EVIDENCE_COLLECT_FAILED",
     "COMPLETION_VERIFY_FAILED",
 }:
@@ -325,6 +336,7 @@ summary = {
     "runReadiness": run_readiness,
     "captureFrontend": capture_frontend,
     "runAiSmoke": run_ai_smoke,
+    "runBrowserWorkflow": run_browser_workflow,
     "frontendEvidence": {
         "captureEnabled": capture_frontend,
         "summaryFile": display(os.environ["PISCES_LOCAL_FINALIZE_FRONTEND_SUMMARY_FILE"]),
@@ -370,6 +382,7 @@ summary = {
         step("local readiness", os.environ["PISCES_LOCAL_FINALIZE_READINESS_EXIT"], os.environ["PISCES_LOCAL_FINALIZE_READINESS_SUMMARY_FILE"]),
         step("local AI smoke", os.environ["PISCES_LOCAL_FINALIZE_AI_SMOKE_EXIT"], os.environ["PISCES_LOCAL_FINALIZE_AI_SMOKE_SUMMARY_FILE"]),
         step("local frontend evidence", os.environ["PISCES_LOCAL_FINALIZE_FRONTEND_EXIT"], os.environ["PISCES_LOCAL_FINALIZE_FRONTEND_SUMMARY_FILE"]),
+        step("real browser experiment workflow", os.environ["PISCES_LOCAL_FINALIZE_BROWSER_WORKFLOW_EXIT"], os.environ["PISCES_LOCAL_FINALIZE_BROWSER_WORKFLOW_SUMMARY_FILE"]),
         step("local evidence collect", os.environ["PISCES_LOCAL_FINALIZE_COLLECT_EXIT"], os.environ["PISCES_LOCAL_FINALIZE_COLLECT_SUMMARY_FILE"]),
         step("local completion verify", os.environ["PISCES_LOCAL_FINALIZE_VERIFY_EXIT"], os.environ["PISCES_LOCAL_FINALIZE_COMPLETION_VERIFY_SUMMARY_FILE"]),
     ],
@@ -381,6 +394,7 @@ summary = {
         "readinessSummary": display(os.environ["PISCES_LOCAL_FINALIZE_READINESS_SUMMARY_FILE"]),
         "aiSmokeSummary": display(os.environ["PISCES_LOCAL_FINALIZE_AI_SMOKE_SUMMARY_FILE"]),
         "frontendSummary": display(os.environ["PISCES_LOCAL_FINALIZE_FRONTEND_SUMMARY_FILE"]),
+        "browserWorkflowSummary": display(os.environ["PISCES_LOCAL_FINALIZE_BROWSER_WORKFLOW_SUMMARY_FILE"]),
         "collectionSummary": display(os.environ["PISCES_LOCAL_FINALIZE_COLLECT_SUMMARY_FILE"]),
         "completionVerifySummary": display(os.environ["PISCES_LOCAL_FINALIZE_COMPLETION_VERIFY_SUMMARY_FILE"]),
         "evidenceWorkspace": display(os.environ["PISCES_LOCAL_FINALIZE_EVIDENCE_WORKSPACE"]),
@@ -421,6 +435,7 @@ main() {
   PISCES_QIANWEN_API_KEY_ENV="${PISCES_QIANWEN_API_KEY_ENV:-TONGYI_API_KEY}"
 
   local output_file finalize_dir stack_summary schema_summary dependency_summary ai_smoke_summary frontend_summary
+  local browser_workflow_summary
   local service_summary readiness_summary collect_summary completion_verify_summary evidence_workspace pid_file log_file
   local bootstrap_summary env_created_by_finalize
   output_file="$(resolve_path "$PISCES_LOCAL_FINALIZE_OUTPUT_FILE")"
@@ -431,6 +446,7 @@ main() {
   dependency_summary="$finalize_dir/dependency-summary.json"
   ai_smoke_summary="$finalize_dir/ai-smoke-summary.json"
   frontend_summary="$finalize_dir/frontend-summary.json"
+  browser_workflow_summary="$finalize_dir/browser-workflow-summary.json"
   service_summary="$finalize_dir/service-summary.json"
   readiness_summary="$finalize_dir/readiness-summary.json"
   collect_summary="$finalize_dir/collection-summary.json"
@@ -461,8 +477,8 @@ main() {
     fi
   fi
 
-  load_env_file "$PISCES_LOCAL_ENV_FILE"
   load_env_file "$PISCES_LOCAL_STACK_ENV_FILE"
+  load_env_file "$PISCES_LOCAL_ENV_FILE"
   [[ -n "$env_redis_docker_container" ]] && PISCES_REDIS_DOCKER_CONTAINER="$env_redis_docker_container"
   [[ -n "$env_fault_confirm" ]] && PISCES_FAULT_CONFIRM="$env_fault_confirm"
   [[ -n "$env_stack_project" ]] && PISCES_LOCAL_STACK_PROJECT_NAME="$env_stack_project"
@@ -476,6 +492,7 @@ main() {
   PISCES_LOCAL_FINALIZE_RUN_READINESS="${PISCES_LOCAL_FINALIZE_RUN_READINESS:-true}"
   PISCES_LOCAL_FINALIZE_RUN_AI_SMOKE="${PISCES_LOCAL_FINALIZE_RUN_AI_SMOKE:-true}"
   PISCES_LOCAL_FINALIZE_CAPTURE_FRONTEND="${PISCES_LOCAL_FINALIZE_CAPTURE_FRONTEND:-true}"
+  PISCES_LOCAL_FINALIZE_RUN_BROWSER_WORKFLOW="${PISCES_LOCAL_FINALIZE_RUN_BROWSER_WORKFLOW:-true}"
   PISCES_LOCAL_FINALIZE_RUN_CLOSEOUT="${PISCES_LOCAL_FINALIZE_RUN_CLOSEOUT:-true}"
   PISCES_LOCAL_FINALIZE_RUN_COMPLETION_VERIFY="${PISCES_LOCAL_FINALIZE_RUN_COMPLETION_VERIFY:-true}"
   PISCES_LOCAL_FINALIZE_REDIS_FAULT_MODE="${PISCES_LOCAL_FINALIZE_REDIS_FAULT_MODE:-auto}"
@@ -510,6 +527,7 @@ main() {
   export PISCES_LOCAL_FINALIZE_DEPENDENCY_SUMMARY_FILE="$dependency_summary"
   export PISCES_LOCAL_FINALIZE_AI_SMOKE_SUMMARY_FILE="$ai_smoke_summary"
   export PISCES_LOCAL_FINALIZE_FRONTEND_SUMMARY_FILE="$frontend_summary"
+  export PISCES_LOCAL_FINALIZE_BROWSER_WORKFLOW_SUMMARY_FILE="$browser_workflow_summary"
   export PISCES_LOCAL_FINALIZE_SERVICE_SUMMARY_FILE="$service_summary"
   export PISCES_LOCAL_FINALIZE_READINESS_SUMMARY_FILE="$readiness_summary"
   export PISCES_LOCAL_FINALIZE_COLLECT_SUMMARY_FILE="$collect_summary"
@@ -527,6 +545,7 @@ main() {
   export PISCES_LOCAL_FINALIZE_RUN_READINESS
   export PISCES_LOCAL_FINALIZE_RUN_AI_SMOKE
   export PISCES_LOCAL_FINALIZE_CAPTURE_FRONTEND
+  export PISCES_LOCAL_FINALIZE_RUN_BROWSER_WORKFLOW
   export PISCES_LOCAL_FINALIZE_RUN_CLOSEOUT
   export PISCES_LOCAL_FINALIZE_RUN_COMPLETION_VERIFY
   export PISCES_LOCAL_FRONTEND_REQUIRED_SCREENSHOTS
@@ -535,6 +554,7 @@ main() {
   export PISCES_LOCAL_FINALIZE_FAULT_CONFIRM_EFFECTIVE
   export PISCES_LOCAL_FINALIZE_AUTO_CONFIRMED_REDIS_CONTAINER
   export PISCES_LOCAL_FINALIZE_AI_SMOKE_EXIT="not_run"
+  export PISCES_LOCAL_FINALIZE_BROWSER_WORKFLOW_EXIT="not_run"
   export PISCES_LOCAL_FINALIZE_TONGYI_MODEL
   export PISCES_LOCAL_FINALIZE_TONGYI_API_MODE
   export PISCES_LOCAL_FINALIZE_TONGYI_FALLBACK_MODEL
@@ -574,6 +594,7 @@ main() {
     fi
 
     load_env_file "$PISCES_LOCAL_STACK_ENV_FILE"
+    load_env_file "$PISCES_LOCAL_ENV_FILE"
     [[ -n "$env_redis_docker_container" ]] && PISCES_REDIS_DOCKER_CONTAINER="$env_redis_docker_container"
     [[ -n "$env_fault_confirm" ]] && PISCES_FAULT_CONFIRM="$env_fault_confirm"
     [[ -n "$env_stack_project" ]] && PISCES_LOCAL_STACK_PROJECT_NAME="$env_stack_project"
@@ -705,6 +726,26 @@ main() {
       write_summary "FRONTEND_EVIDENCE_FAILED" "$frontend_exit" "Local frontend evidence capture failed." \
         "$stack_exit" "$schema_exit" "$dependency_exit" "$service_exit" "$readiness_exit" "$frontend_exit"
       return "$frontend_exit"
+    fi
+  fi
+
+  local browser_workflow_exit="not_run"
+  if is_true "$PISCES_LOCAL_FINALIZE_RUN_BROWSER_WORKFLOW"; then
+    log "Running real browser experiment workflow"
+    set +e
+    env \
+      PISCES_LOCAL_ENV_FILE="$PISCES_LOCAL_ENV_FILE" \
+      PISCES_LOCAL_STACK_ENV_FILE="$PISCES_LOCAL_STACK_ENV_FILE" \
+      PISCES_REAL_WORKFLOW_OUTPUT_FILE="$browser_workflow_summary" \
+      bash "$PISCES_REPO_ROOT/scripts/production-infrastructure-local-browser-workflow.sh"
+    browser_workflow_exit=$?
+    set -e
+    PISCES_LOCAL_FINALIZE_BROWSER_WORKFLOW_EXIT="$browser_workflow_exit"
+    export PISCES_LOCAL_FINALIZE_BROWSER_WORKFLOW_EXIT
+    if [[ "$browser_workflow_exit" -ne 0 ]]; then
+      write_summary "BROWSER_WORKFLOW_FAILED" "$browser_workflow_exit" "Real browser experiment workflow failed." \
+        "$stack_exit" "$schema_exit" "$dependency_exit" "$service_exit" "$readiness_exit" "$frontend_exit"
+      return "$browser_workflow_exit"
     fi
   fi
 

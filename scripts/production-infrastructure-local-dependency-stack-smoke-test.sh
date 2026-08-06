@@ -15,9 +15,13 @@ smoke_root="${PISCES_LOCAL_STACK_SMOKE_ROOT:-target/pisces-production-infrastruc
 run_id="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
 workspace="$smoke_root/dependency-stack-smoke-$run_id"
 stack_env_file="$workspace/config/pisces-local-stack.env"
+local_env_file="$workspace/config/missing-pisces-local.env"
 stack_summary_file="$workspace/stack-summary.json"
 dependency_summary_file="$workspace/dependency-summary.json"
 schema_summary_file="$workspace/schema-summary.json"
+
+mkdir -p "$(dirname "$local_env_file")"
+: >"$local_env_file"
 
 PISCES_LOCAL_STACK_DRY_RUN=true \
 PISCES_LOCAL_STACK_ENV_FILE="$stack_env_file" \
@@ -63,6 +67,7 @@ PY
 
 (
   unset MYSQL_URL MYSQL_USERNAME MYSQL_PASSWORD SPRING_DATA_REDIS_HOST SPRING_DATA_REDIS_PORT PISCES_ZOOKEEPER_CONNECT_STRING
+  PISCES_LOCAL_ENV_FILE="$local_env_file" \
   PISCES_LOCAL_STACK_ENV_FILE="$stack_env_file" \
   PISCES_LOCAL_DEPENDENCY_OUTPUT_FILE="$dependency_summary_file" \
   PISCES_LOCAL_DEPENDENCY_CHECK_MYSQL=false \
@@ -89,6 +94,7 @@ PY
 
 (
   unset MYSQL_URL MYSQL_USERNAME MYSQL_PASSWORD SPRING_DATA_REDIS_HOST SPRING_DATA_REDIS_PORT PISCES_ZOOKEEPER_CONNECT_STRING
+  PISCES_LOCAL_ENV_FILE="$local_env_file" \
   PISCES_LOCAL_STACK_ENV_FILE="$stack_env_file" \
   PISCES_LOCAL_MYSQL_SCHEMA_OUTPUT_FILE="$schema_summary_file" \
   PISCES_LOCAL_MYSQL_SCHEMA_DRY_RUN=true \

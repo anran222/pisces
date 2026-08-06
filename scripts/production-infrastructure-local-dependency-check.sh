@@ -198,16 +198,16 @@ main() {
   env_redis_port="${SPRING_DATA_REDIS_PORT-}"
   env_zookeeper_connect="${PISCES_ZOOKEEPER_CONNECT_STRING-}"
 
-  if [[ -f "$env_file" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$env_file"
-    set +a
-  fi
   if [[ -f "$stack_env_file" ]]; then
     set -a
     # shellcheck disable=SC1090
     source "$stack_env_file"
+    set +a
+  fi
+  if [[ -f "$env_file" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$env_file"
     set +a
   fi
 
@@ -566,8 +566,8 @@ if status != "READY_FOR_LOCAL_SERVICE_START":
         "bash scripts/production-infrastructure-local-dependency-check.sh",
     ])
 next_commands.extend([
-    "source config/pisces-local.env",
     "source config/pisces-local-stack.env 2>/dev/null || true",
+    "source config/pisces-local.env",
     "bash scripts/production-infrastructure-local-service.sh start",
     "bash scripts/production-infrastructure-local-readiness.sh",
 ])

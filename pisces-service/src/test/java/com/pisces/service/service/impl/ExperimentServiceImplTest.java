@@ -34,6 +34,7 @@ import com.pisces.common.response.ExperimentApprovalTaskResponse;
 import com.pisces.common.response.ExperimentConfigDraftApprovalResponse;
 import com.pisces.common.response.ExperimentConfigDraftResponse;
 import com.pisces.common.response.ExperimentConfigVersionResponse;
+import com.pisces.common.response.ExperimentPreflightResponse;
 import com.pisces.common.response.ExperimentResponse;
 import com.pisces.service.audit.AuditLogRecord;
 import com.pisces.service.entity.ExperimentApprovalEscalationStatusCountEntity;
@@ -52,6 +53,7 @@ import com.pisces.service.service.ApplicationDictionaryService;
 import com.pisces.service.service.AuditLogService;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.util.JsonUtil;
+import com.pisces.service.validation.ExperimentPreflightValidator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -131,9 +133,12 @@ class ExperimentServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        ReflectionTestUtils.setField(experimentService, "trafficRuleEvaluator", new TrafficRuleEvaluator());
-        ReflectionTestUtils.setField(experimentService, "groupConfigSchemaValidator",
-                new GroupConfigSchemaValidator(new JsonUtil(new ObjectMapper())));
+        TrafficRuleEvaluator trafficRuleEvaluator = new TrafficRuleEvaluator();
+        GroupConfigSchemaValidator schemaValidator = new GroupConfigSchemaValidator(new JsonUtil(new ObjectMapper()));
+        ReflectionTestUtils.setField(experimentService, "trafficRuleEvaluator", trafficRuleEvaluator);
+        ReflectionTestUtils.setField(experimentService, "groupConfigSchemaValidator", schemaValidator);
+        ReflectionTestUtils.setField(experimentService, "experimentPreflightValidator",
+                new ExperimentPreflightValidator(schemaValidator, trafficRuleEvaluator));
     }
 
     @AfterEach
@@ -151,6 +156,54 @@ class ExperimentServiceImplTest {
         verify(configService).saveExperimentConfig(org.mockito.ArgumentMatchers.anyString(), captor.capture());
 
         assertThat(captor.getValue().getConfigVersion()).isEqualTo(1L);
+    }
+
+    @Test
+    void preflightExperimentShouldReturnAllBlockingProblemsWithoutPersisting() throws Exception {
+        ApiKeyContextHolder.set(principal("platform", "ops", ApiKeyScope.ADMIN));
+        ExperimentCreateRequest request = buildRequest("待检查实验");
+        request.setAppId("shop-app");
+        request.setName(" ");
+        request.setGroups(List.of(request.getGroups().getFirst()));
+        request.setEventDefinitions(List.of());
+        request.setMetricDefinitions(List.of());
+        ApplicationSpace applicationSpace = applicationSpace("shop-app", "anran", 20);
+        applicationSpace.setDisplayName("二手手机商城");
+        when(applicationSpaceRepository.findByAppId("shop-app")).thenReturn(Optional.of(applicationSpace));
+
+        ExperimentPreflightResponse response = experimentService.preflightExperiment(request);
+
+        assertThat(response.getReadyToCreate()).isFalse();
+        assertThat(response.getBlockingCount()).isGreaterThanOrEqualTo(4);
+        assertThat(response.getChecks())
+                .filteredOn(check -> ExperimentPreflightValidator.STATUS_BLOCKED.equals(check.getStatus()))
+                .extracting(ExperimentPreflightResponse.CheckItem::getTargetPanel)
+                .contains("basics", "groups", "events", "metrics");
+        assertThat(response.getSummary().getApplicationName()).isEqualTo("二手手机商城");
+        verify(configService, never()).saveExperimentConfig(any(), any());
+    }
+
+    @Test
+    void preflightExperimentShouldReportMalformedRuleWithoutThrowing() throws Exception {
+        ApiKeyContextHolder.set(principal("platform", "ops", ApiKeyScope.ADMIN));
+        ExperimentCreateRequest request = buildRequest("规则检查实验");
+        request.setAppId("shop-app");
+        request.getTraffic().setStrategy("RULE");
+        request.getTraffic().setRules(Arrays.asList((ExperimentCreateRequest.TrafficRuleRequest) null));
+        ApplicationSpace applicationSpace = applicationSpace("shop-app", "anran", 20);
+        when(applicationSpaceRepository.findByAppId("shop-app")).thenReturn(Optional.of(applicationSpace));
+
+        ExperimentPreflightResponse response = experimentService.preflightExperiment(request);
+
+        assertThat(response.getReadyToCreate()).isFalse();
+        assertThat(response.getChecks())
+                .filteredOn(check -> "TRAFFIC_CONFIGURATION".equals(check.getCode()))
+                .singleElement()
+                .satisfies(check -> {
+                    assertThat(check.getStatus()).isEqualTo(ExperimentPreflightValidator.STATUS_BLOCKED);
+                    assertThat(check.getDetail()).contains("规则配置不能为空");
+                });
+        verify(configService, never()).saveExperimentConfig(any(), any());
     }
 
     @Test
@@ -1592,6 +1645,50 @@ class ExperimentServiceImplTest {
         ArgumentCaptor<ExperimentMetadata> captor = ArgumentCaptor.forClass(ExperimentMetadata.class);
         verify(configService).saveExperimentConfig(org.mockito.ArgumentMatchers.eq("exp_draft"), captor.capture());
         assertThat(captor.getValue().getExperiment().getStatus()).isEqualTo(Experiment.ExperimentStatus.RUNNING);
+        assertThat(captor.getValue().getConclusionStatus())
+                .isEqualTo(ExperimentMetadata.ConclusionStatus.RUNNING);
+        assertThat(captor.getValue().getConclusionOperator()).isEqualTo("owner-a");
+        assertThat(captor.getValue().getConclusionComment()).isEqualTo("实验启动后自动进入运行中");
+    }
+
+    @Test
+    void resumeExperimentShouldResetReviewConclusionAndEvidence() throws Exception {
+        ExperimentMetadata metadata = metadataFor("exp_paused", "app-a", "owner-a",
+                Experiment.ExperimentStatus.PAUSED);
+        metadata.setConclusionStatus(ExperimentMetadata.ConclusionStatus.READY_FOR_REVIEW);
+        metadata.setConclusionConfigVersion(3L);
+        metadata.setConclusionReportSnapshotVersion(2);
+        metadata.setConclusionOperator("reviewer-a");
+        metadata.setConclusionComment("等待审核");
+        ApiKeyContextHolder.set(principal("app-a", "owner-a", ApiKeyScope.MANAGEMENT));
+        when(configService.getExperimentConfig("exp_paused")).thenReturn(metadata);
+
+        experimentService.resumeExperiment("exp_paused");
+
+        ArgumentCaptor<ExperimentMetadata> captor = ArgumentCaptor.forClass(ExperimentMetadata.class);
+        verify(configService).saveExperimentConfig(org.mockito.ArgumentMatchers.eq("exp_paused"), captor.capture());
+        ExperimentMetadata savedMetadata = captor.getValue();
+        assertThat(savedMetadata.getExperiment().getStatus()).isEqualTo(Experiment.ExperimentStatus.RUNNING);
+        assertThat(savedMetadata.getConclusionStatus()).isEqualTo(ExperimentMetadata.ConclusionStatus.RUNNING);
+        assertThat(savedMetadata.getConclusionConfigVersion()).isNull();
+        assertThat(savedMetadata.getConclusionReportSnapshotVersion()).isNull();
+        assertThat(savedMetadata.getConclusionOperator()).isEqualTo("owner-a");
+        assertThat(savedMetadata.getConclusionComment()).isEqualTo("实验恢复后重新进入运行中");
+    }
+
+    @Test
+    void resumeExperimentShouldRejectTerminalConclusion() throws Exception {
+        ExperimentMetadata metadata = metadataFor("exp_graduated", "app-a", "owner-a",
+                Experiment.ExperimentStatus.PAUSED);
+        metadata.setConclusionStatus(ExperimentMetadata.ConclusionStatus.GRADUATED);
+        ApiKeyContextHolder.set(principal("app-a", "owner-a", ApiKeyScope.MANAGEMENT));
+        when(configService.getExperimentConfig("exp_graduated")).thenReturn(metadata);
+
+        assertThatThrownBy(() -> experimentService.resumeExperiment("exp_graduated"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("终态结论的实验不能重新运行");
+        verify(configService, never()).saveExperimentConfig(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any());
     }
 
     @Test

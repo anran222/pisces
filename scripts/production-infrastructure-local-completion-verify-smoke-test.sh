@@ -22,6 +22,7 @@ verify_summary="$workspace/verify-summary.json"
 completion_workspace="$workspace/evidence-workspace"
 collection_summary="$workspace/collection-summary.json"
 ai_smoke_summary="$workspace/ai-smoke-summary.json"
+browser_workflow_summary="$workspace/browser-workflow-summary.json"
 closeout_summary="$completion_workspace/closeout/final/completion-summary.json"
 closeout_report="$completion_workspace/closeout/final/closeout-report.md"
 manifest="$workspace/release-evidence-archive/local-release/manifest.json"
@@ -50,6 +51,7 @@ cat >"$finalize_summary" <<JSON
   "runCloseout": true,
   "outputs": {
     "aiSmokeSummary": "$ai_smoke_summary",
+    "browserWorkflowSummary": "$browser_workflow_summary",
     "collectionSummary": "$collection_summary",
     "evidenceWorkspace": "$completion_workspace"
   },
@@ -122,6 +124,7 @@ cat >"$finalize_summary" <<JSON
   "runCloseout": true,
   "outputs": {
     "aiSmokeSummary": "$ai_smoke_summary",
+    "browserWorkflowSummary": "$browser_workflow_summary",
     "collectionSummary": "$collection_summary",
     "evidenceWorkspace": "$completion_workspace"
   },
@@ -133,6 +136,7 @@ cat >"$finalize_summary" <<JSON
     {"name": "local readiness", "status": "PASS"},
     {"name": "local AI smoke", "status": "PASS"},
     {"name": "local frontend evidence", "status": "PASS"},
+    {"name": "real browser experiment workflow", "status": "PASS"},
     {"name": "local evidence collect", "status": "PASS"}
   ]
 }
@@ -163,6 +167,39 @@ cat >"$ai_smoke_summary" <<'JSON'
   "dryRun": false,
   "endpoint": "/variants/generate",
   "httpStatus": "200"
+}
+JSON
+
+cat >"$browser_workflow_summary" <<'JSON'
+{
+  "summaryType": "pisces-real-browser-workflow-smoke",
+  "summaryVersion": 1,
+  "status": "PASS",
+  "appId": "shop-app",
+  "experimentId": "exp_browser_smoke",
+  "initialExperimentCount": 8,
+  "finalExperimentCount": 8,
+  "cleanedUp": true,
+  "runtimeErrorCount": 0,
+  "runtimeErrors": [],
+  "steps": [
+    {"name": "应用和原始数据可访问", "status": "PASS"},
+    {"name": "页面调用真实千问生成完整方案", "status": "PASS"},
+    {"name": "页面完成实验草案填充和创建前检查", "status": "PASS"},
+    {"name": "页面创建真实实验", "status": "PASS"},
+    {"name": "页面启动真实实验", "status": "PASS"},
+    {"name": "页面生成并物化真实实验数据", "status": "PASS"},
+    {"name": "页面读取真实统计和分析结果", "status": "PASS"},
+    {"name": "页面停止真实实验", "status": "PASS"},
+    {"name": "页面生成报告并提交待审核结论", "status": "PASS"}
+  ],
+  "screenshots": [
+    "01-real-ai-plans.png",
+    "02-real-preflight.png",
+    "03-real-analysis.png",
+    "04-real-conclusion.png"
+  ],
+  "error": null
 }
 JSON
 
@@ -273,6 +310,8 @@ if summary.get("layoutAudit") is None:
     raise SystemExit("complete summary should expose layout audit path")
 if summary.get("aiSmokeSummary") is None:
     raise SystemExit("complete summary should expose AI smoke summary path")
+if summary.get("browserWorkflowSummary") is None:
+    raise SystemExit("complete summary should expose browser workflow summary path")
 ai_smoke_checks = [
     item for item in summary.get("checks", [])
     if item.get("name", "").startswith("local AI smoke")
@@ -282,6 +321,17 @@ if len(ai_smoke_checks) < 4:
 bad_ai_smoke_checks = [item for item in ai_smoke_checks if item.get("status") != "PASS"]
 if bad_ai_smoke_checks:
     raise SystemExit(f"AI smoke checks should pass: {bad_ai_smoke_checks}")
+browser_workflow_checks = [
+    item for item in summary.get("checks", [])
+    if item.get("name", "").startswith("real browser workflow")
+]
+if len(browser_workflow_checks) < 6:
+    raise SystemExit("expected real browser workflow checks in completion verify summary")
+bad_browser_workflow_checks = [
+    item for item in browser_workflow_checks if item.get("status") != "PASS"
+]
+if bad_browser_workflow_checks:
+    raise SystemExit(f"browser workflow checks should pass: {bad_browser_workflow_checks}")
 layout_checks = [
     item for item in summary.get("checks", [])
     if item.get("name", "").startswith("core frontend layout audit")

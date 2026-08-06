@@ -1,6 +1,7 @@
 package com.pisces.service.mapper;
 
 import com.pisces.service.entity.ExperimentExposureEntity;
+import com.pisces.service.entity.ExperimentFactAggregateEntity;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -37,6 +38,8 @@ public interface ExperimentExposureMapper {
      * @return 曝光数
      */
     long countByExperimentIdAndGroupId(@Param("experimentId") String experimentId, @Param("groupId") String groupId);
+
+    ExperimentFactAggregateEntity aggregateByExperimentIds(@Param("experimentIds") List<String> experimentIds);
 
     /**
      * 按重放计划范围统计曝光事实

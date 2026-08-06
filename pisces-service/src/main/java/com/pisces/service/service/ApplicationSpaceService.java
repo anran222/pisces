@@ -2,6 +2,7 @@ package com.pisces.service.service;
 
 import com.pisces.common.request.ApplicationSpaceUpsertRequest;
 import com.pisces.common.response.ApplicationSpaceResponse;
+import com.pisces.common.response.ApplicationIntegrationHealthResponse;
 
 import java.util.List;
 
@@ -19,6 +20,14 @@ public interface ApplicationSpaceService {
      * @return 应用空间列表
      */
     List<ApplicationSpaceResponse> listApplicationSpaces();
+
+    /**
+     * 查询应用接入检查结果。
+     *
+     * @param appId 应用ID
+     * @return 应用接入检查结果
+     */
+    ApplicationIntegrationHealthResponse getIntegrationHealth(String appId);
 
     /**
      * 注册新的应用空间。

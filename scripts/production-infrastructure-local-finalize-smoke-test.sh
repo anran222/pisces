@@ -173,6 +173,8 @@ if summary.get("runAiSmoke") is not True:
     raise SystemExit("finalize should run local AI smoke by default")
 if summary.get("captureFrontend") is not True:
     raise SystemExit("finalize should capture frontend evidence by default")
+if summary.get("runBrowserWorkflow") is not True:
+    raise SystemExit("finalize should run the real browser workflow by default")
 if summary.get("tongyiModel") != "qwen3.7-max":
     raise SystemExit(f"finalize should record qwen3.7-max model: {summary.get('tongyiModel')}")
 if summary.get("tongyiFallbackModel") != "qwen3.7-max":
@@ -206,6 +208,7 @@ for expected in (
     "bash scripts/production-infrastructure-local-readiness.sh",
     "bash scripts/production-infrastructure-local-ai-smoke.sh",
     "bash scripts/production-infrastructure-local-frontend-evidence.sh",
+    "bash scripts/production-infrastructure-local-browser-workflow.sh",
 ):
     if expected not in commands:
         raise SystemExit(f"finalize plan missing command: {expected}")
@@ -222,6 +225,8 @@ if not str(outputs.get("evidenceWorkspace") or "").endswith("evidence-workspace"
     raise SystemExit("finalize summary should expose evidence workspace")
 if not str(outputs.get("completionVerifySummary") or "").endswith("completion-verify-summary.json"):
     raise SystemExit("finalize summary should expose completion verify summary")
+if not str(outputs.get("browserWorkflowSummary") or "").endswith("browser-workflow-summary.json"):
+    raise SystemExit("finalize summary should expose browser workflow summary")
 PY
 
 (
@@ -238,6 +243,7 @@ PY
   PISCES_LOCAL_FINALIZE_RUN_READINESS=false \
   PISCES_LOCAL_FINALIZE_RUN_AI_SMOKE=false \
   PISCES_LOCAL_FINALIZE_CAPTURE_FRONTEND=false \
+  PISCES_LOCAL_FINALIZE_RUN_BROWSER_WORKFLOW=false \
   PISCES_LOCAL_FINALIZE_RUN_COMPLETION_VERIFY=false \
   bash scripts/production-infrastructure-local-finalize.sh >/dev/null
 )
@@ -258,6 +264,7 @@ expected_false_flags = (
     "runReadiness",
     "runAiSmoke",
     "captureFrontend",
+    "runBrowserWorkflow",
     "runCompletionVerify",
 )
 for flag in expected_false_flags:
@@ -277,6 +284,7 @@ for unexpected in (
     "production-infrastructure-local-readiness.sh",
     "production-infrastructure-local-ai-smoke.sh",
     "production-infrastructure-local-frontend-evidence.sh",
+    "production-infrastructure-local-browser-workflow.sh",
     "production-infrastructure-local-completion-verify.sh",
 ):
     if any(unexpected in command for command in commands):
@@ -301,6 +309,7 @@ set +e
   PISCES_LOCAL_FINALIZE_RUN_READINESS=false \
   PISCES_LOCAL_FINALIZE_RUN_AI_SMOKE=false \
   PISCES_LOCAL_FINALIZE_CAPTURE_FRONTEND=false \
+  PISCES_LOCAL_FINALIZE_RUN_BROWSER_WORKFLOW=false \
   bash scripts/production-infrastructure-local-finalize.sh >/dev/null
 )
 collect_failure_status=$?
@@ -340,6 +349,8 @@ if steps.get("local AI smoke", {}).get("status") != "NOT_RUN":
     raise SystemExit("AI smoke step should be NOT_RUN in collect-failure smoke")
 if steps.get("local frontend evidence", {}).get("status") != "NOT_RUN":
     raise SystemExit("frontend evidence step should be NOT_RUN in collect-failure smoke")
+if steps.get("real browser experiment workflow", {}).get("status") != "NOT_RUN":
+    raise SystemExit("browser workflow step should be NOT_RUN in collect-failure smoke")
 if steps.get("local evidence collect", {}).get("status") != "FAIL":
     raise SystemExit("collect step should be FAIL in collect-failure smoke")
 if steps.get("local completion verify", {}).get("status") != "NOT_RUN":

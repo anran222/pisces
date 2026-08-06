@@ -101,8 +101,8 @@ main() {
   PISCES_LOCAL_COMPLETION_VERIFY_OUTPUT_FILE="$(resolve_path "${PISCES_LOCAL_COMPLETION_VERIFY_OUTPUT_FILE:-target/pisces-production-infrastructure-local-completion-verify/summary.json}")"
   PISCES_QIANWEN_API_KEY_ENV="${PISCES_QIANWEN_API_KEY_ENV:-TONGYI_API_KEY}"
 
-  load_env_file "$PISCES_LOCAL_ENV_FILE"
   load_env_file "$PISCES_LOCAL_STACK_ENV_FILE"
+  load_env_file "$PISCES_LOCAL_ENV_FILE"
   PISCES_LOCAL_COMPLETION_VERIFY_API_KEY_STATUS="$(qianwen_key_status)"
 
   mkdir -p "$(dirname "$PISCES_LOCAL_COMPLETION_VERIFY_OUTPUT_FILE")"
@@ -274,6 +274,7 @@ else:
         "local readiness",
         "local AI smoke",
         "local frontend evidence",
+        "real browser experiment workflow",
         "local evidence collect",
     ]
     missing_or_bad = [
@@ -385,6 +386,110 @@ else:
         "local AI smoke summary exists",
         "HOLD",
         "missing aiSmokeSummary path",
+        "present",
+        display(finalize_file),
+        "bash scripts/production-infrastructure-local-finalize.sh",
+    )
+
+browser_workflow_file = (
+    path_from_finalize(finalize, "browserWorkflowSummary")
+    if isinstance(finalize, dict)
+    else None
+)
+browser_workflow = read_json(browser_workflow_file) if browser_workflow_file else None
+if browser_workflow_file:
+    if browser_workflow is None:
+        add_check(
+            checks,
+            "real browser workflow summary exists",
+            "HOLD",
+            "missing",
+            "present",
+            display(browser_workflow_file),
+            "bash scripts/production-infrastructure-local-browser-workflow.sh",
+        )
+    elif browser_workflow.get("_invalidJson"):
+        add_check(
+            checks,
+            "real browser workflow summary parses",
+            "FAIL",
+            browser_workflow["_invalidJson"],
+            "valid JSON",
+            display(browser_workflow_file),
+        )
+    else:
+        add_check(
+            checks,
+            "real browser workflow summary contract",
+            "PASS" if browser_workflow.get("summaryType")
+            == "pisces-real-browser-workflow-smoke" else "FAIL",
+            browser_workflow.get("summaryType"),
+            "pisces-real-browser-workflow-smoke",
+            display(browser_workflow_file),
+        )
+        add_check(
+            checks,
+            "real browser workflow status",
+            "PASS" if browser_workflow.get("status") == "PASS" else "HOLD",
+            browser_workflow.get("status"),
+            "PASS",
+            display(browser_workflow_file),
+            "inspect browser workflow screenshots and rerun the local finalizer",
+        )
+        add_check(
+            checks,
+            "real browser workflow cleanup",
+            "PASS" if browser_workflow.get("cleanedUp") is True else "FAIL",
+            browser_workflow.get("cleanedUp"),
+            "true",
+            display(browser_workflow_file),
+            "delete the temporary browser workflow experiment before rerunning",
+        )
+        initial_count = browser_workflow.get("initialExperimentCount")
+        final_count = browser_workflow.get("finalExperimentCount")
+        add_check(
+            checks,
+            "real browser workflow preserved experiment count",
+            "PASS" if isinstance(initial_count, int) and final_count == initial_count else "FAIL",
+            {"initial": initial_count, "final": final_count},
+            "initial and final experiment counts are equal",
+            display(browser_workflow_file),
+            "inspect temporary experiment cleanup and remove residual data",
+        )
+        runtime_error_count = browser_workflow.get("runtimeErrorCount")
+        add_check(
+            checks,
+            "real browser workflow runtime errors",
+            "PASS" if runtime_error_count == 0 else "FAIL",
+            runtime_error_count,
+            0,
+            display(browser_workflow_file),
+            "fix the reported browser runtime errors and rerun the workflow",
+        )
+        browser_steps = browser_workflow.get("steps") or []
+        failed_browser_steps = [
+            item.get("name") if isinstance(item, dict) else "invalid step"
+            for item in browser_steps
+            if not isinstance(item, dict) or item.get("status") != "PASS"
+        ]
+        add_check(
+            checks,
+            "real browser workflow business steps",
+            "PASS" if len(browser_steps) >= 9 and not failed_browser_steps else "FAIL",
+            {
+                "count": len(browser_steps),
+                "failed": failed_browser_steps,
+            },
+            "at least 9 business steps and all PASS",
+            display(browser_workflow_file),
+            "rerun the workflow and inspect the first failed business step",
+        )
+else:
+    add_check(
+        checks,
+        "real browser workflow summary exists",
+        "HOLD",
+        "missing browserWorkflowSummary path",
         "present",
         display(finalize_file),
         "bash scripts/production-infrastructure-local-finalize.sh",
@@ -801,6 +906,7 @@ summary = {
     "finalizeSummary": display(finalize_file),
     "readinessSummary": display(readiness_file),
     "aiSmokeSummary": display(ai_smoke_file) if ai_smoke_file else None,
+    "browserWorkflowSummary": display(browser_workflow_file) if browser_workflow_file else None,
     "collectionSummary": display(collection_file) if collection_file else None,
     "closeoutSummary": display(closeout_summary_file) if closeout_summary_file else None,
     "closeoutReport": display(closeout_report_file) if closeout_report_file else None,

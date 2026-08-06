@@ -81,6 +81,7 @@ if (
     plan.get("dryRun") is not True
     or plan.get("captureFrontend") is not True
     or plan.get("runAiSmoke") is not True
+    or plan.get("runBrowserWorkflow") is not True
     or plan.get("runCloseout") is not True
     or plan.get("runCompletionVerify") is not True
 ):
@@ -100,6 +101,7 @@ for expected in (
     "production-infrastructure-local-readiness.sh",
     "production-infrastructure-local-ai-smoke.sh",
     "production-infrastructure-local-frontend-evidence.sh",
+    "production-infrastructure-local-browser-workflow.sh",
     "production-infrastructure-local-evidence-collect.sh",
     "production-infrastructure-local-completion-verify.sh",
 ):

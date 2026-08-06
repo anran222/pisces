@@ -1,6 +1,7 @@
 package com.pisces.service.mapper;
 
 import com.pisces.service.entity.ExperimentEventEntity;
+import com.pisces.service.entity.ExperimentFactAggregateEntity;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -42,6 +43,8 @@ public interface ExperimentEventMapper {
     long countByExperimentIdAndGroupIdAndEventType(@Param("experimentId") String experimentId,
                                                    @Param("groupId") String groupId,
                                                    @Param("eventType") String eventType);
+
+    ExperimentFactAggregateEntity aggregateByExperimentIds(@Param("experimentIds") List<String> experimentIds);
 
     /**
      * 按重放计划范围统计事件事实

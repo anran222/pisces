@@ -10,6 +10,7 @@ import com.pisces.common.response.ExperimentApprovalTaskResponse;
 import com.pisces.common.response.ExperimentConfigDraftApprovalResponse;
 import com.pisces.common.response.ExperimentConfigDraftResponse;
 import com.pisces.common.response.ExperimentConfigVersionResponse;
+import com.pisces.common.response.ExperimentPreflightResponse;
 import com.pisces.common.response.ExperimentResponse;
 import com.pisces.common.request.ExperimentApprovalStatusUpdateRequest;
 import com.pisces.common.request.ExperimentConfigDraftSaveRequest;
@@ -24,6 +25,14 @@ import java.util.List;
  * 实验管理服务接口（无用户系统版本）
  */
 public interface ExperimentService {
+
+    /**
+     * 检查实验草案是否具备创建条件。
+     *
+     * @param request 实验草案
+     * @return 创建前检查结果
+     */
+    ExperimentPreflightResponse preflightExperiment(ExperimentCreateRequest request);
     
     /**
      * 创建实验

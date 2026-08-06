@@ -5,8 +5,8 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  source config/pisces-local.env
   source config/pisces-local-stack.env 2>/dev/null || true
+  source config/pisces-local.env
   PISCES_RELEASE_ID="local-20260730-runtime-plane" \
   scripts/production-infrastructure-local-evidence-collect.sh
 
@@ -15,7 +15,7 @@ Environment:
   PISCES_LOCAL_ENV_FILE                       Local env file loaded before collection. Default: config/pisces-local.env.
   PISCES_LOCAL_STACK_ENV_FILE                 Local stack env file loaded before collection. Default: config/pisces-local-stack.env.
   PISCES_RELEASE_ID                           Local release ID. Default: local-<utc timestamp>.
-  PISCES_EXPERIMENT_ID                        Optional existing experiment ID. If empty, collector creates a local demo experiment.
+  PISCES_EXPERIMENT_ID                        Optional existing experiment ID. If empty, collector selects a running real experiment.
   PISCES_INSTANCE_URLS                        Comma separated service base URLs. Default: http://localhost:9990/api.
   PISCES_RUNTIME_API_KEY                      Runtime scope API key. Default: runtime-key.
   PISCES_MANAGEMENT_API_KEY                   Management scope API key. Default: ops-key.
@@ -32,7 +32,9 @@ Environment:
   PISCES_LOCAL_COLLECT_APPROVER               Approver recorded in evidence. Default: operator.
   PISCES_LOCAL_COLLECT_APPROVAL_TICKET        Approval ticket value. Default: LOCAL-<release-id>.
   PISCES_COMPLETION_SCREENSHOT_DIR            Core frontend screenshot directory. Default: ../pisces-web/target/screenshots/core-functions-current.
-  PISCES_LOCAL_COLLECT_AUTO_DEMO              Auto-create local demo experiment if no experiment ID is provided. Default: true.
+  PISCES_LOCAL_COLLECT_APP_ID                 Application used for automatic experiment selection. Default: shop-app.
+  PISCES_LOCAL_COLLECT_AUTO_SELECT_EXISTING   Select an existing running experiment when no ID is provided. Default: true.
+  PISCES_LOCAL_COLLECT_AUTO_DEMO              Allow demo fallback when no running experiment is available. Default: false.
   PISCES_LOCAL_COLLECT_DEMO_CASE              qualified | unqualified. Default: qualified.
 
 Drill tuning:
@@ -131,6 +133,15 @@ urls = [item.strip().rstrip("/") for item in sys.argv[1].split(",") if item.stri
 if not urls:
     raise SystemExit("PISCES_INSTANCE_URLS is empty")
 print(urls[0])
+PY
+}
+
+urlencode() {
+  python3 - "$1" <<'PY'
+import sys
+import urllib.parse
+
+print(urllib.parse.quote(sys.argv[1], safe=""))
 PY
 }
 
@@ -263,15 +274,45 @@ request_json() {
 resolve_or_create_local_experiment() {
   local primary_url="$1"
   if [[ -n "$PISCES_EXPERIMENT_ID" ]]; then
+    PISCES_LOCAL_COLLECT_EXPERIMENT_SOURCE="provided"
+    export PISCES_LOCAL_COLLECT_EXPERIMENT_SOURCE
     log "Using provided local experiment: $PISCES_EXPERIMENT_ID"
     return
   fi
 
-  if ! is_true "$PISCES_LOCAL_COLLECT_AUTO_DEMO"; then
-    die "PISCES_EXPERIMENT_ID is required when PISCES_LOCAL_COLLECT_AUTO_DEMO=false"
+  local response_file
+  if is_true "$PISCES_LOCAL_COLLECT_AUTO_SELECT_EXISTING"; then
+    response_file="$PISCES_LOCAL_EVIDENCE_WORKSPACE_DIR/existing-experiments-response.json"
+    log "Selecting a running real experiment from application: $PISCES_LOCAL_COLLECT_APP_ID"
+    request_json GET "${primary_url}/experiments?appId=$(urlencode "$PISCES_LOCAL_COLLECT_APP_ID")" \
+      "$PISCES_MANAGEMENT_API_KEY" "" "$response_file"
+    PISCES_EXPERIMENT_ID="$(python3 - "$response_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+experiments = payload.get("data") or []
+running = [item for item in experiments if isinstance(item, dict) and item.get("status") == "RUNNING"]
+if running:
+    running.sort(key=lambda item: (str(item.get("updatedAt") or item.get("createTime") or ""), str(item.get("id") or "")), reverse=True)
+    print(running[0].get("id") or "")
+PY
+)"
+    if [[ -n "$PISCES_EXPERIMENT_ID" ]]; then
+      PISCES_LOCAL_COLLECT_EXPERIMENT_SOURCE="existing"
+      export PISCES_EXPERIMENT_ID
+      export PISCES_LOCAL_COLLECT_EXPERIMENT_SOURCE
+      log "Using existing running experiment: $PISCES_EXPERIMENT_ID"
+      return
+    fi
   fi
 
-  local response_file path
+  if ! is_true "$PISCES_LOCAL_COLLECT_AUTO_DEMO"; then
+    die "No running experiment is available for $PISCES_LOCAL_COLLECT_APP_ID; provide PISCES_EXPERIMENT_ID or explicitly enable PISCES_LOCAL_COLLECT_AUTO_DEMO"
+  fi
+
+  local path
   response_file="$PISCES_LOCAL_EVIDENCE_WORKSPACE_DIR/local-demo-experiment-response.json"
   case "$PISCES_LOCAL_COLLECT_DEMO_CASE" in
     qualified|pass|PASS)
@@ -293,8 +334,10 @@ resolve_or_create_local_experiment() {
   PISCES_EXPERIMENT_ID="$(json_value "$response_file" "$path")" \
     || die "Demo generator response did not contain $path"
   [[ -n "$PISCES_EXPERIMENT_ID" ]] || die "Generated demo experiment ID is empty"
+  PISCES_LOCAL_COLLECT_EXPERIMENT_SOURCE="demo"
   export PISCES_EXPERIMENT_ID
   export PISCES_LOCAL_COLLECT_DEMO_CASE
+  export PISCES_LOCAL_COLLECT_EXPERIMENT_SOURCE
   log "Using generated local demo experiment: $PISCES_EXPERIMENT_ID"
 }
 
@@ -341,14 +384,27 @@ commands = [
     "scripts/production-infrastructure-local-evidence-validate.sh",
     str(closeout_wrapper),
 ]
-auto_demo_enabled = os.environ.get("PISCES_LOCAL_COLLECT_AUTO_DEMO", "true").lower() in {
+auto_demo_enabled = os.environ.get("PISCES_LOCAL_COLLECT_AUTO_DEMO", "false").lower() in {
     "true",
     "1",
     "yes",
     "y",
 }
-if not os.environ.get("PISCES_EXPERIMENT_ID") and auto_demo_enabled:
-    commands.insert(0, "POST /experiments/generator/demo")
+auto_select_existing = os.environ.get("PISCES_LOCAL_COLLECT_AUTO_SELECT_EXISTING", "true").lower() in {
+    "true",
+    "1",
+    "yes",
+    "y",
+}
+if not os.environ.get("PISCES_EXPERIMENT_ID"):
+    selection_commands = []
+    if auto_select_existing:
+        selection_commands.append(
+            f"GET /experiments?appId={os.environ['PISCES_LOCAL_COLLECT_APP_ID']}"
+        )
+    if auto_demo_enabled:
+        selection_commands.append("POST /experiments/generator/demo (explicit fallback)")
+    commands[0:0] = selection_commands
 
 summary = {
     "summaryType": "pisces-production-infrastructure-local-evidence-collect",
@@ -358,6 +414,11 @@ summary = {
     "releaseId": os.environ["PISCES_RELEASE_ID"],
     "environment": "local",
     "experimentId": os.environ.get("PISCES_EXPERIMENT_ID") or None,
+    "experimentSelection": {
+        "appId": os.environ["PISCES_LOCAL_COLLECT_APP_ID"],
+        "autoSelectExisting": auto_select_existing,
+        "source": "provided" if os.environ.get("PISCES_EXPERIMENT_ID") else "pending",
+    },
     "autoDemo": {
         "enabled": auto_demo_enabled,
         "case": os.environ.get("PISCES_LOCAL_COLLECT_DEMO_CASE", "qualified"),
@@ -863,8 +924,16 @@ summary = {
     "releaseId": os.environ["PISCES_RELEASE_ID"],
     "environment": "local",
     "experimentId": os.environ["PISCES_EXPERIMENT_ID"],
+    "experimentSelection": {
+        "appId": os.environ["PISCES_LOCAL_COLLECT_APP_ID"],
+        "autoSelectExisting": os.environ.get(
+            "PISCES_LOCAL_COLLECT_AUTO_SELECT_EXISTING", "true"
+        ).lower() in {"true", "1", "yes", "y"},
+        "source": os.environ.get("PISCES_LOCAL_COLLECT_EXPERIMENT_SOURCE", "provided"),
+        "response": str(workspace / "existing-experiments-response.json"),
+    },
     "autoDemo": {
-        "enabled": os.environ.get("PISCES_LOCAL_COLLECT_AUTO_DEMO", "true").lower() in {"true", "1", "yes", "y"},
+        "enabled": os.environ.get("PISCES_LOCAL_COLLECT_AUTO_DEMO", "false").lower() in {"true", "1", "yes", "y"},
         "case": os.environ.get("PISCES_LOCAL_COLLECT_DEMO_CASE", "qualified"),
         "response": str(workspace / "local-demo-experiment-response.json"),
     },
@@ -928,8 +997,8 @@ main() {
   PISCES_REPO_ROOT="$(resolve_repo_root)"
   PISCES_LOCAL_ENV_FILE="$(resolve_path "${PISCES_LOCAL_ENV_FILE:-config/pisces-local.env}")"
   PISCES_LOCAL_STACK_ENV_FILE="$(resolve_path "${PISCES_LOCAL_STACK_ENV_FILE:-config/pisces-local-stack.env}")"
-  load_env_file "$PISCES_LOCAL_ENV_FILE"
   load_env_file "$PISCES_LOCAL_STACK_ENV_FILE"
+  load_env_file "$PISCES_LOCAL_ENV_FILE"
   [[ -n "$env_redis_docker_container" ]] && PISCES_REDIS_DOCKER_CONTAINER="$env_redis_docker_container"
   [[ -n "$env_fault_confirm" ]] && PISCES_FAULT_CONFIRM="$env_fault_confirm"
   [[ -n "$env_redis_fault_mode" ]] && PISCES_LOCAL_COLLECT_REDIS_FAULT_MODE="$env_redis_fault_mode"
@@ -951,7 +1020,9 @@ main() {
   PISCES_LOCAL_COLLECT_APPROVER="${PISCES_LOCAL_COLLECT_APPROVER:-$PISCES_LOCAL_COLLECT_OPERATOR}"
   PISCES_LOCAL_COLLECT_APPROVAL_TICKET="${PISCES_LOCAL_COLLECT_APPROVAL_TICKET:-LOCAL-$PISCES_RELEASE_ID}"
   PISCES_COMPLETION_SCREENSHOT_DIR="$(resolve_path "${PISCES_COMPLETION_SCREENSHOT_DIR:-../pisces-web/target/screenshots/core-functions-current}")"
-  PISCES_LOCAL_COLLECT_AUTO_DEMO="${PISCES_LOCAL_COLLECT_AUTO_DEMO:-true}"
+  PISCES_LOCAL_COLLECT_APP_ID="${PISCES_LOCAL_COLLECT_APP_ID:-shop-app}"
+  PISCES_LOCAL_COLLECT_AUTO_SELECT_EXISTING="${PISCES_LOCAL_COLLECT_AUTO_SELECT_EXISTING:-true}"
+  PISCES_LOCAL_COLLECT_AUTO_DEMO="${PISCES_LOCAL_COLLECT_AUTO_DEMO:-false}"
   PISCES_LOCAL_COLLECT_DEMO_CASE="${PISCES_LOCAL_COLLECT_DEMO_CASE:-qualified}"
   PISCES_LOCAL_COLLECT_CAPACITY_STEPS="${PISCES_LOCAL_COLLECT_CAPACITY_STEPS:-100:8,500:16,1000:32}"
   PISCES_LOCAL_COLLECT_CAPACITY_MAX_P95_MS="${PISCES_LOCAL_COLLECT_CAPACITY_MAX_P95_MS:-1000}"
@@ -983,6 +1054,8 @@ main() {
   export PISCES_LOCAL_COLLECT_SDK_RETRY_DELTA
   export PISCES_LOCAL_COLLECT_SDK_STALE_FALLBACK_DELTA
   export PISCES_COMPLETION_SCREENSHOT_DIR
+  export PISCES_LOCAL_COLLECT_APP_ID
+  export PISCES_LOCAL_COLLECT_AUTO_SELECT_EXISTING
   export PISCES_LOCAL_COLLECT_AUTO_DEMO
   export PISCES_LOCAL_COLLECT_DEMO_CASE
   export PISCES_LOCAL_COLLECT_CAPACITY_MAX_P95_MS

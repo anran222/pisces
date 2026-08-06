@@ -1,6 +1,7 @@
 package com.pisces.service.repository;
 
 import com.pisces.common.model.ExperimentEventFact;
+import com.pisces.service.entity.ExperimentFactAggregateEntity;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -36,6 +37,18 @@ public interface ExperimentEventRepository {
      * @return 事件数
      */
     long countByExperimentIdAndGroupIdAndEventType(String experimentId, String groupId, String eventType);
+
+    /**
+     * 按实验ID集合聚合事件事实。
+     *
+     * @param experimentIds 实验ID集合
+     * @return 事实数量和最近发生时间
+     */
+    default ExperimentFactAggregateEntity aggregateByExperimentIds(List<String> experimentIds) {
+        ExperimentFactAggregateEntity aggregate = new ExperimentFactAggregateEntity();
+        aggregate.setTotalCount(0L);
+        return aggregate;
+    }
 
     /**
      * 按重放计划范围统计事件数

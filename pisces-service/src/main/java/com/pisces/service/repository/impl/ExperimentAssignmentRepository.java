@@ -3,6 +3,7 @@ package com.pisces.service.repository.impl;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.pisces.common.model.ExperimentAssignment;
 import com.pisces.service.entity.ExperimentAssignmentEntity;
+import com.pisces.service.entity.ExperimentFactAggregateEntity;
 import com.pisces.service.mapper.ExperimentAssignmentMapper;
 import com.pisces.service.util.JsonUtil;
 import lombok.AllArgsConstructor;
@@ -47,6 +48,14 @@ public class ExperimentAssignmentRepository implements com.pisces.service.reposi
     }
 
     @Override
+    public ExperimentFactAggregateEntity aggregateByExperimentIds(List<String> experimentIds) {
+        if (experimentIds == null || experimentIds.isEmpty()) {
+            return emptyAggregate();
+        }
+        return normalizeAggregate(experimentAssignmentMapper.aggregateByExperimentIds(experimentIds));
+    }
+
+    @Override
     public List<ExperimentAssignment> listByVisitorId(String visitorId) {
         return experimentAssignmentMapper.selectByVisitorId(visitorId).stream()
                 .map(this::buildExperimentAssignment)
@@ -88,5 +97,15 @@ public class ExperimentAssignmentRepository implements com.pisces.service.reposi
             return Collections.emptyMap();
         }
         return jsonUtil.toObject(json, MAP_TYPE);
+    }
+
+    private ExperimentFactAggregateEntity normalizeAggregate(ExperimentFactAggregateEntity aggregate) {
+        return aggregate == null ? emptyAggregate() : aggregate;
+    }
+
+    private ExperimentFactAggregateEntity emptyAggregate() {
+        ExperimentFactAggregateEntity aggregate = new ExperimentFactAggregateEntity();
+        aggregate.setTotalCount(0L);
+        return aggregate;
     }
 }

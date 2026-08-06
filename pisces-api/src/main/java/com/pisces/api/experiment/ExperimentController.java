@@ -17,6 +17,7 @@ import com.pisces.common.response.ExperimentApprovalTaskResponse;
 import com.pisces.common.response.ExperimentConfigDraftApprovalResponse;
 import com.pisces.common.response.ExperimentConfigDraftResponse;
 import com.pisces.common.response.ExperimentConfigVersionResponse;
+import com.pisces.common.response.ExperimentPreflightResponse;
 import com.pisces.common.response.ExperimentResponse;
 import com.pisces.service.annotation.ApiKeyScopeRequired;
 import com.pisces.service.annotation.NoTokenRequired;
@@ -39,6 +40,18 @@ public class ExperimentController {
     
     @Autowired
     private ExperimentService experimentService;
+
+    /**
+     * 执行实验创建前检查。
+     *
+     * @param request 实验草案
+     * @return 创建前检查结果
+     */
+    @PostMapping("/preflight")
+    public BaseResponse<ExperimentPreflightResponse> preflightExperiment(
+            @RequestBody ExperimentCreateRequest request) {
+        return BaseResponse.of(experimentService.preflightExperiment(request));
+    }
     
     /**
      * 创建实验

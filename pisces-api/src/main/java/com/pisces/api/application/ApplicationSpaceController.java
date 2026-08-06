@@ -3,6 +3,7 @@ package com.pisces.api.application;
 import com.pisces.common.request.ApplicationDictionaryUpsertRequest;
 import com.pisces.common.request.ApplicationSpaceUpsertRequest;
 import com.pisces.common.response.ApplicationDictionaryResponse;
+import com.pisces.common.response.ApplicationIntegrationHealthResponse;
 import com.pisces.common.response.ApplicationSpaceResponse;
 import com.pisces.common.response.BaseResponse;
 import com.pisces.service.annotation.ApiKeyScopeRequired;
@@ -46,6 +47,17 @@ public class ApplicationSpaceController {
     @GetMapping
     public BaseResponse<List<ApplicationSpaceResponse>> listApplicationSpaces() {
         return BaseResponse.of(applicationSpaceService.listApplicationSpaces());
+    }
+
+    /**
+     * 查询应用接入检查结果。
+     *
+     * @param appId 应用ID
+     * @return 应用接入检查结果
+     */
+    @GetMapping("/{appId}/integration-health")
+    public BaseResponse<ApplicationIntegrationHealthResponse> getIntegrationHealth(@PathVariable String appId) {
+        return BaseResponse.of(applicationSpaceService.getIntegrationHealth(appId));
     }
 
     /**

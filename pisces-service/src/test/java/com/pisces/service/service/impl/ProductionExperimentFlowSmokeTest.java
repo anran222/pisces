@@ -43,6 +43,7 @@ import com.pisces.service.security.ApiKeyPrincipal;
 import com.pisces.service.security.ApiKeyScope;
 import com.pisces.service.service.ConfigService;
 import com.pisces.service.util.JsonUtil;
+import com.pisces.service.validation.ExperimentPreflightValidator;
 import org.junit.jupiter.api.Test;
 import org.mockito.Answers;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -123,6 +124,8 @@ class ProductionExperimentFlowSmokeTest {
 
         assertThat(harness.configService.getExperimentConfig(experimentId).getExperiment().getStatus())
                 .isEqualTo(Experiment.ExperimentStatus.RUNNING);
+        assertThat(harness.configService.getExperimentConfig(experimentId).getConclusionStatus())
+                .isEqualTo(ExperimentMetadata.ConclusionStatus.RUNNING);
         assertThat(baselineAssignedGroup).isEqualTo(BASELINE_GROUP);
         assertThat(variantAssignedGroup).isEqualTo(VARIANT_GROUP);
         assertThat(tracedAssignment.getGroupId()).isEqualTo(BASELINE_GROUP);
@@ -172,7 +175,7 @@ class ProductionExperimentFlowSmokeTest {
                 findAuditLog(auditLogs, AuditLogConstants.ACTION_CONCLUSION_STATUS_UPDATE);
         assertThat(conclusionAuditLog.getOperator()).isEqualTo("tester");
         assertThat(conclusionAuditLog.getBeforeStatus())
-                .isEqualTo(ExperimentMetadata.ConclusionStatus.NOT_READY.name());
+                .isEqualTo(ExperimentMetadata.ConclusionStatus.RUNNING.name());
         assertThat(conclusionAuditLog.getAfterStatus()).isEqualTo(ExperimentMetadata.ConclusionStatus.RUNNING.name());
 
         Statistics.GroupStatistics baselineStatistics = statistics.getGroupStatistics().get(BASELINE_GROUP);
@@ -404,6 +407,8 @@ class ProductionExperimentFlowSmokeTest {
             ReflectionTestUtils.setField(experimentService, "configService", configService);
             ReflectionTestUtils.setField(experimentService, "trafficRuleEvaluator", trafficRuleEvaluator);
             ReflectionTestUtils.setField(experimentService, "groupConfigSchemaValidator", schemaValidator);
+            ReflectionTestUtils.setField(experimentService, "experimentPreflightValidator",
+                    new ExperimentPreflightValidator(schemaValidator, trafficRuleEvaluator));
             ReflectionTestUtils.setField(experimentService, "auditLogService", auditLogService);
 
             ReflectionTestUtils.setField(trafficService, "configService", configService);

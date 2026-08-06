@@ -144,16 +144,16 @@ main() {
   env_mysql_username="${MYSQL_USERNAME-}"
   env_mysql_password="${MYSQL_PASSWORD-}"
 
-  if [[ -f "$env_file" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$env_file"
-    set +a
-  fi
   if [[ -f "$stack_env_file" ]]; then
     set -a
     # shellcheck disable=SC1090
     source "$stack_env_file"
+    set +a
+  fi
+  if [[ -f "$env_file" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$env_file"
     set +a
   fi
 

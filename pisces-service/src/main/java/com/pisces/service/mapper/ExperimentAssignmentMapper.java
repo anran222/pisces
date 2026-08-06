@@ -1,6 +1,7 @@
 package com.pisces.service.mapper;
 
 import com.pisces.service.entity.ExperimentAssignmentEntity;
+import com.pisces.service.entity.ExperimentFactAggregateEntity;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -38,6 +39,8 @@ public interface ExperimentAssignmentMapper {
      * @return 分流数量
      */
     long countByExperimentIdAndGroupId(@Param("experimentId") String experimentId, @Param("groupId") String groupId);
+
+    ExperimentFactAggregateEntity aggregateByExperimentIds(@Param("experimentIds") List<String> experimentIds);
 
     /**
      * 查询访客参与的实验分流事实

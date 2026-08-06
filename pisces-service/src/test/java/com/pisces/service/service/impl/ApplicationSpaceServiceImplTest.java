@@ -1,16 +1,25 @@
 package com.pisces.service.service.impl;
 
 import com.pisces.common.enums.ResponseCode;
+import com.pisces.common.model.ApplicationEventDefinition;
+import com.pisces.common.model.ApplicationMetricDefinition;
 import com.pisces.common.model.ApplicationSpace;
 import com.pisces.common.model.Experiment;
 import com.pisces.common.request.ApplicationSpaceUpsertRequest;
+import com.pisces.common.response.ApplicationDictionaryResponse;
+import com.pisces.common.response.ApplicationIntegrationHealthResponse;
 import com.pisces.common.response.ApplicationSpaceResponse;
+import com.pisces.service.entity.ExperimentFactAggregateEntity;
 import com.pisces.service.exception.BusinessException;
 import com.pisces.service.repository.ApplicationSpaceRepository;
+import com.pisces.service.repository.ExperimentAssignmentRepository;
+import com.pisces.service.repository.ExperimentEventRepository;
+import com.pisces.service.repository.ExperimentExposureRepository;
 import com.pisces.service.security.ApiKeyContextHolder;
 import com.pisces.service.security.ApiKeyPrincipal;
 import com.pisces.service.security.ApiKeyRegistry;
 import com.pisces.service.security.ApiKeyScope;
+import com.pisces.service.service.ApplicationDictionaryService;
 import com.pisces.service.service.ExperimentService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -23,11 +32,13 @@ import org.springframework.dao.DuplicateKeyException;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
+import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -49,6 +60,18 @@ class ApplicationSpaceServiceImplTest {
 
     @Mock
     private ApplicationSpaceRepository applicationSpaceRepository;
+
+    @Mock
+    private ApplicationDictionaryService applicationDictionaryService;
+
+    @Mock
+    private ExperimentAssignmentRepository experimentAssignmentRepository;
+
+    @Mock
+    private ExperimentExposureRepository experimentExposureRepository;
+
+    @Mock
+    private ExperimentEventRepository experimentEventRepository;
 
     @InjectMocks
     private ApplicationSpaceServiceImpl applicationSpaceService;
@@ -147,6 +170,110 @@ class ApplicationSpaceServiceImplTest {
         assertThat(appA.getApiKeyCount()).isEqualTo(1);
         assertThat(appA.getExperimentCount()).isEqualTo(1);
         assertThat(appA.getRunningExperimentCount()).isEqualTo(1);
+    }
+
+    @Test
+    void getIntegrationHealthShouldAggregateEveryRuntimeFactOnce() {
+        ApiKeyContextHolder.set(principal("platform", "ops", ApiKeyScope.ADMIN));
+        ApplicationSpace registeredSpace = applicationSpace("shop-app", "二手手机商城", "anran", 20);
+        Experiment runningExperiment = experiment("shop-app", "anran", Experiment.ExperimentStatus.RUNNING);
+        ApplicationDictionaryResponse dictionary = new ApplicationDictionaryResponse();
+        dictionary.setEventDefinitions(List.of(new ApplicationEventDefinition()));
+        dictionary.setMetricDefinitions(List.of(new ApplicationMetricDefinition()));
+        ExperimentFactAggregateEntity assignments = aggregate(120L, LocalDateTime.of(2026, 8, 6, 10, 0));
+        ExperimentFactAggregateEntity exposures = aggregate(110L, LocalDateTime.of(2026, 8, 6, 10, 5));
+        ExperimentFactAggregateEntity events = aggregate(80L, LocalDateTime.of(2026, 8, 6, 10, 10));
+        when(applicationSpaceRepository.findByAppId("shop-app")).thenReturn(Optional.of(registeredSpace));
+        when(apiKeyRegistry.listPrincipals()).thenReturn(List.of(
+                principal("shop-app", "anran", ApiKeyScope.RUNTIME)));
+        when(experimentService.listExperiments(isNull(), anyList(), eq("shop-app"), isNull()))
+                .thenReturn(List.of(runningExperiment));
+        when(applicationDictionaryService.getApplicationDictionary("shop-app")).thenReturn(dictionary);
+        when(experimentAssignmentRepository.aggregateByExperimentIds(List.of(runningExperiment.getId())))
+                .thenReturn(assignments);
+        when(experimentExposureRepository.aggregateByExperimentIds(List.of(runningExperiment.getId())))
+                .thenReturn(exposures);
+        when(experimentEventRepository.aggregateByExperimentIds(List.of(runningExperiment.getId())))
+                .thenReturn(events);
+
+        ApplicationIntegrationHealthResponse response =
+                applicationSpaceService.getIntegrationHealth("shop-app");
+
+        assertThat(response.getStatus()).isEqualTo("READY");
+        assertThat(response.getChecks()).hasSize(7)
+                .allMatch(check -> "PASS".equals(check.getStatus()));
+        assertThat(response.getAssignmentCount()).isEqualTo(120L);
+        assertThat(response.getExposureCount()).isEqualTo(110L);
+        assertThat(response.getEventCount()).isEqualTo(80L);
+        assertThat(response.getLatestActivityAt()).isEqualTo(LocalDateTime.of(2026, 8, 6, 10, 10));
+        verify(experimentAssignmentRepository).aggregateByExperimentIds(List.of(runningExperiment.getId()));
+        verify(experimentExposureRepository).aggregateByExperimentIds(List.of(runningExperiment.getId()));
+        verify(experimentEventRepository).aggregateByExperimentIds(List.of(runningExperiment.getId()));
+    }
+
+    @Test
+    void getIntegrationHealthShouldBlockWhenRegistrationHasNoAccessOrDictionary() {
+        ApiKeyContextHolder.set(principal("platform", "ops", ApiKeyScope.ADMIN));
+        ApplicationSpace registeredSpace = applicationSpace("shop-app", "二手手机商城", "anran", 20);
+        ApplicationDictionaryResponse dictionary = new ApplicationDictionaryResponse();
+        dictionary.setEventDefinitions(List.of());
+        dictionary.setMetricDefinitions(List.of());
+        when(applicationSpaceRepository.findByAppId("shop-app")).thenReturn(Optional.of(registeredSpace));
+        when(apiKeyRegistry.listPrincipals()).thenReturn(List.of());
+        when(experimentService.listExperiments(isNull(), anyList(), eq("shop-app"), isNull()))
+                .thenReturn(List.of());
+        when(applicationDictionaryService.getApplicationDictionary("shop-app")).thenReturn(dictionary);
+
+        ApplicationIntegrationHealthResponse response =
+                applicationSpaceService.getIntegrationHealth("shop-app");
+
+        assertThat(response.getStatus()).isEqualTo("BLOCKED");
+        assertThat(response.getChecks())
+                .filteredOn(check -> "BLOCKED".equals(check.getStatus()))
+                .extracting(ApplicationIntegrationHealthResponse.CheckItem::getCode)
+                .containsExactly("ACCESS_KEY_CONFIGURED", "DICTIONARY_READY");
+        assertThat(response.getAssignmentCount()).isZero();
+        assertThat(response.getExposureCount()).isZero();
+        assertThat(response.getEventCount()).isZero();
+    }
+
+    @Test
+    void getIntegrationHealthShouldWaitForFactsAfterConfigurationIsReady() {
+        ApiKeyContextHolder.set(principal("platform", "ops", ApiKeyScope.ADMIN));
+        ApplicationSpace registeredSpace = applicationSpace("shop-app", "二手手机商城", "anran", 20);
+        Experiment draftExperiment = experiment("shop-app", "anran", Experiment.ExperimentStatus.DRAFT);
+        ApplicationDictionaryResponse dictionary = new ApplicationDictionaryResponse();
+        dictionary.setEventDefinitions(List.of(new ApplicationEventDefinition()));
+        dictionary.setMetricDefinitions(List.of(new ApplicationMetricDefinition()));
+        when(applicationSpaceRepository.findByAppId("shop-app")).thenReturn(Optional.of(registeredSpace));
+        when(apiKeyRegistry.listPrincipals()).thenReturn(List.of(
+                principal("shop-app", "anran", ApiKeyScope.RUNTIME)));
+        when(experimentService.listExperiments(isNull(), anyList(), eq("shop-app"), isNull()))
+                .thenReturn(List.of(draftExperiment));
+        when(applicationDictionaryService.getApplicationDictionary("shop-app")).thenReturn(dictionary);
+
+        ApplicationIntegrationHealthResponse response =
+                applicationSpaceService.getIntegrationHealth("shop-app");
+
+        assertThat(response.getStatus()).isEqualTo("ATTENTION");
+        assertThat(response.getChecks()).satisfiesExactly(
+                check -> assertThat(check.getStatus()).isEqualTo("PASS"),
+                check -> assertThat(check.getStatus()).isEqualTo("PASS"),
+                check -> assertThat(check.getStatus()).isEqualTo("PASS"),
+                check -> assertThat(check.getStatus()).isEqualTo("PASS"),
+                check -> assertThat(check.getStatus()).isEqualTo("WAITING"),
+                check -> assertThat(check.getStatus()).isEqualTo("WAITING"),
+                check -> assertThat(check.getStatus()).isEqualTo("WAITING"));
+    }
+
+    @Test
+    void getIntegrationHealthShouldRejectCrossApplicationAccess() {
+        ApiKeyContextHolder.set(principal("app-a", "owner-a", ApiKeyScope.MANAGEMENT));
+
+        assertThatThrownBy(() -> applicationSpaceService.getIntegrationHealth("shop-app"))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(throwable -> assertThat(((BusinessException) throwable).getResponseCode())
+                        .isEqualTo(ResponseCode.FORBIDDEN));
     }
 
     @Test
@@ -372,5 +499,12 @@ class ApplicationSpaceServiceImplTest {
         applicationSpace.setDefaultOwner(defaultOwner);
         applicationSpace.setExperimentQuota(experimentQuota);
         return applicationSpace;
+    }
+
+    private ExperimentFactAggregateEntity aggregate(long count, LocalDateTime latestActivityAt) {
+        ExperimentFactAggregateEntity aggregate = new ExperimentFactAggregateEntity();
+        aggregate.setTotalCount(count);
+        aggregate.setLatestActivityAt(latestActivityAt);
+        return aggregate;
     }
 }

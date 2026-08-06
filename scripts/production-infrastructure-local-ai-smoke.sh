@@ -10,8 +10,8 @@ Usage:
 
 Environment:
   PISCES_REPO_ROOT                         Repository root. Default: inferred from this script.
-  PISCES_LOCAL_ENV_FILE                    Local env file loaded before smoke. Default: config/pisces-local.env.
-  PISCES_LOCAL_STACK_ENV_FILE              Local stack env file loaded before smoke. Default: config/pisces-local-stack.env.
+  PISCES_LOCAL_ENV_FILE                    Local override env file. Default: config/pisces-local.env.
+  PISCES_LOCAL_STACK_ENV_FILE              Local stack default env file. Default: config/pisces-local-stack.env.
   PISCES_LOCAL_AI_SMOKE_OUTPUT_FILE        JSON output. Default: target/pisces-production-infrastructure-local-ai-smoke/summary.json.
   PISCES_LOCAL_AI_SMOKE_RESPONSE_FILE      Raw API response JSON. Default: beside output file.
   PISCES_LOCAL_AI_SMOKE_REQUEST_FILE       Request JSON. Default: beside output file.
@@ -420,8 +420,8 @@ main() {
   service_summary="$(resolve_path "$PISCES_LOCAL_SERVICE_SUMMARY_FILE")"
   mkdir -p "$output_dir" "$(dirname "$request_file")" "$(dirname "$response_file")"
 
-  load_env_file "$env_file"
   load_env_file "$stack_env_file"
+  load_env_file "$env_file"
 
   PISCES_LOCAL_AI_SMOKE_QIANWEN_KEY_STATUS="$(qianwen_key_status)"
   PISCES_LOCAL_AI_SMOKE_TONGYI_MODEL="${!PISCES_TONGYI_MODEL_ENV:-qwen3.7-max}"

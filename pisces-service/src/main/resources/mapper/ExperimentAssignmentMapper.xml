@@ -53,6 +53,16 @@
           AND group_id = #{groupId}
     </select>
 
+    <select id="aggregateByExperimentIds" resultType="com.pisces.service.entity.ExperimentFactAggregateEntity">
+        SELECT COUNT(1) AS total_count,
+               MAX(assigned_at) AS latest_activity_at
+        FROM pisces_experiment_assignment
+        WHERE experiment_id IN
+        <foreach collection="experimentIds" item="experimentId" open="(" separator="," close=")">
+            #{experimentId}
+        </foreach>
+    </select>
+
     <select id="selectByVisitorId" resultMap="experimentAssignmentEntityResultMap">
         SELECT id, assignment_id, experiment_id, visitor_id, group_id, strategy, hash_key, config_version,
                attributes_json, idempotency_key, assigned_at, created_at, updated_at

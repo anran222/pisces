@@ -119,8 +119,8 @@ main() {
   PISCES_REPO_ROOT="$(resolve_repo_root)"
   PISCES_LOCAL_ENV_FILE="$(resolve_path "${PISCES_LOCAL_ENV_FILE:-config/pisces-local.env}")"
   PISCES_LOCAL_STACK_ENV_FILE="$(resolve_path "${PISCES_LOCAL_STACK_ENV_FILE:-config/pisces-local-stack.env}")"
-  load_env_file "$PISCES_LOCAL_ENV_FILE"
   load_env_file "$PISCES_LOCAL_STACK_ENV_FILE"
+  load_env_file "$PISCES_LOCAL_ENV_FILE"
 
   PISCES_LOCAL_READINESS_OUTPUT_FILE="${PISCES_LOCAL_READINESS_OUTPUT_FILE:-target/pisces-production-infrastructure-local-readiness/summary.json}"
   PISCES_COMPLETION_SCREENSHOT_DIR="${PISCES_COMPLETION_SCREENSHOT_DIR:-../pisces-web/target/screenshots/core-functions-current}"

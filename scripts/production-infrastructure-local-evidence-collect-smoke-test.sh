@@ -117,7 +117,7 @@ if any((workspace / name).exists() for name in (
     raise SystemExit("plan-only collector must not create final evidence files")
 PY
 
-auto_release_id="${release_id}-auto-demo"
+auto_release_id="${release_id}-auto-existing"
 auto_workspace="$smoke_root/$auto_release_id/workspace"
 auto_summary_file="$smoke_root/$auto_release_id/collection-plan.json"
 
@@ -125,7 +125,6 @@ auto_summary_file="$smoke_root/$auto_release_id/collection-plan.json"
   unset PISCES_EXPERIMENT_ID PISCES_LOCAL_SERVICE_SUMMARY_FILE PISCES_LOCAL_COLLECT_REDIS_FAULT_MODE PISCES_REDIS_DOCKER_CONTAINER PISCES_FAULT_CONFIRM
   PISCES_RELEASE_ID="$auto_release_id" \
   PISCES_LOCAL_COLLECT_PLAN_ONLY=true \
-  PISCES_LOCAL_COLLECT_DEMO_CASE=unqualified \
   PISCES_LOCAL_EVIDENCE_WORKSPACE_DIR="$auto_workspace" \
   PISCES_LOCAL_EVIDENCE_COLLECT_OUTPUT_FILE="$auto_summary_file" \
   bash scripts/production-infrastructure-local-evidence-collect.sh >/dev/null
@@ -140,27 +139,67 @@ summary_file = Path(sys.argv[1])
 workspace = Path(sys.argv[2])
 summary = json.loads(summary_file.read_text(encoding="utf-8"))
 auto_demo = summary.get("autoDemo") or {}
+selection = summary.get("experimentSelection") or {}
 
 if summary.get("experimentId") is not None:
-    raise SystemExit("auto-demo plan should not invent an experiment ID")
-if auto_demo.get("enabled") is not True:
-    raise SystemExit("auto-demo plan should be enabled by default")
-if auto_demo.get("case") != "unqualified":
-    raise SystemExit("auto-demo plan should preserve requested demo case")
-if auto_demo.get("willCreateExperiment") is not True:
-    raise SystemExit("auto-demo plan should state that normal mode will create a demo experiment")
-if "POST /experiments/generator/demo" not in (summary.get("commands") or []):
-    raise SystemExit("auto-demo plan should include demo generator command")
+    raise SystemExit("auto-selection plan should not invent an experiment ID")
+if selection.get("appId") != "shop-app":
+    raise SystemExit(f"auto-selection should default to shop-app: {selection}")
+if selection.get("autoSelectExisting") is not True:
+    raise SystemExit(f"existing experiment selection should be enabled by default: {selection}")
+if auto_demo.get("enabled") is not False:
+    raise SystemExit("demo fallback should be disabled by default")
+if auto_demo.get("willCreateExperiment") is not False:
+    raise SystemExit("default collection must not plan demo data creation")
+commands = summary.get("commands") or []
+if "GET /experiments?appId=shop-app" not in commands:
+    raise SystemExit("auto-selection plan should query real shop-app experiments")
+if any("generator/demo" in command for command in commands):
+    raise SystemExit("default auto-selection plan must not include demo generation")
 closeout_wrapper = summary.get("closeoutWrapper") or ""
 if str(workspace) not in closeout_wrapper or not closeout_wrapper.endswith("/run-local-closeout.sh"):
-    raise SystemExit("auto-demo plan closeout wrapper path mismatch")
+    raise SystemExit("auto-selection plan closeout wrapper path mismatch")
 
 if any((workspace / name).exists() for name in (
     "preprod-drill-record.md",
     "capacity-baseline-manifest.json",
     "production-acceptance-record.json",
 )):
-    raise SystemExit("auto-demo plan-only collector must not create final evidence files")
+    raise SystemExit("auto-selection plan-only collector must not create final evidence files")
+PY
+
+demo_release_id="${release_id}-explicit-demo"
+demo_workspace="$smoke_root/$demo_release_id/workspace"
+demo_summary_file="$smoke_root/$demo_release_id/collection-plan.json"
+
+(
+  unset PISCES_EXPERIMENT_ID PISCES_LOCAL_SERVICE_SUMMARY_FILE PISCES_LOCAL_COLLECT_REDIS_FAULT_MODE PISCES_REDIS_DOCKER_CONTAINER PISCES_FAULT_CONFIRM
+  PISCES_RELEASE_ID="$demo_release_id" \
+  PISCES_LOCAL_COLLECT_PLAN_ONLY=true \
+  PISCES_LOCAL_COLLECT_AUTO_SELECT_EXISTING=false \
+  PISCES_LOCAL_COLLECT_AUTO_DEMO=true \
+  PISCES_LOCAL_COLLECT_DEMO_CASE=unqualified \
+  PISCES_LOCAL_EVIDENCE_WORKSPACE_DIR="$demo_workspace" \
+  PISCES_LOCAL_EVIDENCE_COLLECT_OUTPUT_FILE="$demo_summary_file" \
+  bash scripts/production-infrastructure-local-evidence-collect.sh >/dev/null
+)
+
+python3 - "$demo_summary_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+summary = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+auto_demo = summary.get("autoDemo") or {}
+selection = summary.get("experimentSelection") or {}
+if selection.get("autoSelectExisting") is not False:
+    raise SystemExit("explicit demo plan should disable existing experiment selection")
+if auto_demo.get("enabled") is not True or auto_demo.get("case") != "unqualified":
+    raise SystemExit(f"explicit demo fallback should preserve its configuration: {auto_demo}")
+if auto_demo.get("willCreateExperiment") is not True:
+    raise SystemExit("explicit demo plan should state that it will create demo data")
+if not any("POST /experiments/generator/demo" in command for command in summary.get("commands") or []):
+    raise SystemExit("explicit demo plan should include the demo generator command")
 PY
 
 docker_release_id="${release_id}-docker-redis"

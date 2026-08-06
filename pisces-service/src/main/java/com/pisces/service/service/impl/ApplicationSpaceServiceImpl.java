@@ -4,14 +4,21 @@ import com.pisces.common.enums.ResponseCode;
 import com.pisces.common.model.ApplicationSpace;
 import com.pisces.common.model.Experiment;
 import com.pisces.common.request.ApplicationSpaceUpsertRequest;
+import com.pisces.common.response.ApplicationDictionaryResponse;
+import com.pisces.common.response.ApplicationIntegrationHealthResponse;
 import com.pisces.common.response.ApplicationSpaceResponse;
+import com.pisces.service.entity.ExperimentFactAggregateEntity;
 import com.pisces.service.exception.BusinessException;
+import com.pisces.service.repository.ExperimentAssignmentRepository;
+import com.pisces.service.repository.ExperimentEventRepository;
+import com.pisces.service.repository.ExperimentExposureRepository;
 import com.pisces.service.repository.ApplicationSpaceRepository;
 import com.pisces.service.security.ApiKeyContextHolder;
 import com.pisces.service.security.ApiKeyPrincipal;
 import com.pisces.service.security.ApiKeyRegistry;
 import com.pisces.service.security.ApiKeyScope;
 import com.pisces.service.service.ApplicationSpaceService;
+import com.pisces.service.service.ApplicationDictionaryService;
 import com.pisces.service.service.ExperimentService;
 import lombok.AllArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
@@ -43,6 +50,20 @@ import java.util.TreeMap;
 @AllArgsConstructor
 public class ApplicationSpaceServiceImpl implements ApplicationSpaceService {
 
+    private static final String INTEGRATION_STATUS_READY = "READY";
+
+    private static final String INTEGRATION_STATUS_ATTENTION = "ATTENTION";
+
+    private static final String INTEGRATION_STATUS_BLOCKED = "BLOCKED";
+
+    private static final String CHECK_STATUS_PASS = "PASS";
+
+    private static final String CHECK_STATUS_WAITING = "WAITING";
+
+    private static final String CHECK_STATUS_WARNING = "WARNING";
+
+    private static final String CHECK_STATUS_BLOCKED = "BLOCKED";
+
     private static final int DEFAULT_APPROVAL_REQUIRED_COUNT = 1;
 
     private static final long DEFAULT_APPROVAL_POLICY_VERSION = 1L;
@@ -63,6 +84,14 @@ public class ApplicationSpaceServiceImpl implements ApplicationSpaceService {
     private final ExperimentService experimentService;
 
     private final ApplicationSpaceRepository applicationSpaceRepository;
+
+    private final ApplicationDictionaryService applicationDictionaryService;
+
+    private final ExperimentAssignmentRepository experimentAssignmentRepository;
+
+    private final ExperimentExposureRepository experimentExposureRepository;
+
+    private final ExperimentEventRepository experimentEventRepository;
 
     @Override
     public List<ApplicationSpaceResponse> listApplicationSpaces() {
@@ -101,6 +130,35 @@ public class ApplicationSpaceServiceImpl implements ApplicationSpaceService {
     }
 
     @Override
+    public ApplicationIntegrationHealthResponse getIntegrationHealth(String appId) {
+        String normalizedAppId = requireAppId(appId);
+        if (!canAccessApp(normalizedAppId)) {
+            throw new BusinessException(ResponseCode.FORBIDDEN, "无权查看当前应用接入状态");
+        }
+
+        List<Experiment> experiments = experimentService.listExperiments(null, List.of(), normalizedAppId, null);
+        ApplicationSpaceBuilder builder = new ApplicationSpaceBuilder(normalizedAppId);
+        findRegisteredSpace(normalizedAppId).ifPresent(builder::acceptApplicationSpace);
+        apiKeyRegistry.listPrincipals().stream()
+                .filter(principal -> normalizedAppId.equals(normalizeAppId(principal.getAppId())))
+                .forEach(builder::acceptPrincipal);
+        experiments.forEach(builder::acceptExperiment);
+        ApplicationSpaceResponse application = builder.build();
+        if (!Boolean.TRUE.equals(application.getRegistered())
+                && !Boolean.TRUE.equals(application.getConfigured())
+                && experiments.isEmpty()) {
+            throw new BusinessException(ResponseCode.NOT_FOUND, "应用不存在");
+        }
+
+        ApplicationDictionaryResponse dictionary = applicationDictionaryService.getApplicationDictionary(normalizedAppId);
+        List<String> experimentIds = experiments.stream().map(Experiment::getId).filter(Objects::nonNull).toList();
+        ExperimentFactAggregateEntity assignments = experimentAssignmentRepository.aggregateByExperimentIds(experimentIds);
+        ExperimentFactAggregateEntity exposures = experimentExposureRepository.aggregateByExperimentIds(experimentIds);
+        ExperimentFactAggregateEntity events = experimentEventRepository.aggregateByExperimentIds(experimentIds);
+        return buildIntegrationHealth(application, dictionary, experiments, assignments, exposures, events);
+    }
+
+    @Override
     public ApplicationSpaceResponse registerApplicationSpace(String appId, ApplicationSpaceUpsertRequest request) {
         String normalizedAppId = requireAppId(appId);
         if (findRegisteredSpace(normalizedAppId).isPresent()) {
@@ -122,6 +180,158 @@ public class ApplicationSpaceServiceImpl implements ApplicationSpaceService {
         ApplicationSpace applicationSpace = buildApplicationSpace(normalizedAppId, request, existingSpace);
         ApplicationSpace savedSpace = applicationSpaceRepository.save(applicationSpace);
         return buildApplicationSpaceResponse(savedSpace);
+    }
+
+    private ApplicationIntegrationHealthResponse buildIntegrationHealth(
+            ApplicationSpaceResponse application,
+            ApplicationDictionaryResponse dictionary,
+            List<Experiment> experiments,
+            ExperimentFactAggregateEntity assignments,
+            ExperimentFactAggregateEntity exposures,
+            ExperimentFactAggregateEntity events) {
+        int eventDefinitionCount = dictionary == null || dictionary.getEventDefinitions() == null
+                ? 0 : dictionary.getEventDefinitions().size();
+        int metricDefinitionCount = dictionary == null || dictionary.getMetricDefinitions() == null
+                ? 0 : dictionary.getMetricDefinitions().size();
+        long assignmentCount = resolveAggregateCount(assignments);
+        long exposureCount = resolveAggregateCount(exposures);
+        long eventCount = resolveAggregateCount(events);
+
+        List<ApplicationIntegrationHealthResponse.CheckItem> checks = new ArrayList<>();
+        checks.add(buildIntegrationCheck(
+                "APPLICATION_REGISTERED",
+                Boolean.TRUE.equals(application.getRegistered()) ? CHECK_STATUS_PASS : CHECK_STATUS_BLOCKED,
+                "应用登记",
+                Boolean.TRUE.equals(application.getRegistered())
+                        ? "应用已完成登记，可以维护治理信息和业务字典"
+                        : "当前应用仅来自访问配置或历史实验，尚未完成应用登记",
+                Boolean.TRUE.equals(application.getRegistered()) ? null : "请先完成应用登记",
+                Boolean.TRUE.equals(application.getRegistered()) ? 1L : 0L,
+                "application"));
+        checks.add(buildIntegrationCheck(
+                "ACCESS_KEY_CONFIGURED",
+                Boolean.TRUE.equals(application.getConfigured()) ? CHECK_STATUS_PASS : CHECK_STATUS_BLOCKED,
+                "访问权限",
+                Boolean.TRUE.equals(application.getConfigured())
+                        ? "已配置" + application.getApiKeyCount() + "个应用访问身份"
+                        : "当前应用没有可用的访问身份，客户端无法读取运行配置",
+                Boolean.TRUE.equals(application.getConfigured()) ? null : "请在本地服务配置中绑定应用访问身份",
+                Long.valueOf(application.getApiKeyCount()),
+                "application"));
+        boolean dictionaryReady = eventDefinitionCount > 0 && metricDefinitionCount > 0;
+        checks.add(buildIntegrationCheck(
+                "DICTIONARY_READY",
+                dictionaryReady ? CHECK_STATUS_PASS : CHECK_STATUS_BLOCKED,
+                "业务字典",
+                dictionaryReady
+                        ? "已维护" + eventDefinitionCount + "个事件和" + metricDefinitionCount + "个指标"
+                        : "事件和指标必须同时维护，实验才能选择完整分析口径",
+                dictionaryReady ? null : "请维护应用事件和指标字典",
+                (long) eventDefinitionCount + metricDefinitionCount,
+                "dictionary"));
+        checks.add(buildIntegrationCheck(
+                "EXPERIMENT_CONFIG_READY",
+                experiments.isEmpty() ? CHECK_STATUS_WAITING : CHECK_STATUS_PASS,
+                "实验配置",
+                experiments.isEmpty()
+                        ? "当前应用还没有实验运行配置"
+                        : "已生成" + experiments.size() + "个实验配置，其中"
+                                + application.getRunningExperimentCount() + "个正在运行",
+                experiments.isEmpty() ? "请创建首个实验草稿" : null,
+                (long) experiments.size(),
+                "experiments"));
+        checks.add(buildIntegrationCheck(
+                "ASSIGNMENT_RECEIVED",
+                assignmentCount > 0 ? CHECK_STATUS_PASS : CHECK_STATUS_WAITING,
+                "用户分流",
+                assignmentCount > 0 ? "已接收" + assignmentCount + "条真实分流事实" : "尚未收到真实用户分流事实",
+                assignmentCount > 0 ? null : "请确认客户端已请求实验分流",
+                assignmentCount,
+                "runtime"));
+        checks.add(buildIntegrationCheck(
+                "EXPOSURE_RECEIVED",
+                resolveDownstreamCheckStatus(assignmentCount, exposureCount),
+                "变体曝光",
+                exposureCount > 0 ? "已接收" + exposureCount + "条曝光事实" : "尚未收到用户实际看到变体的曝光事实",
+                exposureCount > 0 ? null : "请在变体实际展示后上报曝光",
+                exposureCount,
+                "runtime"));
+        checks.add(buildIntegrationCheck(
+                "EVENT_RECEIVED",
+                resolveDownstreamCheckStatus(exposureCount, eventCount),
+                "业务事件",
+                eventCount > 0 ? "已接收" + eventCount + "条业务事件事实" : "尚未收到用于计算指标的业务事件",
+                eventCount > 0 ? null : "请确认事件编码与应用字典一致并完成上报",
+                eventCount,
+                "runtime"));
+
+        ApplicationIntegrationHealthResponse response = new ApplicationIntegrationHealthResponse();
+        response.setAppId(application.getAppId());
+        response.setDisplayName(application.getDisplayName());
+        response.setStatus(resolveIntegrationStatus(checks));
+        response.setGeneratedAt(LocalDateTime.now());
+        response.setEventDefinitionCount(eventDefinitionCount);
+        response.setMetricDefinitionCount(metricDefinitionCount);
+        response.setExperimentCount(experiments.size());
+        response.setRunningExperimentCount(application.getRunningExperimentCount());
+        response.setAssignmentCount(assignmentCount);
+        response.setExposureCount(exposureCount);
+        response.setEventCount(eventCount);
+        response.setLatestActivityAt(resolveLatestActivity(assignments, exposures, events));
+        response.setChecks(checks);
+        return response;
+    }
+
+    private String resolveDownstreamCheckStatus(long upstreamCount, long currentCount) {
+        if (currentCount > 0) {
+            return CHECK_STATUS_PASS;
+        }
+        return upstreamCount > 0 ? CHECK_STATUS_WARNING : CHECK_STATUS_WAITING;
+    }
+
+    private String resolveIntegrationStatus(List<ApplicationIntegrationHealthResponse.CheckItem> checks) {
+        if (checks.stream().anyMatch(check -> CHECK_STATUS_BLOCKED.equals(check.getStatus()))) {
+            return INTEGRATION_STATUS_BLOCKED;
+        }
+        if (checks.stream().allMatch(check -> CHECK_STATUS_PASS.equals(check.getStatus()))) {
+            return INTEGRATION_STATUS_READY;
+        }
+        return INTEGRATION_STATUS_ATTENTION;
+    }
+
+    private ApplicationIntegrationHealthResponse.CheckItem buildIntegrationCheck(
+            String code,
+            String status,
+            String title,
+            String detail,
+            String action,
+            Long evidenceCount,
+            String target) {
+        ApplicationIntegrationHealthResponse.CheckItem check =
+                new ApplicationIntegrationHealthResponse.CheckItem();
+        check.setCode(code);
+        check.setStatus(status);
+        check.setTitle(title);
+        check.setDetail(detail);
+        check.setAction(action);
+        check.setEvidenceCount(evidenceCount);
+        check.setTarget(target);
+        return check;
+    }
+
+    private long resolveAggregateCount(ExperimentFactAggregateEntity aggregate) {
+        return aggregate == null || aggregate.getTotalCount() == null ? 0L : aggregate.getTotalCount();
+    }
+
+    private LocalDateTime resolveLatestActivity(ExperimentFactAggregateEntity... aggregates) {
+        LocalDateTime latest = null;
+        for (ExperimentFactAggregateEntity aggregate : aggregates) {
+            LocalDateTime candidate = aggregate == null ? null : aggregate.getLatestActivityAt();
+            if (candidate != null && (latest == null || candidate.isAfter(latest))) {
+                latest = candidate;
+            }
+        }
+        return latest;
     }
 
     private ApplicationSpace buildApplicationSpace(String appId, ApplicationSpaceUpsertRequest request,

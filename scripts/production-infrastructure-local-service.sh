@@ -92,6 +92,21 @@ print(urls[0])
 PY
 }
 
+service_port() {
+  python3 - "$PISCES_LOCAL_SERVICE_HEALTH_URL" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+parsed = urlsplit(sys.argv[1])
+if parsed.port:
+    print(parsed.port)
+elif parsed.scheme == "https":
+    print(443)
+else:
+    print(80)
+PY
+}
+
 display_path() {
   python3 - "$PISCES_REPO_ROOT" "$1" <<'PY'
 import sys
@@ -130,6 +145,42 @@ sync_supervisor_pid() {
   return 1
 }
 
+listener_pid() {
+  command -v lsof >/dev/null 2>&1 || return 1
+  lsof -nP -t -iTCP:"$PISCES_LOCAL_SERVICE_PORT" -sTCP:LISTEN 2>/dev/null | head -n 1
+}
+
+is_expected_backend_pid() {
+  local pid="$1"
+  local command_line
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ -n "$command_line" && "$command_line" == *"$(basename "$PISCES_LOCAL_SERVICE_APP_JAR_RESOLVED")"* ]]
+}
+
+reconcile_service_process() {
+  if [[ "$(pid_status)" == "running" ]]; then
+    return 0
+  fi
+
+  local detected_pid
+  detected_pid="$(listener_pid || true)"
+  if [[ -z "$detected_pid" ]]; then
+    return 1
+  fi
+  if ! is_expected_backend_pid "$detected_pid"; then
+    return 2
+  fi
+  if [[ "$(health_status)" != "UP" ]]; then
+    return 2
+  fi
+
+  printf '%s\n' "$detected_pid" >"$PISCES_LOCAL_SERVICE_PID_FILE_RESOLVED"
+  PISCES_LOCAL_SERVICE_SUPERVISOR="adopted"
+  export PISCES_LOCAL_SERVICE_SUPERVISOR
+  return 0
+}
+
 qianwen_key_status() {
   local value="${!PISCES_QIANWEN_API_KEY_ENV:-}"
   case "$value" in
@@ -152,16 +203,35 @@ pid_status() {
   if [[ -f "$PISCES_LOCAL_SERVICE_PID_FILE_RESOLVED" ]]; then
     local pid
     pid="$(cat "$PISCES_LOCAL_SERVICE_PID_FILE_RESOLVED" 2>/dev/null || true)"
-    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1 \
+      && is_expected_backend_pid "$pid"; then
       printf 'running'
       return
     fi
+    rm -f "$PISCES_LOCAL_SERVICE_PID_FILE_RESOLVED"
   fi
   if sync_supervisor_pid; then
     printf 'running'
     return
   fi
   printf 'not_running'
+}
+
+process_ownership_status() {
+  if [[ "$(pid_status)" == "running" ]]; then
+    printf 'managed'
+    return
+  fi
+
+  local detected_pid
+  detected_pid="$(listener_pid || true)"
+  if [[ -z "$detected_pid" ]]; then
+    printf 'none'
+  elif is_expected_backend_pid "$detected_pid"; then
+    printf 'unmanaged_pisces'
+  else
+    printf 'port_conflict'
+  fi
 }
 
 health_status() {
@@ -199,8 +269,12 @@ write_summary() {
   local service_pid=""
   local process_status
   local current_health
+  local listener_process_pid
+  local process_ownership
   process_status="$(pid_status)"
   current_health="$(health_status)"
+  listener_process_pid="$(listener_pid || true)"
+  process_ownership="$(process_ownership_status)"
   if [[ -f "$PISCES_LOCAL_SERVICE_PID_FILE_RESOLVED" ]]; then
     service_pid="$(cat "$PISCES_LOCAL_SERVICE_PID_FILE_RESOLVED" 2>/dev/null || true)"
   fi
@@ -212,10 +286,14 @@ write_summary() {
   export PISCES_LOCAL_SERVICE_PROCESS_STATUS="$process_status"
   export PISCES_LOCAL_SERVICE_HEALTH_STATUS="$current_health"
   export PISCES_LOCAL_SERVICE_PID_VALUE="$service_pid"
+  export PISCES_LOCAL_SERVICE_LISTENER_PID="$listener_process_pid"
+  export PISCES_LOCAL_SERVICE_PROCESS_OWNERSHIP="$process_ownership"
 
   python3 <<'PY'
 import json
+import hashlib
 import os
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -233,6 +311,56 @@ def display(path):
         return str(path.resolve().relative_to(repo_root))
     except ValueError:
         return str(path)
+
+
+def mysql_target(raw_url):
+    value = (raw_url or "").strip()
+    if value.startswith("jdbc:"):
+        value = value[5:]
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return {"host": "invalid", "port": None, "database": "invalid"}
+    try:
+        port = parsed.port or 3306
+    except ValueError:
+        port = None
+    return {
+        "host": parsed.hostname or "unknown",
+        "port": port,
+        "database": parsed.path.lstrip("/").split("/", 1)[0] or "unknown",
+    }
+
+
+def integer_or_default(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+runtime_configuration = {
+    "loadOrder": ["stackEnv", "localEnv"],
+    "mysql": mysql_target(os.environ.get("MYSQL_URL")),
+    "redis": {
+        "host": os.environ.get("SPRING_DATA_REDIS_HOST", "localhost"),
+        "port": integer_or_default(os.environ.get("SPRING_DATA_REDIS_PORT"), 6379),
+    },
+    "zookeeperEndpoints": [
+        item.strip()
+        for item in os.environ.get("PISCES_ZOOKEEPER_CONNECT_STRING", "").split(",")
+        if item.strip()
+    ],
+    "instanceUrls": [
+        item.strip().rstrip("/")
+        for item in os.environ.get("PISCES_INSTANCE_URLS", "").split(",")
+        if item.strip()
+    ],
+}
+fingerprint_source = json.dumps(runtime_configuration, ensure_ascii=False, sort_keys=True)
+runtime_configuration["fingerprint"] = hashlib.sha256(
+    fingerprint_source.encode("utf-8")
+).hexdigest()[:16]
 
 
 status = os.environ["PISCES_LOCAL_SERVICE_SUMMARY_STATUS"]
@@ -270,7 +398,9 @@ summary = {
     "apiKeyStatus": os.environ["PISCES_LOCAL_SERVICE_QIANWEN_KEY_STATUS"],
     "dryRun": os.environ["PISCES_LOCAL_SERVICE_DRY_RUN"].lower() in {"true", "1", "yes", "y"},
     "processStatus": os.environ["PISCES_LOCAL_SERVICE_PROCESS_STATUS"],
+    "processOwnership": os.environ["PISCES_LOCAL_SERVICE_PROCESS_OWNERSHIP"],
     "pid": os.environ["PISCES_LOCAL_SERVICE_PID_VALUE"] or None,
+    "listenerPid": os.environ["PISCES_LOCAL_SERVICE_LISTENER_PID"] or None,
     "pidFile": display(pid_file),
     "logFile": display(log_file),
     "envFile": display(env_file),
@@ -278,6 +408,7 @@ summary = {
     "stackEnvFilePresent": stack_env_file.is_file(),
     "healthUrl": os.environ["PISCES_LOCAL_SERVICE_HEALTH_URL"],
     "healthStatus": os.environ["PISCES_LOCAL_SERVICE_HEALTH_STATUS"],
+    "runtimeConfiguration": runtime_configuration,
     "startStack": os.environ["PISCES_LOCAL_SERVICE_START_STACK"].lower() in {"true", "1", "yes", "y"},
     "applySchema": os.environ["PISCES_LOCAL_SERVICE_APPLY_SCHEMA"].lower() in {"true", "1", "yes", "y"},
     "checkDependencies": os.environ["PISCES_LOCAL_SERVICE_CHECK_DEPENDENCIES"].lower() in {"true", "1", "yes", "y"},
@@ -340,14 +471,14 @@ if java_opts:
 runner = f"""#!/usr/bin/env bash
 set -euo pipefail
 cd {shlex.quote(str(repo_root))}
-if [[ -f {shlex.quote(str(env_file))} ]]; then
-  set -a
-  source {shlex.quote(str(env_file))}
-  set +a
-fi
 if [[ -f {shlex.quote(str(stack_env_file))} ]]; then
   set -a
   source {shlex.quote(str(stack_env_file))}
+  set +a
+fi
+if [[ -f {shlex.quote(str(env_file))} ]]; then
+  set -a
+  source {shlex.quote(str(env_file))}
   set +a
 fi
 printf '%s\\n' "$$" > {shlex.quote(str(pid_file))}
@@ -415,6 +546,17 @@ start_service() {
     return 0
   fi
 
+  local reconcile_exit=0
+  reconcile_service_process || reconcile_exit=$?
+  if [[ "$reconcile_exit" -eq 0 ]]; then
+    write_summary "HEALTHY" "start" 0 "Local service is already running, managed, and healthy."
+    return 0
+  fi
+  if [[ "$reconcile_exit" -eq 2 ]]; then
+    write_summary "PORT_CONFLICT" "start" 1 "The configured service port is occupied by an unexpected or unhealthy process."
+    return 1
+  fi
+
   command -v mvn >/dev/null 2>&1 || die "Missing command: mvn"
 
   if is_true "$PISCES_LOCAL_SERVICE_START_STACK"; then
@@ -438,15 +580,6 @@ start_service() {
     return 1
   fi
 
-  if [[ "$(pid_status)" == "running" ]]; then
-    if wait_for_health; then
-      write_summary "HEALTHY" "start" 0 "Local service was already running and health is UP."
-      return 0
-    fi
-    write_summary "UNHEALTHY" "start" 1 "Local service process is already running but health did not become UP."
-    return 1
-  fi
-
   mkdir -p "$PISCES_LOCAL_SERVICE_DIR"
   launch_backend
 
@@ -459,6 +592,12 @@ start_service() {
 }
 
 stop_service() {
+  local reconcile_exit=0
+  reconcile_service_process || reconcile_exit=$?
+  if [[ "$reconcile_exit" -eq 2 ]]; then
+    write_summary "PORT_CONFLICT" "stop" 1 "Refusing to stop a process that is not the Pisces backend."
+    return 1
+  fi
   if use_launchctl_supervisor; then
     launchctl bootout "$(launch_domain)/$PISCES_LOCAL_SERVICE_LAUNCH_LABEL" >/dev/null 2>&1 || true
   fi
@@ -537,21 +676,22 @@ main() {
   plist_file="$(resolve_path "$PISCES_LOCAL_SERVICE_PLIST_FILE")"
   mkdir -p "$(dirname "$output_file")" "$(dirname "$pid_file")" "$(dirname "$log_file")"
 
-  if [[ -f "$env_file" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$env_file"
-    set +a
-  fi
   if [[ -f "$stack_env_file" ]]; then
     set -a
     # shellcheck disable=SC1090
     source "$stack_env_file"
     set +a
   fi
+  if [[ -f "$env_file" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$env_file"
+    set +a
+  fi
 
   PISCES_LOCAL_SERVICE_DIR="$(dirname "$output_file")"
   PISCES_LOCAL_SERVICE_HEALTH_URL="$(first_instance_url)/actuator/health"
+  PISCES_LOCAL_SERVICE_PORT="$(service_port)"
   PISCES_LOCAL_SERVICE_QIANWEN_KEY_STATUS="$(qianwen_key_status)"
   PISCES_LOCAL_ENV_FILE_RESOLVED="$env_file"
   PISCES_LOCAL_STACK_ENV_FILE_RESOLVED="$stack_env_file"
@@ -577,6 +717,7 @@ main() {
   export PISCES_LOCAL_SERVICE_RUNNER_FILE_RESOLVED
   export PISCES_LOCAL_SERVICE_PLIST_FILE_RESOLVED
   export PISCES_LOCAL_SERVICE_HEALTH_URL
+  export PISCES_LOCAL_SERVICE_PORT
   export PISCES_LOCAL_SERVICE_QIANWEN_KEY_STATUS
   export PISCES_LOCAL_SERVICE_LAUNCH_LABEL
   export PISCES_LOCAL_SERVICE_SUPERVISOR
@@ -588,6 +729,7 @@ main() {
   export PISCES_LOCAL_SERVICE_DRY_RUN
   export PISCES_LOCAL_SERVICE_ALLOW_PLACEHOLDER_QIANWEN
   export PISCES_QIANWEN_API_KEY_ENV
+  export PISCES_INSTANCE_URLS
 
   case "$action" in
     start)
@@ -597,7 +739,13 @@ main() {
       stop_service
       ;;
     status)
-      write_summary "STATUS_RECORDED" "status" 0 "Local service status recorded."
+      reconcile_exit=0
+      reconcile_service_process || reconcile_exit=$?
+      if [[ "$reconcile_exit" -eq 2 ]]; then
+        write_summary "PORT_CONFLICT" "status" 1 "The configured service port is occupied by an unexpected or unhealthy process."
+        return 1
+      fi
+      write_summary "STATUS_RECORDED" "status" 0 "Local service status reconciled with the listener and supervisor."
       ;;
     health)
       if [[ "$(health_status)" == "UP" ]]; then
