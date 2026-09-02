@@ -219,6 +219,117 @@ class VariantControllerTest {
     }
 
     @Test
+    void shouldRefineTextVariantsWithCurrentPlansAndConversation() throws Exception {
+        when(variantGenerationService.generateTextVariants(anyString(), eq(2)))
+                .thenReturn(List.of("修改后方案A", "修改后方案B"));
+        when(variantGenerationService.getLastTextGenerationMetadata())
+                .thenReturn(Map.of("selectedModel", "qwen3.7-max"));
+
+        mockMvc.perform(post("/variants/refine")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "variantType": "TEXT",
+                                  "goal": "提升二手手机加购率",
+                                  "audience": "关注质检保障的用户",
+                                  "count": 2,
+                                  "refinementInstruction": "保留第二个方案方向，整体语气更克制",
+                                  "currentVariants": [
+                                    "方案名称：质检型｜策略方向：强化质检｜候选内容：放心买｜实验假设：降低疑虑｜实施建议：替换首屏｜风险提醒：避免夸大",
+                                    "方案名称：售后型｜策略方向：强化售后｜候选内容：售后无忧｜实验假设：降低风险｜实施建议：替换首屏｜风险提醒：说明范围"
+                                  ],
+                                  "conversation": [
+                                    {"role": "USER", "content": "不要强调低价"},
+                                    {"role": "ASSISTANT", "content": "已降低价格表达"}
+                                  ]
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("方案修改成功"))
+                .andExpect(jsonPath("$.data.variantType").value("TEXT"))
+                .andExpect(jsonPath("$.data.count").value(2))
+                .andExpect(jsonPath("$.data.variants[0]").value("修改后方案A"))
+                .andExpect(jsonPath("$.data.aiModel").value("qwen3.7-max"));
+
+        var promptCaptor = forClass(String.class);
+        verify(variantGenerationService).generateTextVariants(promptCaptor.capture(), eq(2));
+        assertThat(promptCaptor.getValue())
+                .contains("基于已有候选方案的对话修订")
+                .contains("候选1：方案名称：质检型")
+                .contains("用户：不要强调低价")
+                .contains("助手：已降低价格表达")
+                .contains("用户本轮修改要求：保留第二个方案方向，整体语气更克制")
+                .contains("返回2个可直接替换当前版本的完整候选");
+    }
+
+    @Test
+    void shouldUseCurrentImagesAsReferencesWhenRefiningImageVariants() throws Exception {
+        when(variantGenerationService.generateImageVariants(
+                anyString(),
+                eq(2),
+                org.mockito.ArgumentMatchers.anyMap()))
+                .thenReturn(List.of("https://example.com/revised-1.png", "https://example.com/revised-2.png"));
+
+        mockMvc.perform(post("/variants/refine")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "variantType": "IMAGE",
+                                  "goal": "优化二手手机商品主图",
+                                  "count": 2,
+                                  "refinementInstruction": "保持商品角度，减少装饰文字",
+                                  "currentVariants": [
+                                    "https://example.com/current-1.png",
+                                    "https://example.com/current-2.png"
+                                  ],
+                                  "sourceContext": {
+                                    "referenceImages": ["https://example.com/original.png"]
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.variants[0]").value("https://example.com/revised-1.png"));
+
+        @SuppressWarnings("unchecked")
+        var sourceContextCaptor = (org.mockito.ArgumentCaptor<Map<String, Object>>)
+                (org.mockito.ArgumentCaptor<?>) forClass(Map.class);
+        verify(variantGenerationService).generateImageVariants(anyString(), eq(2), sourceContextCaptor.capture());
+        assertThat(sourceContextCaptor.getValue().get("referenceImages"))
+                .isEqualTo(List.of(
+                        "https://example.com/original.png",
+                        "https://example.com/current-1.png",
+                        "https://example.com/current-2.png"));
+    }
+
+    @Test
+    void shouldRejectRefinementWithoutInstructionOrCurrentVariants() throws Exception {
+        mockMvc.perform(post("/variants/refine")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "variantType": "TEXT",
+                                  "currentVariants": ["当前方案"]
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("请填写方案修改要求"));
+
+        mockMvc.perform(post("/variants/refine")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "variantType": "TEXT",
+                                  "refinementInstruction": "调整语气",
+                                  "currentVariants": []
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("当前没有可修改的候选方案"));
+    }
+
+    @Test
     void shouldRejectUnsupportedStructuredVariantType() throws Exception {
         mockMvc.perform(post("/variants/generate")
                         .contentType(MediaType.APPLICATION_JSON)

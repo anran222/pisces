@@ -43,4 +43,36 @@ public class VariantCandidateGenerateRequest {
      * 上下文信息
      */
     private Map<String, Object> sourceContext;
+
+    /**
+     * 本轮方案修改要求
+     */
+    private String refinementInstruction;
+
+    /**
+     * 当前候选方案
+     */
+    private List<String> currentVariants;
+
+    /**
+     * 最近对话记录
+     */
+    private List<ConversationMessage> conversation;
+
+    /**
+     * 方案修订对话消息
+     */
+    @Data
+    public static class ConversationMessage {
+
+        /**
+         * 消息角色
+         */
+        private String role;
+
+        /**
+         * 消息内容
+         */
+        private String content;
+    }
 }

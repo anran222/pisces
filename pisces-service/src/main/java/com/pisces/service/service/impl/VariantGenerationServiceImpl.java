@@ -57,7 +57,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
 
     @Override
     public List<String> generateTextVariants(String prompt, int count) {
-        log.info("生成文本变体: prompt={}, count={}", prompt, count);
+        log.info("生成文本变体: promptLength={}, count={}", prompt.length(), count);
         ensureTongYiAvailable();
 
         try {
@@ -95,7 +95,7 @@ public class VariantGenerationServiceImpl implements VariantGenerationService {
 
     @Override
     public List<String> generateImageVariants(String prompt, int count, Map<String, Object> sourceContext) {
-        log.info("生成图像变体: prompt={}, count={}", prompt, count);
+        log.info("生成图像变体: promptLength={}, count={}", prompt.length(), count);
         ensureTongYiAvailable();
 
         try {

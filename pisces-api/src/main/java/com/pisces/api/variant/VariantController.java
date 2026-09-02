@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -36,6 +37,14 @@ public class VariantController {
     private static final String GENERATE_SUCCESS_MESSAGE = "生成成功";
     private static final String VARIANT_TYPE_REQUIRED_MESSAGE = "variantType不能为空";
     private static final String VARIANT_COUNT_INVALID_MESSAGE = "count必须大于0";
+    private static final String REFINEMENT_INSTRUCTION_REQUIRED_MESSAGE = "请填写方案修改要求";
+    private static final String CURRENT_VARIANTS_REQUIRED_MESSAGE = "当前没有可修改的候选方案";
+    private static final int MAX_REFINEMENT_INSTRUCTION_LENGTH = 1000;
+    private static final int MAX_REFINEMENT_VARIANT_COUNT = 6;
+    private static final int MAX_REFINEMENT_VARIANT_LENGTH = 1200;
+    private static final int MAX_CONVERSATION_MESSAGE_COUNT = 8;
+    private static final int MAX_CONVERSATION_MESSAGE_LENGTH = 500;
+    private static final int MAX_IMAGE_REFERENCE_COUNT = 4;
     private static final Map<String, String> SOURCE_CONTEXT_LABELS = Map.ofEntries(
             Map.entry("appId", "应用标识"),
             Map.entry("applicationName", "应用名称"),
@@ -109,6 +118,160 @@ public class VariantController {
             applyTextGenerationMetadata(response, variantGenerationService.getLastTextGenerationMetadata());
         }
         return BaseResponse.of(GENERATE_SUCCESS_MESSAGE, response);
+    }
+
+    /**
+     * 基于当前候选和最近对话修订完整方案
+     */
+    @PostMapping("/refine")
+    public BaseResponse<VariantCandidateGenerateResponse> refineVariants(
+            @RequestBody VariantCandidateGenerateRequest request) {
+        BaseResponse<VariantCandidateGenerateResponse> validationError = validateRefinementRequest(request);
+        if (validationError != null) {
+            return validationError;
+        }
+
+        String normalizedVariantType = request.getVariantType().toUpperCase(Locale.ROOT);
+        if (!"TEXT".equals(normalizedVariantType) && !"IMAGE".equals(normalizedVariantType)) {
+            return BaseResponse.error(ResponseCode.BAD_REQUEST, "不支持的变体类型: " + request.getVariantType());
+        }
+
+        List<String> currentVariants = normalizeCurrentVariants(
+                request.getCurrentVariants(), normalizedVariantType);
+        int count = request.getCount() == null ? currentVariants.size() : request.getCount();
+        if (count <= 0) {
+            return BaseResponse.error(ResponseCode.BAD_REQUEST, VARIANT_COUNT_INVALID_MESSAGE);
+        }
+        if (count > MAX_REFINEMENT_VARIANT_COUNT) {
+            return BaseResponse.error(ResponseCode.BAD_REQUEST, "单次最多修订6个候选方案");
+        }
+
+        String prompt = buildRefinementPrompt(request, normalizedVariantType, currentVariants, count);
+        Map<String, Object> sourceContext = buildRefinementSourceContext(
+                request.getSourceContext(), normalizedVariantType, currentVariants);
+        List<String> variants = dispatchGenerateVariants(normalizedVariantType, prompt, count, sourceContext);
+
+        VariantCandidateGenerateResponse response = new VariantCandidateGenerateResponse();
+        response.setVariantType(normalizedVariantType);
+        response.setVariants(variants);
+        response.setCount(variants.size());
+        if ("TEXT".equals(normalizedVariantType)) {
+            applyTextGenerationMetadata(response, variantGenerationService.getLastTextGenerationMetadata());
+        }
+        return BaseResponse.of("方案修改成功", response);
+    }
+
+    private BaseResponse<VariantCandidateGenerateResponse> validateRefinementRequest(
+            VariantCandidateGenerateRequest request) {
+        if (request == null || !StringUtils.hasText(request.getVariantType())) {
+            return BaseResponse.error(ResponseCode.BAD_REQUEST, VARIANT_TYPE_REQUIRED_MESSAGE);
+        }
+        if (!StringUtils.hasText(request.getRefinementInstruction())) {
+            return BaseResponse.error(ResponseCode.BAD_REQUEST, REFINEMENT_INSTRUCTION_REQUIRED_MESSAGE);
+        }
+        if (request.getRefinementInstruction().trim().length() > MAX_REFINEMENT_INSTRUCTION_LENGTH) {
+            return BaseResponse.error(ResponseCode.BAD_REQUEST, "方案修改要求不能超过1000字");
+        }
+        if (request.getCurrentVariants() == null
+                || normalizeCurrentVariants(request.getCurrentVariants(), request.getVariantType()).isEmpty()) {
+            return BaseResponse.error(ResponseCode.BAD_REQUEST, CURRENT_VARIANTS_REQUIRED_MESSAGE);
+        }
+        if (request.getCurrentVariants().size() > MAX_REFINEMENT_VARIANT_COUNT) {
+            return BaseResponse.error(ResponseCode.BAD_REQUEST, "当前候选方案不能超过6个");
+        }
+        return null;
+    }
+
+    private List<String> normalizeCurrentVariants(List<String> currentVariants, String variantType) {
+        return currentVariants.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .map(value -> normalizeCurrentVariant(value, variantType))
+                .limit(MAX_REFINEMENT_VARIANT_COUNT)
+                .collect(Collectors.toList());
+    }
+
+    private String normalizeCurrentVariant(String value, String variantType) {
+        if ("IMAGE".equalsIgnoreCase(variantType) && isImageReference(value)) {
+            return value;
+        }
+        return truncate(value, MAX_REFINEMENT_VARIANT_LENGTH);
+    }
+
+    private String buildRefinementPrompt(VariantCandidateGenerateRequest request,
+                                         String normalizedVariantType,
+                                         List<String> currentVariants,
+                                         int count) {
+        List<String> lines = new ArrayList<>();
+        lines.add("这是一次基于已有候选方案的对话修订，请保留用户未要求改变的内容，不要重新偏离原始目标。");
+        lines.add("原始任务：");
+        lines.add(buildVariantPrompt(request, normalizedVariantType));
+        lines.add("当前候选方案：");
+        for (int index = 0; index < currentVariants.size(); index++) {
+            String currentVariant = "IMAGE".equals(normalizedVariantType)
+                    ? "图片候选" + (index + 1) + "（原图已作为视觉参考）"
+                    : currentVariants.get(index);
+            lines.add("候选" + (index + 1) + "：" + currentVariant);
+        }
+
+        List<VariantCandidateGenerateRequest.ConversationMessage> conversation = request.getConversation();
+        if (conversation != null && !conversation.isEmpty()) {
+            lines.add("最近对话：");
+            int startIndex = Math.max(0, conversation.size() - MAX_CONVERSATION_MESSAGE_COUNT);
+            conversation.subList(startIndex, conversation.size()).stream()
+                    .filter(message -> message != null && StringUtils.hasText(message.getContent()))
+                    .forEach(message -> lines.add(formatConversationMessage(message)));
+        }
+
+        lines.add("用户本轮修改要求：" + request.getRefinementInstruction().trim());
+        lines.add("修订要求：只修改用户明确提出的部分；各候选仍需保持实质差异；返回"
+                + count + "个可直接替换当前版本的完整候选，不要解释修改过程。");
+        return String.join("\n", lines);
+    }
+
+    private String formatConversationMessage(VariantCandidateGenerateRequest.ConversationMessage message) {
+        String role = "ASSISTANT".equalsIgnoreCase(message.getRole()) ? "助手" : "用户";
+        return role + "：" + truncate(message.getContent().trim(), MAX_CONVERSATION_MESSAGE_LENGTH);
+    }
+
+    private Map<String, Object> buildRefinementSourceContext(Map<String, Object> originalSourceContext,
+                                                              String normalizedVariantType,
+                                                              List<String> currentVariants) {
+        Map<String, Object> sourceContext = new HashMap<>();
+        if (originalSourceContext != null) {
+            sourceContext.putAll(originalSourceContext);
+        }
+        if (!"IMAGE".equals(normalizedVariantType)) {
+            return sourceContext;
+        }
+
+        List<String> referenceImages = new ArrayList<>();
+        Object existingReferenceImages = sourceContext.get("referenceImages");
+        if (existingReferenceImages instanceof List<?> images) {
+            images.stream()
+                    .filter(String.class::isInstance)
+                    .map(String.class::cast)
+                    .filter(StringUtils::hasText)
+                    .forEach(referenceImages::add);
+        }
+        currentVariants.stream()
+                .filter(this::isImageReference)
+                .forEach(referenceImages::add);
+        sourceContext.put("referenceImages", referenceImages.stream()
+                .distinct()
+                .limit(MAX_IMAGE_REFERENCE_COUNT)
+                .collect(Collectors.toList()));
+        return sourceContext;
+    }
+
+    private boolean isImageReference(String value) {
+        return value.startsWith("https://")
+                || value.startsWith("http://")
+                || value.startsWith("data:image/");
+    }
+
+    private String truncate(String value, int maxLength) {
+        return value.length() <= maxLength ? value : value.substring(0, maxLength);
     }
 
     private void applyTextGenerationMetadata(VariantCandidateGenerateResponse response, Map<String, Object> metadata) {
